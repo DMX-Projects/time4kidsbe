@@ -34,6 +34,7 @@ class UserManager(BaseUserManager):
 
 class User(AbstractBaseUser, PermissionsMixin):
     email = models.EmailField(unique=True)
+    username = models.CharField(max_length=150, unique=True, blank=True, null=True)
     full_name = models.CharField(max_length=255, blank=True)
     role = models.CharField(max_length=20, choices=UserRole.choices)
 
@@ -47,7 +48,8 @@ class User(AbstractBaseUser, PermissionsMixin):
     REQUIRED_FIELDS: list[str] = []
 
     def __str__(self) -> str:
-        return f"{self.email} ({self.role})"
+        identifier = self.username or self.email
+        return f"{identifier} ({self.role})"
 
     @property
     def is_admin(self) -> bool:
