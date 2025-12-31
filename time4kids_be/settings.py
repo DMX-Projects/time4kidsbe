@@ -32,6 +32,8 @@ INSTALLED_APPS = [
     "events",
     "careers",
     "enquiries",
+    "common",
+    "updates",
 ]
 
 MIDDLEWARE = [

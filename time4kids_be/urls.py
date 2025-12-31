@@ -16,6 +16,8 @@ urlpatterns = [
     path("api/events/", include("events.urls")),
     path("api/careers/", include("careers.urls")),
     path("api/enquiries/", include("enquiries.urls")),
+    path("api/common/", include("common.urls")),
+    path("api/updates/", include("updates.urls")),
 ]
 
 if settings.DEBUG:
