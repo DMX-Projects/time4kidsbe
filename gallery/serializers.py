@@ -7,4 +7,4 @@ class MediaItemSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = MediaItem
-        fields = ['id', 'title', 'file', 'media_type', 'created_at']
+        fields = ['id', 'title', 'file', 'media_type', 'category', 'created_at']
