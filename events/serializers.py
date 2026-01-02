@@ -2,9 +2,11 @@ from rest_framework import serializers
 
 from accounts.serializers import UserSerializer
 from .models import Event, EventMedia
+from common.fields import RelativeFileField
 
 
 class EventMediaSerializer(serializers.ModelSerializer):
+    file = RelativeFileField()
     uploaded_by = UserSerializer(read_only=True)
 
     class Meta:

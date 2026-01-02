@@ -34,6 +34,7 @@ INSTALLED_APPS = [
     "enquiries",
     "common",
     "updates",
+    "gallery",
 ]
 
 MIDDLEWARE = [
