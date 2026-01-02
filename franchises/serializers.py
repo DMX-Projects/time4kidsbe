@@ -5,11 +5,13 @@ from accounts.models import User, UserRole
 from accounts.serializers import UserSerializer
 from events.serializers import EventSerializer
 from .models import Franchise, ParentProfile
+from common.fields import RelativeImageField
 
 
 class FranchiseSerializer(serializers.ModelSerializer):
     admin = UserSerializer(read_only=True)
     user = UserSerializer(read_only=True)
+    hero_image = RelativeImageField(required=False, allow_null=True)
 
     class Meta:
         model = Franchise
