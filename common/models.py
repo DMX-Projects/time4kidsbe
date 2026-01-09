@@ -4,6 +4,7 @@ class HeroSlide(models.Model):
     image = models.ImageField(upload_to='hero_slides/')
     mobile_image = models.ImageField(upload_to='hero_slides/mobile/', blank=True, null=True)
     alt_text = models.CharField(max_length=255, blank=True)
+    link = models.CharField(max_length=500, blank=True)
     order = models.PositiveIntegerField(default=0)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)

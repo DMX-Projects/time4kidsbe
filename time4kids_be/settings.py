@@ -121,6 +121,11 @@ EMAIL_PORT = int(os.getenv("EMAIL_PORT", "587"))
 EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", "True").lower() == "true"
 DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "no-reply@time4kids.app")
 
+# SendGrid Email Configuration for Career Applications
+SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY", "")
+MAIL_FROM_ADDRESS = os.getenv("MAIL_FROM_ADDRESS", "info@time4education.com")
+MAIL_TO_ADDRESS = os.getenv("MAIL_TO_ADDRESS", "mdsahilkhan634@gmail.com")
+
 CSRF_TRUSTED_ORIGINS = [
     origin for origin in os.getenv("CSRF_TRUSTED_ORIGINS", "http://localhost:3000").split(",") if origin
 ]
