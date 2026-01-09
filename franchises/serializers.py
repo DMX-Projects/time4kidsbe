@@ -39,10 +39,10 @@ class FranchiseSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "slug", "created_at", "updated_at", "admin", "user"]
         extra_kwargs = {
             "name": {"required": True},
-            "address": {"required": True},
+            "address": {"required": False},
             "city": {"required": True},
-            "state": {"required": True},
-            "country": {"required": True},
+            "state": {"required": False},
+            "country": {"required": False},
             "contact_email": {"required": True},
             "contact_phone": {"required": True},
         }
@@ -63,10 +63,7 @@ class FranchiseCreateSerializer(FranchiseSerializer):
     def validate(self, attrs):
         required_fields = [
             "name",
-            "address",
             "city",
-            "state",
-            "country",
             "contact_email",
             "contact_phone",
         ]
@@ -77,10 +74,20 @@ class FranchiseCreateSerializer(FranchiseSerializer):
 
     def create(self, validated_data):
         franchise_email = validated_data.pop("franchise_email")
+        
+        # Check if user already exists
+        if User.objects.filter(email=franchise_email).exists():
+            raise serializers.ValidationError({"franchise_email": "A user with this email already exists."})
+
         franchise_password = validated_data.pop("franchise_password", None) or franchise_email
         franchise_full_name = validated_data.pop("franchise_full_name")
-        request = self.context.get("request")
-        admin_user = request.user if request else None
+        
+        # Get admin from validated_data (injected by perform_create) or context
+        admin_user = validated_data.pop("admin", None)
+        if not admin_user:
+            request = self.context.get("request")
+            admin_user = request.user if request else None
+        
         user = User.objects.create_user(
             email=franchise_email,
             password=franchise_password,
@@ -97,6 +104,13 @@ class FranchiseCreateSerializer(FranchiseSerializer):
             slug = f"{base_slug}-{counter}" if base_slug else f"franchise-{counter}"
             counter += 1
         validated_data["slug"] = slug
+        
+        # Ensure optional fields have defaults if missing to prevent IntegrityError
+        optional_fields = ["address", "state", "country", "postal_code", "about", "programs", "facilities"]
+        for field in optional_fields:
+            if field not in validated_data:
+                validated_data[field] = ""
+
         franchise = Franchise.objects.create(admin=admin_user, user=user, **validated_data)
         return franchise
 
