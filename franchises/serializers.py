@@ -4,8 +4,18 @@ from rest_framework import serializers
 from accounts.models import User, UserRole
 from accounts.serializers import UserSerializer
 from events.serializers import EventSerializer
-from .models import Franchise, ParentProfile
+from .models import Franchise, ParentProfile, FranchiseLocation
 from common.fields import RelativeImageField
+
+
+class FranchiseLocationSerializer(serializers.ModelSerializer):
+    """Serializer for franchise location data."""
+    state_display = serializers.CharField(source='get_state_display', read_only=True)
+    
+    class Meta:
+        model = FranchiseLocation
+        fields = ['id', 'city_name', 'state', 'state_display', 'is_active', 'display_order']
+        read_only_fields = ['id', 'state_display']
 
 
 class FranchiseSerializer(serializers.ModelSerializer):
@@ -27,6 +37,12 @@ class FranchiseSerializer(serializers.ModelSerializer):
             "postal_code",
             "contact_email",
             "contact_phone",
+            "google_map_link",
+            "facebook_url",
+            "instagram_url",
+            "twitter_url",
+            "linkedin_url",
+            "youtube_url",
             "programs",
             "facilities",
             "hero_image",
@@ -106,7 +122,10 @@ class FranchiseCreateSerializer(FranchiseSerializer):
         validated_data["slug"] = slug
         
         # Ensure optional fields have defaults if missing to prevent IntegrityError
-        optional_fields = ["address", "state", "country", "postal_code", "about", "programs", "facilities"]
+        optional_fields = [
+            "address", "state", "country", "postal_code", "about", "programs", "facilities",
+            "google_map_link", "facebook_url", "instagram_url", "twitter_url", "linkedin_url", "youtube_url"
+        ]
         for field in optional_fields:
             if field not in validated_data:
                 validated_data[field] = ""
@@ -163,6 +182,12 @@ class PublicFranchiseSerializer(serializers.ModelSerializer):
             "postal_code",
             "contact_email",
             "contact_phone",
+            "google_map_link",
+            "facebook_url",
+            "instagram_url",
+            "twitter_url",
+            "linkedin_url",
+            "youtube_url",
             "programs",
             "facilities",
             "hero_image",
