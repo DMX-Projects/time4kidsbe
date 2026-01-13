@@ -18,6 +18,11 @@ class Enquiry(models.Model):
     franchise = models.ForeignKey(Franchise, on_delete=models.SET_NULL, null=True, blank=True, related_name="enquiries")
     city = models.CharField(max_length=100, blank=True)
     child_age = models.CharField(max_length=50, blank=True)
+    status = models.CharField(
+        max_length=20,
+        choices=[("new", "New"), ("in-progress", "In Progress"), ("closed", "Closed")],
+        default="new",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
