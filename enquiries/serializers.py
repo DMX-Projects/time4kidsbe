@@ -22,16 +22,13 @@ class EnquirySerializer(serializers.ModelSerializer):
             "franchise",
             "franchise_slug",
             "franchise_name",
+            "status",
             "created_at",
         ]
         read_only_fields = ["id", "franchise", "created_at"]
 
-    def validate(self, attrs):
-        enquiry_type = attrs.get("enquiry_type")
-        franchise_slug = attrs.get("franchise_slug")
-        if enquiry_type == EnquiryType.ADMISSION and not franchise_slug:
-            raise serializers.ValidationError("franchise_slug is required for admission enquiries")
-        return attrs
+    # Validation removed to allow global admission enquiries
+
 
     def create(self, validated_data):
         franchise_slug = validated_data.pop("franchise_slug", None)

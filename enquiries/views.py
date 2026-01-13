@@ -39,6 +39,10 @@ class AdminEnquiryListView(generics.ListAPIView):
     permission_classes = [IsAdminUser]
 
     def get_queryset(self):
+        # Return all enquiries for superusers or staff
+        if self.request.user.is_superuser or self.request.user.is_staff:
+            return Enquiry.objects.all()
+        # Fallback for other users (e.g. franchise admins if they use this endpoint, although they have their own)
         return Enquiry.objects.filter(franchise__admin=self.request.user)
 
 
@@ -63,3 +67,11 @@ class AdminAllEnquiryListView(generics.ListAPIView):
         if enquiry_type:
             qs = qs.filter(enquiry_type=enquiry_type)
         return qs.order_by("-created_at")
+
+
+class EnquiryUpdateView(generics.UpdateAPIView):
+    """Allow admins to update enquiry status."""
+    serializer_class = EnquirySerializer
+    permission_classes = [IsAdminUser]
+    queryset = Enquiry.objects.all()
+    lookup_field = 'pk'
