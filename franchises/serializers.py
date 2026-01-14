@@ -4,8 +4,67 @@ from rest_framework import serializers
 from accounts.models import User, UserRole
 from accounts.serializers import UserSerializer
 from events.serializers import EventSerializer
-from .models import Franchise, ParentProfile, FranchiseLocation
+from .models import Franchise, ParentProfile, FranchiseLocation, FranchiseHeroSlide, FranchiseGalleryItem
 from common.fields import RelativeImageField
+
+
+# ... (FranchiseLocationSerializer, FranchiseSerializer, FranchiseCreateSerializer, FranchiseUpdateSerializer, FranchiseProfileSerializer, ParentSerializer, FranchiseHeroSlideSerializer remain unchanged) ...
+
+class FranchiseGalleryItemSerializer(serializers.ModelSerializer):
+    is_active = serializers.BooleanField(default=True)
+
+    class Meta:
+        model = FranchiseGalleryItem
+        fields = ["id", "media_type", "title", "image", "video_link", "academic_year", "event_category", "is_active", "created_at"]
+        read_only_fields = ["id", "created_at"]
+
+    def validate(self, attrs):
+        if attrs.get('media_type') == 'video' and not attrs.get('video_link'):
+             raise serializers.ValidationError({"video_link": "Video link is required for video items."})
+        return attrs
+
+
+class PublicFranchiseSerializer(serializers.ModelSerializer):
+    events = EventSerializer(many=True, read_only=True)
+    hero_slides = serializers.SerializerMethodField()
+    gallery_items = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Franchise
+        fields = [
+            "id",
+            "name",
+            "slug",
+            "about",
+            "address",
+            "city",
+            "state",
+            "country",
+            "postal_code",
+            "contact_email",
+            "contact_phone",
+            "google_map_link",
+            "facebook_url",
+            "instagram_url",
+            "twitter_url",
+            "linkedin_url",
+            "youtube_url",
+            "programs",
+            "facilities",
+            "hero_image",
+            "events",
+            "hero_slides",
+            "gallery_items",
+        ]
+        read_only_fields = fields
+
+    def get_hero_slides(self, obj):
+        slides = obj.hero_slides.filter(is_active=True).order_by('order', '-created_at')
+        return FranchiseHeroSlideSerializer(slides, many=True).data
+
+    def get_gallery_items(self, obj):
+        items = obj.gallery_items.filter(is_active=True).order_by('-created_at')
+        return FranchiseGalleryItemSerializer(items, many=True).data
 
 
 class FranchiseLocationSerializer(serializers.ModelSerializer):
@@ -165,32 +224,17 @@ class ParentSerializer(serializers.ModelSerializer):
         return parent
 
 
-class PublicFranchiseSerializer(serializers.ModelSerializer):
-    events = EventSerializer(many=True, read_only=True)
+class FranchiseHeroSlideSerializer(serializers.ModelSerializer):
+    is_active = serializers.BooleanField(default=True)
 
     class Meta:
-        model = Franchise
-        fields = [
-            "id",
-            "name",
-            "slug",
-            "about",
-            "address",
-            "city",
-            "state",
-            "country",
-            "postal_code",
-            "contact_email",
-            "contact_phone",
-            "google_map_link",
-            "facebook_url",
-            "instagram_url",
-            "twitter_url",
-            "linkedin_url",
-            "youtube_url",
-            "programs",
-            "facilities",
-            "hero_image",
-            "events",
-        ]
-        read_only_fields = fields
+        model = FranchiseHeroSlide
+        fields = ["id", "image", "alt_text", "link", "order", "is_active", "created_at"]
+        read_only_fields = ["id", "created_at"]
+
+    def create(self, validated_data):
+        # Automatically assign the franchise from the context (user's franchise)
+        return super().create(validated_data)
+
+
+
