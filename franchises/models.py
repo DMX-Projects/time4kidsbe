@@ -165,3 +165,48 @@ class ParentProfile(models.Model):
     @property
     def admin(self) -> User:
         return self.franchise.admin
+
+
+class FranchiseHeroSlide(models.Model):
+    franchise = models.ForeignKey(Franchise, on_delete=models.CASCADE, related_name="hero_slides")
+    image = models.ImageField(upload_to="franchises/hero_slides/")
+    alt_text = models.CharField(max_length=255, blank=True)
+    link = models.URLField(blank=True)
+    order = models.IntegerField(default=0)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["order", "-created_at"]
+        verbose_name = "Franchise Hero Slide"
+        verbose_name_plural = "Franchise Hero Slides"
+
+    def __str__(self):
+        return f"{self.franchise.name} - Slide {self.order}"
+
+
+class FranchiseGalleryItem(models.Model):
+    MEDIA_TYPE_CHOICES = [
+        ('photo', 'Photo'),
+        ('video', 'Video'),
+    ]
+
+    franchise = models.ForeignKey(Franchise, on_delete=models.CASCADE, related_name="gallery_items")
+    media_type = models.CharField(max_length=10, choices=MEDIA_TYPE_CHOICES, default='photo')
+    title = models.CharField(max_length=255)
+    image = models.ImageField(upload_to="franchises/gallery/", help_text="Photo or Video Thumbnail")
+    video_link = models.URLField(blank=True, help_text="YouTube/Vimeo link for videos")
+    academic_year = models.CharField(max_length=20, default="2023-24", help_text="e.g. 2023-24")
+    event_category = models.CharField(max_length=100, default="General", help_text="e.g. Annual Day")
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "Franchise Gallery Item"
+        verbose_name_plural = "Franchise Gallery Items"
+
+    def __str__(self):
+        return f"{self.franchise.name} - {self.title} ({self.media_type})"

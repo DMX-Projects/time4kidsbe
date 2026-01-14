@@ -5,7 +5,7 @@ from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 
 from accounts.permissions import IsAdminUser, IsFranchiseUser
-from .models import Franchise, ParentProfile, FranchiseLocation
+from .models import Franchise, ParentProfile, FranchiseLocation, FranchiseHeroSlide, FranchiseGalleryItem
 from .serializers import (
     FranchiseCreateSerializer,
     FranchiseLocationSerializer,
@@ -14,6 +14,8 @@ from .serializers import (
     FranchiseUpdateSerializer,
     ParentSerializer,
     PublicFranchiseSerializer,
+    FranchiseHeroSlideSerializer,
+    FranchiseGalleryItemSerializer,
 )
 
 
@@ -209,5 +211,65 @@ class PublicLocationListView(generics.GenericAPIView):
             })
         
         return Response(locations)
-        
-        return Response(locations)
+
+
+class FranchiseHeroSlideViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for managing franchise hero slides.
+    Allows Franchise Users to create, update, delete their own slides.
+    Also provides a public endpoint for reading slides if needed (or handle via permissions).
+    Here we focus on the Dashboard management part.
+    """
+    serializer_class = FranchiseHeroSlideSerializer
+    permission_classes = [IsFranchiseUser] # Only logged-in franchise users can manage
+
+    def get_queryset(self):
+        # Return slides only for the logged-in user's franchise
+        franchise = getattr(self.request.user, "franchise_profile", None)
+        if not franchise:
+            return FranchiseHeroSlide.objects.none()
+        return FranchiseHeroSlide.objects.filter(franchise=franchise)
+
+    def perform_create(self, serializer):
+        franchise = getattr(self.request.user, "franchise_profile", None)
+        if not franchise:
+            raise PermissionDenied("You must be a franchise user to create a slide.")
+        serializer.save(franchise=franchise)
+
+
+class PublicFranchiseHeroSlideResultSet(viewsets.ReadOnlyModelViewSet):
+    """
+    Public ViewSet to fetch slides for a specific franchise (by slug or ID).
+    Used by the Login Page or Public Page.
+    """
+    serializer_class = FranchiseHeroSlideSerializer
+    permission_classes = [permissions.AllowAny]
+    
+    def get_queryset(self):
+        # We expect a query param 'franchise_slug' or similar
+        slug = self.request.query_params.get('franchise_slug')
+        if slug:
+            return FranchiseHeroSlide.objects.filter(franchise__slug=slug, is_active=True).order_by('order', '-created_at')
+        return FranchiseHeroSlide.objects.none()
+
+
+class FranchiseGalleryItemViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for managing franchise gallery items (photos/videos).
+    Allows Franchise Users to create, update, delete their own gallery items.
+    """
+    serializer_class = FranchiseGalleryItemSerializer
+    permission_classes = [IsFranchiseUser]
+
+    def get_queryset(self):
+        # Return items only for the logged-in user's franchise
+        franchise = getattr(self.request.user, "franchise_profile", None)
+        if not franchise:
+            return FranchiseGalleryItem.objects.none()
+        return FranchiseGalleryItem.objects.filter(franchise=franchise)
+
+    def perform_create(self, serializer):
+        franchise = getattr(self.request.user, "franchise_profile", None)
+        if not franchise:
+            raise PermissionDenied("You must be a franchise user to create a gallery item.")
+        serializer.save(franchise=franchise)

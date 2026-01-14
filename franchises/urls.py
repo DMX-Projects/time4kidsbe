@@ -12,6 +12,9 @@ from .views import (
     PublicFranchiseDetailView,
     PublicLocationListView,
     state_choices_view,
+    FranchiseHeroSlideViewSet,
+    PublicFranchiseHeroSlideResultSet,
+    FranchiseGalleryItemViewSet,
 )
 
 router = DefaultRouter()
@@ -19,6 +22,9 @@ router.register("admin/franchises", AdminFranchiseViewSet, basename="admin-franc
 router.register("admin/franchise-locations", AdminFranchiseLocationViewSet, basename="admin-franchise-locations")
 router.register("franchise/parents", FranchiseParentViewSet, basename="franchise-parents")
 router.register("franchise-locations", FranchiseLocationViewSet, basename="franchise-locations")
+router.register("franchise/hero-slides", FranchiseHeroSlideViewSet, basename="franchise-hero-slides")
+router.register("franchise/gallery", FranchiseGalleryItemViewSet, basename="franchise-gallery")
+router.register("public/franchise-hero-slides", PublicFranchiseHeroSlideResultSet, basename="public-franchise-hero-slides")
 
 urlpatterns = router.urls + [
     path("franchise/profile/", FranchiseProfileView.as_view(), name="franchise-profile"),
