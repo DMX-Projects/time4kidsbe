@@ -39,11 +39,9 @@ class AdminEnquiryListView(generics.ListAPIView):
     permission_classes = [IsAdminUser]
 
     def get_queryset(self):
-        # Return all enquiries for superusers or staff
-        if self.request.user.is_superuser or self.request.user.is_staff:
-            return Enquiry.objects.all()
-        # Fallback for other users (e.g. franchise admins if they use this endpoint, although they have their own)
-        return Enquiry.objects.filter(franchise__admin=self.request.user)
+        # Admin should only see global enquiries (no franchise linked)
+        # This prevents seeing duplicates that are assigned to franchises
+        return Enquiry.objects.filter(franchise__isnull=True)
 
 
 class FranchiseEnquiryListView(generics.ListAPIView):
@@ -62,7 +60,8 @@ class AdminAllEnquiryListView(generics.ListAPIView):
     permission_classes = [IsAdminUser]
 
     def get_queryset(self):
-        qs = Enquiry.objects.all()
+        # Admin should only see global enquiries (no franchise linked)
+        qs = Enquiry.objects.filter(franchise__isnull=True)
         enquiry_type = self.request.query_params.get("type")
         if enquiry_type:
             qs = qs.filter(enquiry_type=enquiry_type)
