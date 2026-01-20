@@ -182,32 +182,54 @@ class PublicFranchiseListView(generics.ListAPIView):
         return queryset.order_by('city', 'name')
 
 
-class PublicLocationListView(generics.GenericAPIView):
-    """Return unique cities from active franchises for city ladder display."""
+class PublicStatsView(generics.GenericAPIView):
+    """Return dynamic stats for the home page with realistic baselines."""
     permission_classes = [permissions.AllowAny]
 
     def get(self, request, *args, **kwargs):
-        # Get unique city-state combinations from active franchises
-        franchises = Franchise.objects.filter(is_active=True).values('city', 'state').distinct()
+        # Calculate real database counts
+        real_schools = Franchise.objects.filter(is_active=True).count()
+        real_cities = FranchiseLocation.objects.filter(is_active=True).count() # Changed to count of active Locations
+        real_students = ParentProfile.objects.count()
+
+        # Business logic: Use real counts for schools and cities to match other views.
+        # Keep baseline for students as requested.
         
-        # Format as list with display_order based on alphabetical order
+        baseline_students = 50000
+
+        return Response({
+            'total_schools': real_schools,
+            'total_cities': real_cities,
+            'total_students': baseline_students + real_students
+        })
+
+
+class PublicLocationListView(generics.GenericAPIView):
+    """Return all active locations with their franchise counts."""
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, *args, **kwargs):
+        # Get all active locations
+        active_locations = FranchiseLocation.objects.filter(is_active=True).order_by('display_order', 'city_name')
+        
+        # Get franchise counts per city (case-insensitive grouping would be better but city is CharField)
+        # We'll do a simple count for now.
+        franchise_counts = Franchise.objects.filter(is_active=True).values('city').annotate(count=Count('id'))
+        count_map = {item['city'].lower(): item['count'] for item in franchise_counts}
+        
         locations = []
-        for idx, franchise in enumerate(franchises.order_by('state', 'city')):
-            # Find a representative franchise for this city to get additional info
-            # Also try to find a matching FranchiseLocation to get landmark info
-            franchise_location = FranchiseLocation.objects.filter(
-                city_name__iexact=franchise['city']
-            ).first()
-            
+        for loc in active_locations:
             locations.append({
-                'id': idx + 1,
-                'city_name': franchise['city'],
-                'state': franchise['state'],
-                'state_display': dict(FranchiseLocation.STATE_CHOICES).get(franchise['state'], franchise['state']),
-                'landmark_name': franchise_location.landmark_name if franchise_location else 'City Center',
-                'landmark_type': franchise_location.landmark_type if franchise_location else 'fort_generic',
-                'is_active': True,
-                'display_order': idx
+                'id': loc.id,
+                'city_name': loc.city_name,
+                'city': loc.city_name, # Alias for frontend compatibility
+                'state': loc.state,
+                'state_display': loc.get_state_display(),
+                'landmark_name': loc.landmark_name or 'City Center',
+                'landmark_type': loc.landmark_type,
+                'is_active': loc.is_active,
+                'display_order': loc.display_order,
+                'franchise_count': count_map.get(loc.city_name.lower(), 0)
             })
         
         return Response(locations)
