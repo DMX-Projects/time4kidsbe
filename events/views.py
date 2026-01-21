@@ -76,6 +76,35 @@ class EventMediaListCreateView(generics.ListCreateAPIView):
         serializer.save(event=event, uploaded_by=self.request.user)
 
 
+class EventMediaDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """View for retrieving, updating and deleting individual event media items."""
+    serializer_class = EventMediaSerializer
+    permission_classes = [IsFranchiseUser]
+
+    def get_queryset(self):
+        event = get_object_or_404(Event, pk=self.kwargs["event_id"])
+        franchise = getattr(self.request.user, "franchise_profile", None)
+        if event.franchise != franchise:
+            raise PermissionDenied("Cannot access media for another franchise")
+        return EventMedia.objects.filter(event=event)
+
+    def perform_update(self, serializer):
+        # Ensure the media belongs to the franchise's event
+        event = get_object_or_404(Event, pk=self.kwargs["event_id"])
+        franchise = getattr(self.request.user, "franchise_profile", None)
+        if event.franchise != franchise:
+            raise PermissionDenied("Cannot update media for another franchise")
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        # Ensure the media belongs to the franchise's event
+        event = get_object_or_404(Event, pk=self.kwargs["event_id"])
+        franchise = getattr(self.request.user, "franchise_profile", None)
+        if event.franchise != franchise:
+            raise PermissionDenied("Cannot delete media for another franchise")
+        instance.delete()
+
+
 class ParentEventListView(generics.ListAPIView):
     serializer_class = EventSerializer
     permission_classes = [IsParentUser]
