@@ -38,7 +38,7 @@ class EventSerializer(serializers.ModelSerializer):
             "updated_at",
             "media",
         ]
-        read_only_fields = ["id", "created_at", "updated_at", "media", "franchise_name", "franchise_city", "year"]
+        read_only_fields = ["id", "franchise", "created_at", "updated_at", "media", "franchise_name", "franchise_city", "year"]
 
     def get_year(self, obj: Event):
         if obj.start_date:
