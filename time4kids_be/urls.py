@@ -18,6 +18,7 @@ urlpatterns = [
     path("api/enquiries/", include("enquiries.urls")),
     path("api/common/", include("common.urls")),
     path("api/updates/", include("updates.urls")),
+    path("api/media/", include("gallery.urls")),
 ]
 
 if settings.DEBUG:

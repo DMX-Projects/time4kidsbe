@@ -1,5 +1,4 @@
 from django.conf import settings
-from django.core.mail import send_mail
 from rest_framework import generics, permissions
 
 from accounts.permissions import IsAdminUser, IsFranchiseUser
@@ -16,33 +15,23 @@ class EnquiryCreateView(generics.CreateAPIView):
         self._send_notifications(enquiry)
 
     def _send_notifications(self, enquiry: Enquiry) -> None:
-        subject = f"{enquiry.enquiry_type.title()} enquiry from {enquiry.name}"
-        message_lines = [
-            f"Name: {enquiry.name}",
-            f"Email: {enquiry.email}",
-            f"Phone: {enquiry.phone}",
-            f"City: {enquiry.city}",
-            f"Message: {enquiry.message}",
-        ]
-        if enquiry.child_age:
-            message_lines.append(f"Child age: {enquiry.child_age}")
-        if enquiry.franchise:
-            message_lines.append(f"Franchise: {enquiry.franchise.name}")
-        message = "\n".join(message_lines)
-
-        recipients = [settings.DEFAULT_FROM_EMAIL]
-        if enquiry.franchise and enquiry.franchise.contact_email:
-            recipients.append(enquiry.franchise.contact_email)
-        if enquiry.franchise and enquiry.franchise.admin.email:
-            recipients.append(enquiry.franchise.admin.email)
-
-        send_mail(
-            subject=subject,
-            message=message,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=list({r for r in recipients if r}),
-            fail_silently=True,
-        )
+        """Send email notification for new enquiry using SendGrid"""
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        try:
+            from .emails import send_enquiry_email
+            email_sent = send_enquiry_email(enquiry)
+            
+            if email_sent:
+                logger.info(f"Email notification sent for enquiry from {enquiry.name}")
+            else:
+                logger.warning(f"Failed to send email notification for enquiry from {enquiry.name}")
+        except Exception as e:
+            # Log error but don't fail the enquiry submission
+            logger.error(f"Error sending enquiry email notification: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
 
 
 class AdminEnquiryListView(generics.ListAPIView):
@@ -50,7 +39,9 @@ class AdminEnquiryListView(generics.ListAPIView):
     permission_classes = [IsAdminUser]
 
     def get_queryset(self):
-        return Enquiry.objects.filter(franchise__admin=self.request.user)
+        # Admin should only see global enquiries (no franchise linked)
+        # This prevents seeing duplicates that are assigned to franchises
+        return Enquiry.objects.filter(franchise__isnull=True)
 
 
 class FranchiseEnquiryListView(generics.ListAPIView):
@@ -69,8 +60,17 @@ class AdminAllEnquiryListView(generics.ListAPIView):
     permission_classes = [IsAdminUser]
 
     def get_queryset(self):
-        qs = Enquiry.objects.all()
+        # Admin should only see global enquiries (no franchise linked)
+        qs = Enquiry.objects.filter(franchise__isnull=True)
         enquiry_type = self.request.query_params.get("type")
         if enquiry_type:
             qs = qs.filter(enquiry_type=enquiry_type)
         return qs.order_by("-created_at")
+
+
+class EnquiryUpdateView(generics.UpdateAPIView):
+    """Allow admins to update enquiry status."""
+    serializer_class = EnquirySerializer
+    permission_classes = [IsAdminUser]
+    queryset = Enquiry.objects.all()
+    lookup_field = 'pk'

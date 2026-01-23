@@ -4,12 +4,30 @@ from rest_framework import serializers
 from accounts.models import User, UserRole
 from accounts.serializers import UserSerializer
 from events.serializers import EventSerializer
-from .models import Franchise, ParentProfile
+from .models import Franchise, ParentProfile, FranchiseLocation, FranchiseHeroSlide, FranchiseGalleryItem
+from common.fields import RelativeImageField
 
 
-class FranchiseSerializer(serializers.ModelSerializer):
-    admin = UserSerializer(read_only=True)
-    user = UserSerializer(read_only=True)
+# ... (FranchiseLocationSerializer, FranchiseSerializer, FranchiseCreateSerializer, FranchiseUpdateSerializer, FranchiseProfileSerializer, ParentSerializer, FranchiseHeroSlideSerializer remain unchanged) ...
+
+class FranchiseGalleryItemSerializer(serializers.ModelSerializer):
+    is_active = serializers.BooleanField(default=True)
+
+    class Meta:
+        model = FranchiseGalleryItem
+        fields = ["id", "media_type", "title", "image", "video_link", "academic_year", "event_category", "is_active", "created_at"]
+        read_only_fields = ["id", "created_at"]
+
+    def validate(self, attrs):
+        if attrs.get('media_type') == 'video' and not attrs.get('video_link'):
+             raise serializers.ValidationError({"video_link": "Video link is required for video items."})
+        return attrs
+
+
+class PublicFranchiseSerializer(serializers.ModelSerializer):
+    events = EventSerializer(many=True, read_only=True)
+    hero_slides = serializers.SerializerMethodField()
+    gallery_items = serializers.SerializerMethodField()
 
     class Meta:
         model = Franchise
@@ -25,6 +43,65 @@ class FranchiseSerializer(serializers.ModelSerializer):
             "postal_code",
             "contact_email",
             "contact_phone",
+            "google_map_link",
+            "facebook_url",
+            "instagram_url",
+            "twitter_url",
+            "linkedin_url",
+            "youtube_url",
+            "programs",
+            "facilities",
+            "hero_image",
+            "events",
+            "hero_slides",
+            "gallery_items",
+        ]
+        read_only_fields = fields
+
+    def get_hero_slides(self, obj):
+        slides = obj.hero_slides.filter(is_active=True).order_by('order', '-created_at')
+        return FranchiseHeroSlideSerializer(slides, many=True).data
+
+    def get_gallery_items(self, obj):
+        items = obj.gallery_items.filter(is_active=True).order_by('-created_at')
+        return FranchiseGalleryItemSerializer(items, many=True).data
+
+
+class FranchiseLocationSerializer(serializers.ModelSerializer):
+    """Serializer for franchise location data."""
+    state_display = serializers.CharField(source='get_state_display', read_only=True)
+    
+    class Meta:
+        model = FranchiseLocation
+        fields = ['id', 'city_name', 'state', 'state_display', 'is_active', 'display_order']
+        read_only_fields = ['id', 'state_display']
+
+
+class FranchiseSerializer(serializers.ModelSerializer):
+    admin = UserSerializer(read_only=True)
+    user = UserSerializer(read_only=True)
+    hero_image = RelativeImageField(required=False, allow_null=True)
+
+    class Meta:
+        model = Franchise
+        fields = [
+            "id",
+            "name",
+            "slug",
+            "about",
+            "address",
+            "city",
+            "state",
+            "country",
+            "postal_code",
+            "contact_email",
+            "contact_phone",
+            "google_map_link",
+            "facebook_url",
+            "instagram_url",
+            "twitter_url",
+            "linkedin_url",
+            "youtube_url",
             "programs",
             "facilities",
             "hero_image",
@@ -37,10 +114,10 @@ class FranchiseSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "slug", "created_at", "updated_at", "admin", "user"]
         extra_kwargs = {
             "name": {"required": True},
-            "address": {"required": True},
+            "address": {"required": False},
             "city": {"required": True},
-            "state": {"required": True},
-            "country": {"required": True},
+            "state": {"required": False},
+            "country": {"required": False},
             "contact_email": {"required": True},
             "contact_phone": {"required": True},
         }
@@ -61,10 +138,7 @@ class FranchiseCreateSerializer(FranchiseSerializer):
     def validate(self, attrs):
         required_fields = [
             "name",
-            "address",
             "city",
-            "state",
-            "country",
             "contact_email",
             "contact_phone",
         ]
@@ -75,10 +149,20 @@ class FranchiseCreateSerializer(FranchiseSerializer):
 
     def create(self, validated_data):
         franchise_email = validated_data.pop("franchise_email")
+        
+        # Check if user already exists
+        if User.objects.filter(email=franchise_email).exists():
+            raise serializers.ValidationError({"franchise_email": "A user with this email already exists."})
+
         franchise_password = validated_data.pop("franchise_password", None) or franchise_email
         franchise_full_name = validated_data.pop("franchise_full_name")
-        request = self.context.get("request")
-        admin_user = request.user if request else None
+        
+        # Get admin from validated_data (injected by perform_create) or context
+        admin_user = validated_data.pop("admin", None)
+        if not admin_user:
+            request = self.context.get("request")
+            admin_user = request.user if request else None
+        
         user = User.objects.create_user(
             email=franchise_email,
             password=franchise_password,
@@ -95,6 +179,16 @@ class FranchiseCreateSerializer(FranchiseSerializer):
             slug = f"{base_slug}-{counter}" if base_slug else f"franchise-{counter}"
             counter += 1
         validated_data["slug"] = slug
+        
+        # Ensure optional fields have defaults if missing to prevent IntegrityError
+        optional_fields = [
+            "address", "state", "country", "postal_code", "about", "programs", "facilities",
+            "google_map_link", "facebook_url", "instagram_url", "twitter_url", "linkedin_url", "youtube_url"
+        ]
+        for field in optional_fields:
+            if field not in validated_data:
+                validated_data[field] = ""
+
         franchise = Franchise.objects.create(admin=admin_user, user=user, **validated_data)
         return franchise
 
@@ -130,26 +224,17 @@ class ParentSerializer(serializers.ModelSerializer):
         return parent
 
 
-class PublicFranchiseSerializer(serializers.ModelSerializer):
-    events = EventSerializer(many=True, read_only=True)
+class FranchiseHeroSlideSerializer(serializers.ModelSerializer):
+    is_active = serializers.BooleanField(default=True)
 
     class Meta:
-        model = Franchise
-        fields = [
-            "id",
-            "name",
-            "slug",
-            "about",
-            "address",
-            "city",
-            "state",
-            "country",
-            "postal_code",
-            "contact_email",
-            "contact_phone",
-            "programs",
-            "facilities",
-            "hero_image",
-            "events",
-        ]
-        read_only_fields = fields
+        model = FranchiseHeroSlide
+        fields = ["id", "image", "alt_text", "link", "order", "is_active", "created_at"]
+        read_only_fields = ["id", "created_at"]
+
+    def create(self, validated_data):
+        # Automatically assign the franchise from the context (user's franchise)
+        return super().create(validated_data)
+
+
+
