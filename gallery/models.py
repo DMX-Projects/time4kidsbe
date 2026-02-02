@@ -15,6 +15,8 @@ class MediaItem(models.Model):
     )
 
     title = models.CharField(max_length=200)
+    author = models.CharField(max_length=200, blank=True, null=True)
+    location = models.CharField(max_length=200, blank=True, null=True)
     file = models.FileField(upload_to='gallery/')
     media_type = models.CharField(max_length=10, choices=MEDIA_TYPES, default='image')
     category = models.CharField(max_length=20, choices=MEDIA_CATEGORIES, default='Events')
