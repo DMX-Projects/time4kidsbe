@@ -4,7 +4,7 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenObtainPairView
 
 from accounts.permissions import IsAdminUser
-from .serializers import CustomTokenObtainPairSerializer, UserSerializer
+from .serializers import CustomTokenObtainPairSerializer, ParentTokenObtainPairSerializer, UserSerializer
 from .models import User
 
 
@@ -33,6 +33,11 @@ class AdminStatsView(APIView):
 
 class CustomTokenObtainPairView(TokenObtainPairView):
     serializer_class = CustomTokenObtainPairSerializer
+
+
+class ParentLoginView(TokenObtainPairView):
+    """Parent-specific login endpoint"""
+    serializer_class = ParentTokenObtainPairSerializer
 
 
 class CurrentUserView(APIView):
