@@ -176,8 +176,12 @@ SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY", "")
 MAIL_FROM_ADDRESS = os.getenv("MAIL_FROM_ADDRESS", "info@time4education.com")
 MAIL_TO_ADDRESS = os.getenv("MAIL_TO_ADDRESS", "mdsahilkhan634@gmail.com")
 
+# CSRF Configuration - must include scheme (http:// or https://)
+csrf_origins = os.getenv("CSRF_TRUSTED_ORIGINS", "http://localhost:3000")
 CSRF_TRUSTED_ORIGINS = [
-    origin.strip() for origin in os.getenv("CSRF_TRUSTED_ORIGINS", "http://localhost:3000").split(",") if origin.strip()
+    origin.strip() 
+    for origin in csrf_origins.split(",") 
+    if origin.strip() and (origin.strip().startswith("http://") or origin.strip().startswith("https://"))
 ]
 
 # Security Settings for Production
