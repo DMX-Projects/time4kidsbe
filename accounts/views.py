@@ -1,3 +1,5 @@
+from django.utils.decorators import method_decorator
+from django.views.decorators.csrf import csrf_exempt
 from rest_framework import generics, permissions
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -31,15 +33,18 @@ class AdminStatsView(APIView):
         )
 
 
+@method_decorator(csrf_exempt, name='dispatch')
 class CustomTokenObtainPairView(TokenObtainPairView):
     serializer_class = CustomTokenObtainPairSerializer
 
 
+@method_decorator(csrf_exempt, name='dispatch')
 class ParentLoginView(TokenObtainPairView):
     """Parent-specific login endpoint"""
     serializer_class = ParentTokenObtainPairSerializer
 
 
+@method_decorator(csrf_exempt, name='dispatch')
 class CurrentUserView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 

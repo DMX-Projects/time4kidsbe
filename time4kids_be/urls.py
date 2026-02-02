@@ -2,11 +2,17 @@ from django.conf import settings
 from django.conf.urls.static import static
 from django.contrib import admin
 from django.contrib.staticfiles.urls import staticfiles_urlpatterns
-from django.urls import include, path
+from django.urls import include, path, re_path
+from django.views.decorators.csrf import csrf_exempt
 from django.views.generic import RedirectView
 
 from accounts.views import CurrentUserView, CustomTokenObtainPairView, ParentLoginView
 from rest_framework_simplejwt.views import TokenRefreshView
+
+# Function to create CSRF-exempt API include
+def api_include(urlconf_module, namespace=None):
+    """Include API URLs with CSRF exemption."""
+    return path('api/', csrf_exempt(include(urlconf_module, namespace=namespace)))
 
 urlpatterns = [
     path("", RedirectView.as_view(url="/admin/", permanent=False), name="root"),
