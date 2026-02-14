@@ -247,16 +247,25 @@ class FranchiseHeroSlideViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         # Return slides only for the logged-in user's franchise
-        franchise = getattr(self.request.user, "franchise_profile", None)
-        if not franchise:
+        if not hasattr(self.request.user, "franchise_profile"):
             return FranchiseHeroSlide.objects.none()
-        return FranchiseHeroSlide.objects.filter(franchise=franchise)
+        return FranchiseHeroSlide.objects.filter(franchise=self.request.user.franchise_profile)
 
     def perform_create(self, serializer):
-        franchise = getattr(self.request.user, "franchise_profile", None)
-        if not franchise:
-            raise PermissionDenied("You must be a franchise user to create a slide.")
-        serializer.save(franchise=franchise)
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        try:
+            if not hasattr(self.request.user, "franchise_profile"):
+                logger.error(f"User {self.request.user.email} (role: {self.request.user.role}) has no franchise_profile")
+                raise PermissionDenied("You must be a franchise user with a valid franchise profile to create a slide.")
+            
+            franchise = self.request.user.franchise_profile
+            logger.info(f"Creating hero slide for franchise: {franchise.name}")
+            serializer.save(franchise=franchise)
+        except Exception as e:
+            logger.exception(f"Error creating hero slide: {str(e)}")
+            raise
 
 
 class PublicFranchiseHeroSlideResultSet(viewsets.ReadOnlyModelViewSet):
