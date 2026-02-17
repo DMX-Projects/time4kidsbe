@@ -1,4 +1,6 @@
 from django.conf import settings
+from django.utils.decorators import method_decorator
+from django.views.decorators.csrf import csrf_exempt
 from rest_framework import generics, permissions
 
 from accounts.permissions import IsAdminUser, IsFranchiseUser
@@ -6,6 +8,7 @@ from .models import Enquiry, EnquiryType
 from .serializers import EnquirySerializer
 
 
+@method_decorator(csrf_exempt, name='dispatch')
 class EnquiryCreateView(generics.CreateAPIView):
     serializer_class = EnquirySerializer
     permission_classes = [permissions.AllowAny]
