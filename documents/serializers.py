@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import ParentDocument
+from .models import ParentDocument, FranchiseDocument, FranchiseDocumentCategory, IndentRequest
 from common.fields import RelativeFileField, RelativeImageField
 
 
@@ -28,4 +28,55 @@ class ParentDocumentSerializer(serializers.ModelSerializer):
             year = f" ({obj.academic_year})" if obj.academic_year else ''
             return f"{state_display}{year}" if state_display else obj.title
         return obj.title
+
+
+class FranchiseDocumentSerializer(serializers.ModelSerializer):
+    file = RelativeFileField()
+    franchise_name = serializers.CharField(source="franchise.name", read_only=True, allow_null=True)
+    category_display = serializers.CharField(source="get_category_display", read_only=True)
+    display_title = serializers.SerializerMethodField()
+
+    class Meta:
+        model = FranchiseDocument
+        fields = [
+            "id",
+            "category",
+            "category_display",
+            "title",
+            "display_title",
+            "description",
+            "file",
+            "franchise",
+            "franchise_name",
+            "academic_year",
+            "is_active",
+            "order",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+    def get_display_title(self, obj: FranchiseDocument) -> str:
+        if obj.academic_year:
+            return f"{obj.title} ({obj.academic_year})"
+        return obj.title
+
+
+class IndentRequestSerializer(serializers.ModelSerializer):
+    franchise_name = serializers.CharField(source="franchise.name", read_only=True)
+
+    class Meta:
+        model = IndentRequest
+        fields = [
+            "id",
+            "franchise",
+            "franchise_name",
+            "region",
+            "academic_year",
+            "notes",
+            "status",
+            "requested_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "franchise", "requested_at", "updated_at"]
 

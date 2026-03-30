@@ -1,6 +1,7 @@
 from django.db import models
+from django.utils import timezone
 
-from franchises.models import ParentProfile
+from franchises.models import Franchise, ParentProfile
 
 
 class StudentProfile(models.Model):
@@ -56,4 +57,179 @@ class Grade(models.Model):
         if self.total_marks > 0:
             return round((self.marks_obtained / self.total_marks) * 100, 2)
         return 0
+
+
+class StudentAchievement(models.Model):
+    """Milestones published by a centre; optionally scoped to one child or centre-wide."""
+
+    franchise = models.ForeignKey(Franchise, on_delete=models.CASCADE, related_name="student_achievements")
+    student = models.ForeignKey(
+        StudentProfile,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="achievements",
+        help_text="Leave empty to show to all families at this centre.",
+    )
+    title = models.CharField(max_length=255)
+    notes = models.TextField(blank=True)
+    achieved_date = models.DateField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-achieved_date", "-created_at"]
+        verbose_name = "Student achievement"
+        verbose_name_plural = "Student achievements"
+
+    def __str__(self) -> str:
+        who = self.student.full_name if self.student else "Centre-wide"
+        return f"{self.title} ({who})"
+
+
+class HomeworkAssignment(models.Model):
+    """Date-wise homework; optional per-student or per-class or whole centre."""
+
+    franchise = models.ForeignKey(Franchise, on_delete=models.CASCADE, related_name="homework_assignments")
+    student = models.ForeignKey(
+        StudentProfile,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="homework_assignments",
+    )
+    class_name = models.CharField(
+        max_length=120,
+        blank=True,
+        help_text="Must match StudentProfile.class_name when student is empty. Empty = all classes at centre.",
+    )
+    assigned_date = models.DateField()
+    title = models.CharField(max_length=255)
+    description = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-assigned_date", "-created_at"]
+        verbose_name = "Homework assignment"
+        verbose_name_plural = "Homework assignments"
+
+    def __str__(self) -> str:
+        return f"{self.title} ({self.assigned_date})"
+
+
+class Announcement(models.Model):
+    franchise = models.ForeignKey(Franchise, on_delete=models.CASCADE, related_name="portal_announcements")
+    title = models.CharField(max_length=255)
+    body = models.TextField(blank=True)
+    published_at = models.DateTimeField(default=timezone.now)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-published_at", "-created_at"]
+        verbose_name = "Announcement"
+        verbose_name_plural = "Announcements"
+
+    def __str__(self) -> str:
+        return self.title
+
+
+class AttendanceRecord(models.Model):
+    class Status(models.TextChoices):
+        PRESENT = "PRESENT", "Present"
+        ABSENT = "ABSENT", "Absent"
+        LATE = "LATE", "Late"
+        EXCUSED = "EXCUSED", "Excused"
+        HOLIDAY = "HOLIDAY", "Holiday"
+
+    student = models.ForeignKey(StudentProfile, on_delete=models.CASCADE, related_name="attendance_records")
+    date = models.DateField()
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PRESENT)
+    note = models.CharField(max_length=255, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-date", "student_id"]
+        verbose_name = "Attendance record"
+        verbose_name_plural = "Attendance records"
+        constraints = [
+            models.UniqueConstraint(fields=["student", "date"], name="uniq_attendance_student_date"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.student.full_name} — {self.date} ({self.status})"
+
+
+class FeeRecord(models.Model):
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        PAID = "PAID", "Paid"
+        OVERDUE = "OVERDUE", "Overdue"
+
+    student = models.ForeignKey(StudentProfile, on_delete=models.CASCADE, related_name="fee_records")
+    title = models.CharField(max_length=255)
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    due_date = models.DateField()
+    paid_on = models.DateField(null=True, blank=True)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+    notes = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-due_date", "-created_at"]
+        verbose_name = "Fee record"
+        verbose_name_plural = "Fee records"
+
+    def __str__(self) -> str:
+        return f"{self.title} — {self.student.full_name}"
+
+
+class SupportTicket(models.Model):
+    class Status(models.TextChoices):
+        OPEN = "OPEN", "Open"
+        IN_PROGRESS = "IN_PROGRESS", "In progress"
+        CLOSED = "CLOSED", "Closed"
+
+    parent = models.ForeignKey(ParentProfile, on_delete=models.CASCADE, related_name="support_tickets")
+    subject = models.CharField(max_length=255)
+    body = models.TextField()
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.OPEN)
+    franchise_reply = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "Support ticket"
+        verbose_name_plural = "Support tickets"
+
+    def __str__(self) -> str:
+        return f"{self.subject} ({self.parent})"
+
+
+class TransportRoute(models.Model):
+    franchise = models.ForeignKey(Franchise, on_delete=models.CASCADE, related_name="transport_routes")
+    route_name = models.CharField(max_length=255)
+    description = models.TextField(blank=True)
+    map_url = models.URLField(blank=True, max_length=500)
+    tracking_note = models.CharField(
+        max_length=500,
+        blank=True,
+        help_text="Transport desk / GPS notice — live tracking is optional",
+    )
+    sort_order = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["sort_order", "route_name"]
+        verbose_name = "Transport route"
+        verbose_name_plural = "Transport routes"
+
+    def __str__(self) -> str:
+        return f"{self.route_name} ({self.franchise.name})"
 

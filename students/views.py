@@ -1,11 +1,23 @@
 from datetime import date
+
+from django.db.models import Q
 from rest_framework import generics
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from accounts.permissions import IsParentUser
+
+from accounts.permissions import IsFranchiseUser, IsParentUser
 from events.models import Event
-from .models import StudentProfile, Grade
-from .serializers import StudentProfileSerializer, StudentDetailSerializer, GradeSerializer
+
+from .models import Grade, StudentAchievement, StudentProfile
+from .serializers import (
+    GradeSerializer,
+    ParentStudentAchievementSerializer,
+    StudentAchievementSerializer,
+    StudentDetailSerializer,
+    StudentMiniSerializer,
+    StudentProfileSerializer,
+)
 
 
 class ParentStudentListView(generics.ListAPIView):
@@ -112,3 +124,77 @@ class ParentDashboardView(APIView):
         }
         
         return Response(dashboard_data)
+
+
+class ParentAchievementListView(generics.ListAPIView):
+    """Achievements visible to this parent (their children + centre-wide)."""
+
+    permission_classes = [IsParentUser]
+    serializer_class = ParentStudentAchievementSerializer
+    pagination_class = None
+
+    def get_queryset(self):
+        parent_profile = getattr(self.request.user, "parent_profile", None)
+        if not parent_profile:
+            return StudentAchievement.objects.none()
+        kids = StudentProfile.objects.filter(parent=parent_profile, is_active=True)
+        return (
+            StudentAchievement.objects.filter(franchise=parent_profile.franchise)
+            .filter(Q(student__in=kids) | Q(student__isnull=True))
+            .select_related("student")
+            .distinct()
+            .order_by("-achieved_date", "-created_at")
+        )
+
+
+class FranchiseStudentMiniListView(generics.ListAPIView):
+    """Active students at this centre (for achievement picker)."""
+
+    permission_classes = [IsFranchiseUser]
+    serializer_class = StudentMiniSerializer
+    pagination_class = None
+
+    def get_queryset(self):
+        franchise = getattr(self.request.user, "franchise_profile", None)
+        if not franchise:
+            return StudentProfile.objects.none()
+        return StudentProfile.objects.filter(parent__franchise=franchise, is_active=True).select_related("parent")
+
+
+class FranchiseAchievementListCreateView(generics.ListCreateAPIView):
+    permission_classes = [IsFranchiseUser]
+    serializer_class = StudentAchievementSerializer
+    pagination_class = None
+
+    def get_queryset(self):
+        franchise = getattr(self.request.user, "franchise_profile", None)
+        if not franchise:
+            return StudentAchievement.objects.none()
+        return StudentAchievement.objects.filter(franchise=franchise).select_related("student")
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx["request"] = self.request
+        return ctx
+
+    def perform_create(self, serializer):
+        franchise = getattr(self.request.user, "franchise_profile", None)
+        if not franchise:
+            raise PermissionDenied("Franchise profile not found")
+        serializer.save(franchise=franchise)
+
+
+class FranchiseAchievementDetailView(generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [IsFranchiseUser]
+    serializer_class = StudentAchievementSerializer
+
+    def get_queryset(self):
+        franchise = getattr(self.request.user, "franchise_profile", None)
+        if not franchise:
+            return StudentAchievement.objects.none()
+        return StudentAchievement.objects.filter(franchise=franchise).select_related("student")
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx["request"] = self.request
+        return ctx

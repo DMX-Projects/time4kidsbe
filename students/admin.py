@@ -1,5 +1,16 @@
 from django.contrib import admin
-from .models import StudentProfile, Grade
+
+from .models import (
+    Announcement,
+    AttendanceRecord,
+    FeeRecord,
+    Grade,
+    HomeworkAssignment,
+    StudentAchievement,
+    StudentProfile,
+    SupportTicket,
+    TransportRoute,
+)
 
 
 class GradeInline(admin.TabularInline):
@@ -56,4 +67,50 @@ class GradeAdmin(admin.ModelAdmin):
     def get_percentage(self, obj):
         return f"{obj.percentage}%"
     get_percentage.short_description = 'Percentage'
+
+
+@admin.register(StudentAchievement)
+class StudentAchievementAdmin(admin.ModelAdmin):
+    list_display = ("title", "franchise", "student", "achieved_date", "created_at")
+    list_filter = ("franchise", "achieved_date")
+    search_fields = ("title", "notes", "student__first_name", "student__last_name")
+    raw_id_fields = ("student",)
+
+
+@admin.register(HomeworkAssignment)
+class HomeworkAssignmentAdmin(admin.ModelAdmin):
+    list_display = ("title", "franchise", "assigned_date", "student", "class_name")
+    list_filter = ("franchise", "assigned_date")
+    raw_id_fields = ("student",)
+
+
+@admin.register(Announcement)
+class AnnouncementAdmin(admin.ModelAdmin):
+    list_display = ("title", "franchise", "published_at", "is_active")
+    list_filter = ("franchise", "is_active")
+
+
+@admin.register(AttendanceRecord)
+class AttendanceRecordAdmin(admin.ModelAdmin):
+    list_display = ("student", "date", "status")
+    list_filter = ("status", "date", "student__parent__franchise")
+
+
+@admin.register(FeeRecord)
+class FeeRecordAdmin(admin.ModelAdmin):
+    list_display = ("title", "student", "amount", "due_date", "status")
+    list_filter = ("status", "student__parent__franchise")
+    raw_id_fields = ("student",)
+
+
+@admin.register(SupportTicket)
+class SupportTicketAdmin(admin.ModelAdmin):
+    list_display = ("subject", "parent", "status", "created_at")
+    list_filter = ("status", "parent__franchise")
+
+
+@admin.register(TransportRoute)
+class TransportRouteAdmin(admin.ModelAdmin):
+    list_display = ("route_name", "franchise", "sort_order")
+    list_filter = ("franchise",)
 

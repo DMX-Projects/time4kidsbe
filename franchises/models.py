@@ -152,6 +152,11 @@ class ParentProfile(models.Model):
     franchise = models.ForeignKey(Franchise, on_delete=models.CASCADE, related_name="parents")
     child_name = models.CharField(max_length=255, blank=True)
     notes = models.TextField(blank=True)
+    phone = models.CharField(max_length=30, blank=True, default="")
+    address = models.TextField(blank=True, default="")
+    city = models.CharField(max_length=100, blank=True, default="")
+    photo_url = models.URLField(blank=True, default="", max_length=500)
+    notifications_muted = models.BooleanField(default=False, help_text="Parent preference: mute in-app announcement highlights")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
