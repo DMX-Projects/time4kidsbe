@@ -2,9 +2,10 @@ from django.db.models import Q
 from rest_framework import generics
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
-from accounts.permissions import IsParentUser
-from .models import ParentDocument, DocumentCategory
-from .serializers import ParentDocumentSerializer
+from rest_framework.exceptions import PermissionDenied
+from accounts.permissions import IsFranchiseUser, IsParentUser, IsAdminUser
+from .models import ParentDocument, DocumentCategory, FranchiseDocument, FranchiseDocumentCategory, IndentRequest
+from .serializers import ParentDocumentSerializer, FranchiseDocumentSerializer, IndentRequestSerializer
 
 
 class ParentDocumentListView(generics.ListAPIView):
@@ -57,4 +58,102 @@ def parent_documents_by_category(request, category):
     
     serializer = ParentDocumentSerializer(documents, many=True)
     return Response(serializer.data)
+
+
+@api_view(["GET"])
+@permission_classes([IsFranchiseUser])
+def franchise_documents_by_category(request, category: str):
+    """
+    Get franchise resource hub documents filtered by category.
+    Returns franchise-specific documents and also global documents (franchise is null).
+    """
+    franchise_profile = getattr(request.user, "franchise_profile", None)
+    if not franchise_profile:
+        return Response({"error": "Franchise profile not found"}, status=403)
+
+    franchise = franchise_profile
+
+    valid_categories = [choice[0] for choice in FranchiseDocumentCategory.choices]
+    if category not in valid_categories:
+        return Response({"error": "Invalid category"}, status=400)
+
+    documents = FranchiseDocument.objects.filter(
+        category=category,
+        is_active=True,
+    ).filter(
+        Q(franchise=franchise) | Q(franchise__isnull=True)
+    ).order_by("order", "-created_at")
+
+    serializer = FranchiseDocumentSerializer(documents, many=True)
+    return Response(serializer.data)
+
+
+class FranchiseParentDocumentListCreateView(generics.ListCreateAPIView):
+    """Franchise can upload/manage parent-facing documents for their own centre."""
+
+    serializer_class = ParentDocumentSerializer
+    permission_classes = [IsFranchiseUser]
+    pagination_class = None
+
+    def get_queryset(self):
+        franchise_profile = getattr(self.request.user, "franchise_profile", None)
+        if not franchise_profile:
+            return ParentDocument.objects.none()
+        return ParentDocument.objects.filter(franchise=franchise_profile).order_by("category", "order", "-created_at")
+
+    def perform_create(self, serializer):
+        franchise_profile = getattr(self.request.user, "franchise_profile", None)
+        if not franchise_profile:
+            raise PermissionDenied("Franchise profile not found")
+        serializer.save(franchise=franchise_profile)
+
+
+class FranchiseParentDocumentDeleteView(generics.DestroyAPIView):
+    """Franchise can delete only their own parent-facing documents."""
+
+    serializer_class = ParentDocumentSerializer
+    permission_classes = [IsFranchiseUser]
+
+    def get_queryset(self):
+        franchise_profile = getattr(self.request.user, "franchise_profile", None)
+        if not franchise_profile:
+            return ParentDocument.objects.none()
+        return ParentDocument.objects.filter(franchise=franchise_profile)
+
+
+class FranchiseIndentRequestListCreateView(generics.ListCreateAPIView):
+    """Create and list indent requests for the logged-in franchise user."""
+
+    serializer_class = IndentRequestSerializer
+    permission_classes = [IsFranchiseUser]
+
+    def get_queryset(self):
+        franchise_profile = getattr(self.request.user, "franchise_profile", None)
+        if not franchise_profile:
+            return IndentRequest.objects.none()
+        return IndentRequest.objects.filter(franchise=franchise_profile)
+
+    def perform_create(self, serializer):
+        franchise_profile = getattr(self.request.user, "franchise_profile", None)
+        if not franchise_profile:
+            raise PermissionDenied("Franchise profile not found")
+        serializer.save(franchise=franchise_profile)
+
+
+class AdminIndentRequestListView(generics.ListAPIView):
+    """Admin can view indent requests from all franchises."""
+
+    serializer_class = IndentRequestSerializer
+    permission_classes = [IsAdminUser]
+
+    def get_queryset(self):
+        return IndentRequest.objects.all().order_by("-requested_at")
+
+
+class AdminIndentRequestUpdateView(generics.UpdateAPIView):
+    """Admin can approve/reject an indent request."""
+
+    serializer_class = IndentRequestSerializer
+    permission_classes = [IsAdminUser]
+    queryset = IndentRequest.objects.all().order_by("-requested_at")
 

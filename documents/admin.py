@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import ParentDocument
+from .models import ParentDocument, FranchiseDocument
 
 
 @admin.register(ParentDocument)
@@ -41,4 +41,48 @@ class ParentDocumentAdmin(admin.ModelAdmin):
     def get_queryset(self, request):
         qs = super().get_queryset(request)
         return qs.select_related('franchise')
+
+
+@admin.register(FranchiseDocument)
+class FranchiseDocumentAdmin(admin.ModelAdmin):
+    list_display = ("category", "display_franchise", "title", "is_active", "order", "created_at")
+    list_filter = ("category", "franchise", "is_active", "academic_year", "created_at")
+    search_fields = ("title", "description", "academic_year")
+    list_editable = ("is_active", "order")
+    readonly_fields = ("created_at", "updated_at")
+
+    fieldsets = (
+        (
+            "Document Information",
+            {
+                "fields": ("category", "title", "description", "file"),
+            },
+        ),
+        (
+            "Academic / Metadata",
+            {
+                "fields": ("academic_year",),
+                "description": "Optional academic year (useful for academic documents).",
+            },
+        ),
+        (
+            "Organization",
+            {
+                "fields": ("franchise", "order", "is_active"),
+                "description": "Leave franchise blank for global documents accessible to all centres.",
+            },
+        ),
+        (
+            "Timestamps",
+            {
+                "fields": ("created_at", "updated_at"),
+                "classes": ("collapse",),
+            },
+        ),
+    )
+
+    def display_franchise(self, obj: FranchiseDocument):
+        return obj.franchise.name if obj.franchise else "Global"
+
+    display_franchise.short_description = "Franchise"
 

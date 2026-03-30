@@ -10,6 +10,8 @@ class DocumentCategory(models.TextChoices):
     STUDENTS_KIT = "STUDENTS_KIT", "Students Kit"
     PARENTING_TIPS = "PARENTING_TIPS", "Parenting Tips & Articles"
     HOLIDAY_LISTS = "HOLIDAY_LISTS", "Holiday Lists"
+    PRESCHOOL_POLICIES = "PRESCHOOL_POLICIES", "Preschool Policies (PDF)"
+    CLASS_TIMETABLE = "CLASS_TIMETABLE", "Class Timetable (PDF)"
 
 
 class ParentDocument(models.Model):
@@ -66,4 +68,94 @@ class ParentDocument(models.Model):
     def __str__(self):
         franchise_name = self.franchise.name if self.franchise else "Global"
         return f"{self.get_category_display()} - {self.title} ({franchise_name})"
+
+
+class FranchiseDocumentCategory(models.TextChoices):
+    SOP = "SOP", "Standard Operating Procedures (SOP)"
+    INFRASTRUCTURE_MANUAL = "INFRASTRUCTURE_MANUAL", "Infrastructure Manual & Purchase List"
+    FORMATS = "FORMATS", "Formats"
+    LEASE_AGREEMENT_DOCUMENTS = "LEASE_AGREEMENT_DOCUMENTS", "Lease Agreement Documents"
+    INDENT_DOCUMENTS = "INDENT_DOCUMENTS", "Indent Documents (Inside & Outside AP)"
+    ORDERING_DOCUMENTS = "ORDERING_DOCUMENTS", "Ordering Documents (IK & SM)"
+    STUDENT_TRANSFER_POLICY = "STUDENT_TRANSFER_POLICY", "Student Transfer Policy"
+    ACADEMIC_DOCUMENTS = "ACADEMIC_DOCUMENTS", "Academic Documents"
+    REFRESHER_COURSE = "REFRESHER_COURSE", "Refresher Course"
+    AKSHARABHYASAM_SUPPORT_SHEETS = "AKSHARABHYASAM_SUPPORT_SHEETS", "Aksharabhyasam Support Sheets"
+    STUDENTS_KIT = "STUDENTS_KIT", "Students Kit"
+    FRANCHISE_REFERRAL_INCENTIVES = "FRANCHISE_REFERRAL_INCENTIVES", "Franchise Referral Incentives"
+    ROYALTY_PAYMENTS = "ROYALTY_PAYMENTS", "Royalty Payments"
+
+
+class FranchiseDocument(models.Model):
+    """
+    Resource Hub documents for franchise users.
+    - If franchise is null, document is global (same for all centres).
+    - If franchise is set, document is specific to that centre.
+    """
+
+    franchise = models.ForeignKey(
+        Franchise,
+        on_delete=models.CASCADE,
+        related_name="franchise_documents",
+        null=True,
+        blank=True,
+        help_text="Leave blank for global documents",
+    )
+    category = models.CharField(max_length=50, choices=FranchiseDocumentCategory.choices)
+    title = models.CharField(max_length=255)
+    description = models.TextField(blank=True)
+    file = models.FileField(upload_to="franchise_documents/", help_text="Upload document file (PDF/DOC/etc).")
+
+    academic_year = models.CharField(max_length=20, blank=True, help_text="Optional academic year, if applicable.")
+
+    is_active = models.BooleanField(default=True)
+    order = models.PositiveIntegerField(default=0, help_text="Display order")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["order", "-created_at"]
+        verbose_name = "Franchise Resource Document"
+        verbose_name_plural = "Franchise Resource Documents"
+
+    def __str__(self):
+        franchise_name = self.franchise.name if self.franchise else "Global"
+        return f"{self.get_category_display()} - {self.title} ({franchise_name})"
+
+
+class IndentRequest(models.Model):
+    """
+    Minimal workflow to support "Indents Placing" in the Franchise Resource Hub.
+    A franchise user can submit an indent request; status can be updated by admin later.
+    """
+
+    REGION_CHOICES = (
+        ("INSIDE_AP", "Inside AP"),
+        ("OUTSIDE_AP", "Outside AP"),
+    )
+
+    STATUS_CHOICES = (
+        ("pending", "Pending"),
+        ("approved", "Approved"),
+        ("rejected", "Rejected"),
+    )
+
+    franchise = models.ForeignKey(
+        Franchise,
+        on_delete=models.CASCADE,
+        related_name="indent_requests",
+    )
+    region = models.CharField(max_length=20, choices=REGION_CHOICES)
+    academic_year = models.CharField(max_length=20, blank=True)
+    notes = models.TextField(blank=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
+
+    requested_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-requested_at"]
+
+    def __str__(self):
+        return f"IndentRequest({self.franchise.name}) - {self.region} - {self.status}"
 

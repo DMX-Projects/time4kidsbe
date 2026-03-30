@@ -6,7 +6,13 @@ from django.urls import include, path, re_path
 from django.views.decorators.csrf import csrf_exempt
 from django.views.generic import RedirectView
 
-from accounts.views import CurrentUserView, CustomTokenObtainPairView, ParentLoginView
+from accounts.views import (
+    CurrentUserView,
+    CustomTokenObtainPairView,
+    ParentLoginView,
+    PasswordResetConfirmView,
+    PasswordResetRequestView,
+)
 from rest_framework_simplejwt.views import TokenRefreshView
 
 # Function to create CSRF-exempt API include
@@ -19,6 +25,8 @@ urlpatterns = [
     path("admin/", admin.site.urls),
     path("api/auth/login/", CustomTokenObtainPairView.as_view(), name="token_obtain_pair"),
     path("api/auth/parent/login/", ParentLoginView.as_view(), name="parent_login"),
+    path("api/auth/password-reset/", PasswordResetRequestView.as_view(), name="password_reset_request"),
+    path("api/auth/password-reset-confirm/", PasswordResetConfirmView.as_view(), name="password_reset_confirm"),
     path("api/auth/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
     path("api/auth/me/", CurrentUserView.as_view(), name="current_user"),
     path("api/accounts/", include("accounts.urls")),
