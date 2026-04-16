@@ -77,3 +77,17 @@ class EnquiryUpdateView(generics.UpdateAPIView):
     permission_classes = [IsAdminUser]
     queryset = Enquiry.objects.all()
     lookup_field = 'pk'
+
+
+class FranchiseEnquiryUpdateView(generics.UpdateAPIView):
+    """Allow franchise users to update status on their own enquiries."""
+
+    serializer_class = EnquirySerializer
+    permission_classes = [IsFranchiseUser]
+    lookup_field = "pk"
+
+    def get_queryset(self):
+        franchise = getattr(self.request.user, "franchise_profile", None)
+        if not franchise:
+            return Enquiry.objects.none()
+        return Enquiry.objects.filter(franchise=franchise)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Script to create a parent user with login credentials"""
+"""DEV ONLY: create sample franchise/parent users. Do not run on production — live centres already have franchise logins."""
 import os
 import django
 

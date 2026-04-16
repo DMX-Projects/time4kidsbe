@@ -1,5 +1,8 @@
 """Parent portal: homework, announcements, attendance, fees, transport, support tickets."""
 
+import threading
+
+from django.db import transaction
 from django.db.models import Q
 from rest_framework import generics
 from rest_framework.exceptions import PermissionDenied
@@ -189,7 +192,15 @@ class FranchiseAnnouncementListCreateView(generics.ListCreateAPIView):
         f = getattr(self.request.user, "franchise_profile", None)
         if not f:
             raise PermissionDenied("Franchise profile not found")
-        serializer.save(franchise=f)
+        announcement = serializer.save(franchise=f)
+        pk = announcement.pk
+
+        def _email_parents() -> None:
+            from students.emails import notify_parents_new_announcement_by_id
+
+            notify_parents_new_announcement_by_id(pk)
+
+        transaction.on_commit(lambda: threading.Thread(target=_email_parents, daemon=True).start())
 
 
 class FranchiseAnnouncementDetailView(generics.RetrieveUpdateDestroyAPIView):

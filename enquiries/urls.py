@@ -1,6 +1,13 @@
 from django.urls import path
 
-from .views import AdminAllEnquiryListView, AdminEnquiryListView, EnquiryCreateView, FranchiseEnquiryListView, EnquiryUpdateView
+from .views import (
+    AdminAllEnquiryListView,
+    AdminEnquiryListView,
+    EnquiryCreateView,
+    EnquiryUpdateView,
+    FranchiseEnquiryListView,
+    FranchiseEnquiryUpdateView,
+)
 
 urlpatterns = [
     path("submit/", EnquiryCreateView.as_view(), name="enquiry-create"),
@@ -8,4 +15,5 @@ urlpatterns = [
     path("admin/all/", AdminAllEnquiryListView.as_view(), name="enquiry-admin-all-list"),
     path("admin/<int:pk>/", EnquiryUpdateView.as_view(), name="enquiry-update"),
     path("franchise/", FranchiseEnquiryListView.as_view(), name="enquiry-franchise-list"),
+    path("franchise/<int:pk>/", FranchiseEnquiryUpdateView.as_view(), name="enquiry-franchise-update"),
 ]

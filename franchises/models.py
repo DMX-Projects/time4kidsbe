@@ -156,7 +156,10 @@ class ParentProfile(models.Model):
     address = models.TextField(blank=True, default="")
     city = models.CharField(max_length=100, blank=True, default="")
     photo_url = models.URLField(blank=True, default="", max_length=500)
-    notifications_muted = models.BooleanField(default=False, help_text="Parent preference: mute in-app announcement highlights")
+    notifications_muted = models.BooleanField(
+        default=False,
+        help_text="If true, parents do not receive announcement emails and in-app highlights are muted.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

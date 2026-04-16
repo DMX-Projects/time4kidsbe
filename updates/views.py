@@ -4,7 +4,8 @@ from rest_framework.permissions import AllowAny
 from rest_framework.exceptions import PermissionDenied
 from .models import Update, SocialMediaUpload
 from .serializers import UpdateSerializer, SocialMediaUploadSerializer
-from accounts.permissions import IsFranchiseUser, IsAdminUser
+from accounts.models import UserRole
+from accounts.permissions import IsFranchiseUser, IsAdminOrApproverUser
 
 class UpdateViewSet(viewsets.ModelViewSet):
     queryset = Update.objects.all()
@@ -23,9 +24,14 @@ class UpdateViewSet(viewsets.ModelViewSet):
         # Filter by logged-in user's franchise (for dashboard)
         user = self.request.user
         if user.is_authenticated and hasattr(user, 'franchise_profile'):
-             return queryset.filter(franchise=user.franchise_profile)
-        
-        return queryset
+            return queryset.filter(franchise=user.franchise_profile)
+
+        # Head office dashboards (full list for admin UI)
+        if user.is_authenticated and getattr(user, "role", None) in (UserRole.ADMIN, UserRole.APPROVER):
+            return queryset
+
+        # Public and other roles: main-site slides only (no franchise on row)
+        return queryset.filter(franchise__isnull=True, is_active=True)
 
     def perform_create(self, serializer):
         user = self.request.user
@@ -59,7 +65,7 @@ class AdminSocialMediaUploadListView(generics.ListAPIView):
     """Admin lists all uploads and can review by status."""
 
     serializer_class = SocialMediaUploadSerializer
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsAdminOrApproverUser]
 
     def get_queryset(self):
         status = self.request.query_params.get("status")
@@ -73,5 +79,5 @@ class AdminSocialMediaUploadUpdateView(generics.UpdateAPIView):
     """Admin approves/rejects uploads by PATCHing status and notes."""
 
     serializer_class = SocialMediaUploadSerializer
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsAdminOrApproverUser]
     queryset = SocialMediaUpload.objects.all().order_by("-created_at")
