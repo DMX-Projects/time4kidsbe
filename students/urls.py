@@ -17,6 +17,7 @@ from .portal_views import (
     ParentAttendanceListView,
     ParentFeeListView,
     ParentHomeworkListView,
+    ParentGradeListView,
     ParentSupportTicketListCreateView,
     ParentTransportListView,
 )
@@ -42,6 +43,7 @@ urlpatterns = [
     path("parent/students/<int:student_id>/grades/", ParentStudentGradesView.as_view(), name="parent-student-grades"),
     path("parent/achievements/", ParentAchievementListView.as_view(), name="parent-achievements"),
     path("parent/homework/", ParentHomeworkListView.as_view(), name="parent-homework"),
+    path("parent/grades/", ParentGradeListView.as_view(), name="parent-grades-all"),
     path("parent/announcements/", ParentAnnouncementListView.as_view(), name="parent-announcements"),
     path("parent/attendance/", ParentAttendanceListView.as_view(), name="parent-attendance"),
     path("parent/fees/", ParentFeeListView.as_view(), name="parent-fees"),
@@ -50,6 +52,7 @@ urlpatterns = [
     path("franchise/students/", FranchiseStudentListCreateView.as_view(), name="franchise-students"),
     path("franchise/students/mini/", FranchiseStudentMiniListView.as_view(), name="franchise-students-mini"),
     path("franchise/students/<int:pk>/", FranchiseStudentDetailView.as_view(), name="franchise-student-detail"),
+    path("franchise/students-mini/", FranchiseStudentMiniListView.as_view(), name="franchise-students-mini-alt"),
     path("franchise/grades/", FranchiseGradeListCreateView.as_view(), name="franchise-grades"),
     path("franchise/grades/<int:pk>/", FranchiseGradeDetailView.as_view(), name="franchise-grade-detail"),
     path("franchise/achievements/", FranchiseAchievementListCreateView.as_view(), name="franchise-achievements"),

@@ -13,6 +13,7 @@ from .models import (
     Announcement,
     AttendanceRecord,
     FeeRecord,
+    Grade,
     HomeworkAssignment,
     StudentProfile,
     SupportTicket,
@@ -22,6 +23,7 @@ from .serializers import (
     AnnouncementSerializer,
     AttendanceRecordSerializer,
     FeeRecordSerializer,
+    GradeSerializer,
     HomeworkAssignmentSerializer,
     SupportTicketFranchiseSerializer,
     SupportTicketParentSerializer,
@@ -104,6 +106,21 @@ class ParentFeeListView(generics.ListAPIView):
             .order_by("-due_date", "-created_at")
         )
 
+
+class ParentGradeListView(generics.ListAPIView):
+    permission_classes = [IsParentUser]
+    serializer_class = GradeSerializer
+    pagination_class = None
+
+    def get_queryset(self):
+        pp = getattr(self.request.user, "parent_profile", None)
+        if not pp:
+            return Grade.objects.none()
+        return (
+            Grade.objects.filter(student__parent=pp, student__is_active=True)
+            .select_related("student")
+            .order_by("-exam_date", "subject")
+        )
 
 class ParentTransportListView(generics.ListAPIView):
     permission_classes = [IsParentUser]
@@ -223,11 +240,15 @@ class FranchiseAttendanceListCreateView(generics.ListCreateAPIView):
         f = getattr(self.request.user, "franchise_profile", None)
         if not f:
             return AttendanceRecord.objects.none()
-        return (
-            AttendanceRecord.objects.filter(student__parent__franchise=f)
-            .select_related("student")
-            .order_by("-date", "student_id")
-        )
+        
+        queryset = AttendanceRecord.objects.filter(student__parent__franchise=f)
+        
+        # Optional date filtering
+        date_str = self.request.query_params.get('date')
+        if date_str:
+            queryset = queryset.filter(date=date_str)
+            
+        return queryset.select_related("student").order_by("-date", "student_id")
 
     def get_serializer_context(self):
         c = super().get_serializer_context()

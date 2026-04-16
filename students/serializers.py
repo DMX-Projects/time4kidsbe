@@ -18,26 +18,46 @@ from common.fields import RelativeImageField
 class GradeSerializer(serializers.ModelSerializer):
     percentage = serializers.ReadOnlyField()
     student = serializers.PrimaryKeyRelatedField(queryset=StudentProfile.objects.all())
+    student_name = serializers.CharField(source="student.full_name", read_only=True)
 
     class Meta:
         model = Grade
-        fields = ['id', 'student', 'subject', 'exam_type', 'marks_obtained', 'total_marks',
-                  'grade', 'percentage', 'exam_date', 'remarks', 'created_at']
-        read_only_fields = ['id', 'created_at']
+        fields = [
+            "id",
+            "student",
+            "student_name",
+            "subject",
+            "exam_type",
+            "marks_obtained",
+            "total_marks",
+            "grade",
+            "percentage",
+            "exam_date",
+            "remarks",
+            "created_at",
+        ]
+        read_only_fields = ["id", "created_at", "student_name"]
+
+    def validate_student(self, value):
+        request = self.context.get("request")
+        franchise = getattr(getattr(request, "user", None), "franchise_profile", None)
+        if not franchise or value.parent.franchise_id != franchise.id:
+            raise serializers.ValidationError("Student is not enrolled at your centre.")
+        return value
 
 
 class StudentProfileSerializer(serializers.ModelSerializer):
     profile_picture = RelativeImageField(required=False, allow_null=True)
     full_name = serializers.ReadOnlyField()
-    parent_info = serializers.SerializerMethodField()
-    grades_count = serializers.SerializerMethodField()
+    parent_info = serializers.SerializerMethodField(read_only=True)
+    grades_count = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = StudentProfile
-        fields = ['id', 'first_name', 'last_name', 'full_name', 'class_name', 
+        fields = ['id', 'parent', 'first_name', 'last_name', 'full_name', 'class_name', 
                   'roll_number', 'date_of_birth', 'admission_date', 'profile_picture',
                   'is_active', 'parent_info', 'grades_count', 'created_at', 'updated_at']
-        read_only_fields = ['id', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at', 'parent_info', 'grades_count']
 
     def get_parent_info(self, obj):
         return {
