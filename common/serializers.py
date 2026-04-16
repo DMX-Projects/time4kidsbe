@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import HeroSlide, Holiday
+from .models import HeroSlide, Holiday, HomeTestimonial
 from .fields import RelativeImageField, RelativeFileField
 
 class HeroSlideSerializer(serializers.ModelSerializer):
@@ -9,6 +9,24 @@ class HeroSlideSerializer(serializers.ModelSerializer):
     class Meta:
         model = HeroSlide
         fields = '__all__'
+
+
+class HomeTestimonialSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = HomeTestimonial
+        fields = [
+            "id",
+            "text",
+            "author",
+            "relation",
+            "location",
+            "rating",
+            "order",
+            "is_active",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at"]
 
 
 class HolidaySerializer(serializers.ModelSerializer):

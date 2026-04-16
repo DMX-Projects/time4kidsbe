@@ -183,24 +183,14 @@ class PublicFranchiseListView(generics.ListAPIView):
 
 
 class PublicStatsView(generics.GenericAPIView):
-    """Return dynamic stats for the home page with realistic baselines."""
+    """Public marketing stats for the home page and related UI."""
     permission_classes = [permissions.AllowAny]
 
     def get(self, request, *args, **kwargs):
-        # Calculate real database counts
-        real_schools = Franchise.objects.filter(is_active=True).count()
-        real_cities = FranchiseLocation.objects.filter(is_active=True).count() # Changed to count of active Locations
-        real_students = ParentProfile.objects.count()
-
-        # Business logic: Use real counts for schools and cities to match other views.
-        # Keep baseline for students as requested.
-        
-        baseline_students = 50000
-
         return Response({
-            'total_schools': real_schools,
-            'total_cities': real_cities,
-            'total_students': baseline_students + real_students
+            'total_schools': 250,
+            'total_cities': 50,
+            'total_students': 100000,
         })
 
 

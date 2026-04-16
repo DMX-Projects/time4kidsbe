@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from franchises.models import ParentProfile
 
 from .models import (
     Announcement,
@@ -16,13 +17,26 @@ from common.fields import RelativeImageField
 
 class GradeSerializer(serializers.ModelSerializer):
     percentage = serializers.ReadOnlyField()
+    student = serializers.PrimaryKeyRelatedField(queryset=StudentProfile.objects.all())
     student_name = serializers.CharField(source="student.full_name", read_only=True)
 
     class Meta:
         model = Grade
-        fields = ['id', 'student', 'student_name', 'subject', 'exam_type', 'marks_obtained', 'total_marks', 
-                  'grade', 'percentage', 'exam_date', 'remarks', 'created_at']
-        read_only_fields = ['id', 'created_at', 'student_name']
+        fields = [
+            "id",
+            "student",
+            "student_name",
+            "subject",
+            "exam_type",
+            "marks_obtained",
+            "total_marks",
+            "grade",
+            "percentage",
+            "exam_date",
+            "remarks",
+            "created_at",
+        ]
+        read_only_fields = ["id", "created_at", "student_name"]
 
     def validate_student(self, value):
         request = self.context.get("request")
@@ -70,6 +84,36 @@ class StudentMiniSerializer(serializers.ModelSerializer):
     class Meta:
         model = StudentProfile
         fields = ["id", "full_name", "class_name", "roll_number"]
+
+
+class FranchiseStudentSerializer(serializers.ModelSerializer):
+    full_name = serializers.ReadOnlyField()
+    parent = serializers.PrimaryKeyRelatedField(queryset=ParentProfile.objects.all())
+
+    class Meta:
+        model = StudentProfile
+        fields = [
+            "id",
+            "parent",
+            "first_name",
+            "last_name",
+            "full_name",
+            "class_name",
+            "roll_number",
+            "date_of_birth",
+            "admission_date",
+            "is_active",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at", "full_name"]
+
+    def validate_parent(self, value):
+        request = self.context.get("request")
+        franchise = getattr(getattr(request, "user", None), "franchise_profile", None)
+        if not franchise or value.franchise_id != franchise.id:
+            raise serializers.ValidationError("Parent is not assigned to your centre.")
+        return value
 
 
 class StudentAchievementSerializer(serializers.ModelSerializer):

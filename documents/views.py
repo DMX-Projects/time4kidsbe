@@ -3,7 +3,7 @@ from rest_framework import generics
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework.exceptions import PermissionDenied
-from accounts.permissions import IsFranchiseUser, IsParentUser, IsAdminUser
+from accounts.permissions import IsFranchiseUser, IsParentUser, IsAdminOrApproverUser
 from .models import ParentDocument, DocumentCategory, FranchiseDocument, FranchiseDocumentCategory, IndentRequest
 from .serializers import ParentDocumentSerializer, FranchiseDocumentSerializer, IndentRequestSerializer
 
@@ -144,7 +144,7 @@ class AdminIndentRequestListView(generics.ListAPIView):
     """Admin can view indent requests from all franchises."""
 
     serializer_class = IndentRequestSerializer
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsAdminOrApproverUser]
 
     def get_queryset(self):
         return IndentRequest.objects.all().order_by("-requested_at")
@@ -154,6 +154,6 @@ class AdminIndentRequestUpdateView(generics.UpdateAPIView):
     """Admin can approve/reject an indent request."""
 
     serializer_class = IndentRequestSerializer
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsAdminOrApproverUser]
     queryset = IndentRequest.objects.all().order_by("-requested_at")
 

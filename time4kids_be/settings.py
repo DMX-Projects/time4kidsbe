@@ -199,6 +199,9 @@ SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY", "")
 MAIL_FROM_ADDRESS = os.getenv("MAIL_FROM_ADDRESS", "info@time4education.com")
 MAIL_TO_ADDRESS = os.getenv("MAIL_TO_ADDRESS", "mdsahilkhan634@gmail.com")
 
+# Public URL of the Next.js site (for links in parent announcement emails)
+PUBLIC_SITE_URL = os.getenv("PUBLIC_SITE_URL", "http://localhost:3000").rstrip("/")
+
 # CSRF Configuration - must include scheme (http:// or https://)
 csrf_origins = os.getenv("CSRF_TRUSTED_ORIGINS", "http://localhost:3000")
 CSRF_TRUSTED_ORIGINS = [

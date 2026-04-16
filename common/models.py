@@ -18,6 +18,28 @@ class HeroSlide(models.Model):
         return f"Hero Slide {self.id} - {self.alt_text}"
 
 
+class HomeTestimonial(models.Model):
+    """Quote testimonials on the public home page (curved slider)."""
+
+    text = models.TextField()
+    author = models.CharField(max_length=200)
+    relation = models.CharField(max_length=200, blank=True)
+    location = models.CharField(max_length=200, blank=True)
+    rating = models.PositiveSmallIntegerField(default=5)
+    order = models.PositiveIntegerField(default=0)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["order", "id"]
+        verbose_name = "Home testimonial"
+        verbose_name_plural = "Home testimonials"
+
+    def __str__(self):
+        return f"{self.author}: {self.text[:40]}…"
+
+
 class Holiday(models.Model):
     class State(models.TextChoices):
         ANDHRA_PRADESH = "AP", "Andhra Pradesh"

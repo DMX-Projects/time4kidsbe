@@ -6,6 +6,7 @@ from django.utils import timezone
 
 class UserRole(models.TextChoices):
     ADMIN = "ADMIN", "Admin"
+    APPROVER = "APPROVER", "Approver"
     FRANCHISE = "FRANCHISE", "Franchise"
     PARENT = "PARENT", "Parent"
 
@@ -54,6 +55,10 @@ class User(AbstractBaseUser, PermissionsMixin):
     @property
     def is_admin(self) -> bool:
         return self.role == UserRole.ADMIN
+
+    @property
+    def is_approver(self) -> bool:
+        return self.role == UserRole.APPROVER
 
     @property
     def is_franchise(self) -> bool:
