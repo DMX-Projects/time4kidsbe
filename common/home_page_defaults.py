@@ -1,5 +1,58 @@
 """Default JSON for `HomePageContent` — mirrors current static homepage sections."""
 
+import copy
+import re
+
+
+def _is_legacy_combined_pp(program_name: str) -> bool:
+    if not program_name or not str(program_name).strip():
+        return False
+    t = str(program_name).strip()
+    one_line = " ".join(t.split()).lower()
+    if one_line in ("pp-1 & pp-2", "pp1 & pp2"):
+        return True
+    if re.search(r"pp[-\u2013]?\s*1\s*([&+]|\band\b)\s*pp[-\u2013]?\s*2", one_line, re.IGNORECASE):
+        return True
+    lines = [x.strip() for x in re.split(r"\r?\n", t) if x.strip()]
+    if len(lines) == 2:
+        if re.match(r"^PP[-\u2013]?1$", lines[0], re.IGNORECASE) and re.match(
+            r"^PP[-\u2013]?2$", lines[1], re.IGNORECASE
+        ):
+            return True
+    return False
+
+
+def normalize_home_page_data(data):
+    """Split legacy single-row PP-1+PP-2 into two programs (matches frontend merge)."""
+    if not isinstance(data, dict):
+        return data
+    out = copy.deepcopy(data)
+    pp = out.get("programs_preview")
+    if not isinstance(pp, dict):
+        return out
+    programs = pp.get("programs")
+    if not isinstance(programs, list):
+        return out
+    default_programs = DEFAULT_HOME_PAGE_DATA["programs_preview"]["programs"]
+    pp1 = next((p for p in default_programs if p.get("programName") == "PP-1"), None)
+    pp2 = next((p for p in default_programs if p.get("programName") == "PP-2"), None)
+    if not pp1 or not pp2:
+        return out
+    new_programs = []
+    for p in programs:
+        if not isinstance(p, dict):
+            new_programs.append(p)
+            continue
+        name = (p.get("programName") or "").strip()
+        if _is_legacy_combined_pp(name):
+            new_programs.append(copy.deepcopy(pp1))
+            new_programs.append(copy.deepcopy(pp2))
+        else:
+            new_programs.append(p)
+    pp["programs"] = new_programs
+    return out
+
+
 DEFAULT_HOME_PAGE_DATA: dict = {
     "key_navigation": [
         {"icon": "/icon-tour.png", "alt": "Virtual Tour", "href": "/media", "label": "Virtual\nTour", "nav_class": "nav-link1"},
@@ -58,11 +111,25 @@ DEFAULT_HOME_PAGE_DATA: dict = {
             },
             {
                 "image": "/1.png",
-                "programName": "PP-1 & PP-2",
-                "ageGroup": "4 - 6 years",
-                "description": "Preparing for formal schooling with comprehensive education.",
-                "color": "#6cc3d5",
+                "programName": "PP-1",
+                "ageGroup": "4 - 5 years",
+                "description": (
+                    "Expanding from school to the world around — curious, interactive, "
+                    "and building strong foundations."
+                ),
+                "color": "#e74c3c",
                 "yOffset": "-30px",
+            },
+            {
+                "image": "/11.png",
+                "programName": "PP-2",
+                "ageGroup": "5 - 6 years",
+                "description": (
+                    "Confident learners ready for formal schooling — communication, "
+                    "independence, and core skills."
+                ),
+                "color": "#2980b9",
+                "yOffset": "20px",
             },
             {
                 "image": "/images/landing-banner.jpg",
