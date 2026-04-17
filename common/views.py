@@ -8,7 +8,7 @@ from accounts.models import UserRole
 from accounts.permissions import IsAdminUser
 from .models import HeroSlide, HomeTestimonial, HomePageContent
 from .serializers import HeroSlideSerializer, HomeTestimonialSerializer
-from .home_page_defaults import DEFAULT_HOME_PAGE_DATA
+from .home_page_defaults import DEFAULT_HOME_PAGE_DATA, normalize_home_page_data
 
 
 class HeroSlideViewSet(viewsets.ModelViewSet):
@@ -56,7 +56,7 @@ class HomePageContentView(APIView):
         if not obj.data:
             obj.data = DEFAULT_HOME_PAGE_DATA
             obj.save(update_fields=["data", "updated_at"])
-        return Response(obj.data)
+        return Response(normalize_home_page_data(obj.data))
 
     def put(self, request):
         body = request.data
@@ -76,4 +76,4 @@ class HomePageContentResetView(APIView):
             pk=1,
             defaults={"data": DEFAULT_HOME_PAGE_DATA},
         )
-        return Response(obj.data)
+        return Response(normalize_home_page_data(obj.data))
