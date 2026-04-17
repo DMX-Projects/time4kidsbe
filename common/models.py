@@ -19,7 +19,7 @@ class HeroSlide(models.Model):
 
 
 class HomeTestimonial(models.Model):
-    """Quote testimonials on the public home page (curved slider)."""
+    """Parent quotes on the public home page (horizontal testimonial section)."""
 
     text = models.TextField()
     author = models.CharField(max_length=200)
@@ -88,3 +88,17 @@ class Holiday(models.Model):
     def __str__(self):
         title = self.title or self.get_state_display()
         return f"{title} ({self.academic_year})"
+
+
+class HomePageContent(models.Model):
+    """Singleton (use pk=1): JSON for marketing sections on the main homepage."""
+
+    data = models.JSONField(default=dict)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Home page content"
+        verbose_name_plural = "Home page content"
+
+    def __str__(self):
+        return "Home page content"
