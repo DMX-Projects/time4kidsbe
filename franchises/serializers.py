@@ -1,3 +1,4 @@
+from django.db import IntegrityError, transaction
 from django.utils.text import slugify
 from rest_framework import serializers
 
@@ -219,12 +220,35 @@ class ParentSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "user", "franchise", "created_at"]
 
     def create(self, validated_data):
+        franchise = self.context.get("franchise")
+        if franchise is None:
+            raise serializers.ValidationError(
+                {
+                    "detail": "This login is not linked to a centre (franchise). "
+                    "Use the centre/franchise login, or contact support to fix the account."
+                }
+            )
+
         email = validated_data.pop("email")
         password = validated_data.pop("password")
         full_name = validated_data.pop("full_name")
-        franchise = self.context.get("franchise")
-        user = User.objects.create_user(email=email, password=password, full_name=full_name, role=UserRole.PARENT)
-        parent = ParentProfile.objects.create(user=user, franchise=franchise, **validated_data)
+
+        try:
+            with transaction.atomic():
+                user = User.objects.create_user(
+                    email=email, password=password, full_name=full_name, role=UserRole.PARENT
+                )
+                parent = ParentProfile.objects.create(user=user, franchise=franchise, **validated_data)
+        except IntegrityError as exc:
+            err = str(exc).lower()
+            if "email" in err or "accounts_user_email" in err:
+                raise serializers.ValidationError(
+                    {"email": "An account with this email already exists. Use a different email or reset password."}
+                ) from exc
+            raise serializers.ValidationError(
+                {"detail": "Could not create this parent record (duplicate or invalid data)."}
+            ) from exc
+
         return parent
 
 
