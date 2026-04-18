@@ -15,6 +15,7 @@ from accounts.permissions import IsAdminUser, IsParentUser
 from .serializers import CustomTokenObtainPairSerializer, ParentTokenObtainPairSerializer, UserSerializer
 from .models import User
 from django.contrib.auth.password_validation import validate_password
+from django.db.models import Q
 
 
 class AdminStatsView(APIView):
@@ -25,9 +26,16 @@ class AdminStatsView(APIView):
         from franchises.models import Franchise, ParentProfile
 
         admin_user = request.user
+        # Site-wide active accounts (all roles)
         active_users = User.objects.filter(is_active=True).count()
-        franchise_count = Franchise.objects.filter(admin=admin_user).count()
-        enquiries_count = Enquiry.objects.filter(franchise__admin=admin_user).count()
+        # Match AdminFranchiseViewSet list: all franchises an admin may manage
+        franchise_count = Franchise.objects.count()
+        # Global enquiries + enquiries tied to franchises owned by this admin
+        enquiries_count = (
+            Enquiry.objects.filter(Q(franchise__isnull=True) | Q(franchise__admin=admin_user))
+            .distinct()
+            .count()
+        )
         parents_count = ParentProfile.objects.filter(franchise__admin=admin_user).count()
 
         return Response(

@@ -1,6 +1,7 @@
 from django.conf import settings
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
+from django.db.models import Q
 from rest_framework import generics, permissions
 
 from accounts.permissions import IsAdminUser, IsFranchiseUser
@@ -42,9 +43,12 @@ class AdminEnquiryListView(generics.ListAPIView):
     permission_classes = [IsAdminUser]
 
     def get_queryset(self):
-        # Admin should only see global enquiries (no franchise linked)
-        # This prevents seeing duplicates that are assigned to franchises
-        return Enquiry.objects.filter(franchise__isnull=True)
+        admin_user = self.request.user
+        return (
+            Enquiry.objects.filter(Q(franchise__isnull=True) | Q(franchise__admin=admin_user))
+            .select_related("franchise")
+            .order_by("-created_at")
+        )
 
 
 class FranchiseEnquiryListView(generics.ListAPIView):
@@ -63,8 +67,10 @@ class AdminAllEnquiryListView(generics.ListAPIView):
     permission_classes = [IsAdminUser]
 
     def get_queryset(self):
-        # Admin should only see global enquiries (no franchise linked)
-        qs = Enquiry.objects.filter(franchise__isnull=True)
+        admin_user = self.request.user
+        qs = Enquiry.objects.filter(Q(franchise__isnull=True) | Q(franchise__admin=admin_user)).select_related(
+            "franchise"
+        )
         enquiry_type = self.request.query_params.get("type")
         if enquiry_type:
             qs = qs.filter(enquiry_type=enquiry_type)
