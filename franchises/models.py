@@ -142,11 +142,26 @@ class Franchise(models.Model):
 
     def save(self, *args, **kwargs):
         if not self.slug:
-            self.slug = slugify(self.name)
+            self.slug = slugify(self.name) or "franchise"
+        base_slug = self.slug
+        slug = base_slug
+        counter = 1
+        qs = Franchise.objects.exclude(pk=self.pk) if self.pk else Franchise.objects.all()
+        while qs.filter(slug=slug).exists():
+            slug = f"{base_slug}-{counter}"
+            counter += 1
+        self.slug = slug
         super().save(*args, **kwargs)
 
     def __str__(self) -> str:
-        return f"{self.name} ({self.admin.email})"
+        name = (self.name or "").strip() or "(unnamed centre)"
+        if not self.admin_id:
+            return f"{name} (no admin)"
+        try:
+            admin_label = self.admin.email
+        except User.DoesNotExist:
+            admin_label = f"missing user #{self.admin_id}"
+        return f"{name} ({admin_label})"
 
 
 class ParentProfile(models.Model):
@@ -170,7 +185,23 @@ class ParentProfile(models.Model):
         verbose_name_plural = "Parents"
 
     def __str__(self) -> str:
-        return f"Parent {self.user.full_name} - {self.franchise.name}"
+        if not self.user_id:
+            label = "(no user)"
+        else:
+            try:
+                fn = (self.user.full_name or "").strip() or self.user.email
+            except User.DoesNotExist:
+                label = f"missing user #{self.user_id}"
+            else:
+                label = fn
+        if not self.franchise_id:
+            centre = "(no franchise)"
+        else:
+            try:
+                centre = self.franchise.name
+            except Franchise.DoesNotExist:
+                centre = f"missing franchise #{self.franchise_id}"
+        return f"Parent {label} - {centre}"
 
     @property
     def admin(self) -> User:

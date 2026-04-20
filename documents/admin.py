@@ -1,10 +1,13 @@
 from django.contrib import admin
-from .models import ParentDocument, FranchiseDocument
+
+from franchises.models import Franchise
+
+from .models import FranchiseDocument, ParentDocument
 
 
 @admin.register(ParentDocument)
 class ParentDocumentAdmin(admin.ModelAdmin):
-    list_display = ('get_display_title', 'category', 'franchise', 'is_active', 'order', 'created_at')
+    list_display = ("get_display_title", "category", "display_franchise", "is_active", "order", "created_at")
     list_filter = ('category', 'franchise', 'is_active', 'state', 'created_at')
     search_fields = ('title', 'description', 'academic_year', 'state')
     list_editable = ('is_active', 'order')
@@ -31,12 +34,23 @@ class ParentDocumentAdmin(admin.ModelAdmin):
     
     def get_display_title(self, obj):
         """Display title with state/academic year for holiday lists"""
-        if obj.category == 'HOLIDAY_LISTS':
-            state_display = obj.get_state_display() if obj.state else ''
-            year = f" ({obj.academic_year})" if obj.academic_year else ''
-            return f"{obj.title or state_display}{year}"
-        return obj.title
+        raw_title = (obj.title or "").strip() if obj.title is not None else ""
+        if obj.category == "HOLIDAY_LISTS":
+            state_display = obj.get_state_display() if obj.state else ""
+            year = f" ({obj.academic_year})" if obj.academic_year else ""
+            return f"{raw_title or state_display}{year}" or "(untitled)"
+        return raw_title or "(untitled)"
     get_display_title.short_description = 'Title'
+
+    def display_franchise(self, obj: ParentDocument):
+        if not obj.franchise_id:
+            return "Global"
+        try:
+            return obj.franchise.name
+        except Franchise.DoesNotExist:
+            return f"(missing #{obj.franchise_id})"
+
+    display_franchise.short_description = "Franchise"
     
     def get_queryset(self, request):
         qs = super().get_queryset(request)
@@ -82,7 +96,12 @@ class FranchiseDocumentAdmin(admin.ModelAdmin):
     )
 
     def display_franchise(self, obj: FranchiseDocument):
-        return obj.franchise.name if obj.franchise else "Global"
+        if not obj.franchise_id:
+            return "Global"
+        try:
+            return obj.franchise.name
+        except Franchise.DoesNotExist:
+            return f"(missing #{obj.franchise_id})"
 
     display_franchise.short_description = "Franchise"
 

@@ -1,4 +1,22 @@
+import json
+
 from django.db import models
+
+
+class HomePageJSONField(models.JSONField):
+    """
+    Tolerate malformed or legacy JSON in `HomePageContent.data` so admin and ORM
+    reads do not return 500 (PostgreSQL/SQLite can still store bad values if
+    written outside Django).
+    """
+
+    def from_db_value(self, value, expression, connection):
+        if value in (None, ""):
+            return {}
+        try:
+            return super().from_db_value(value, expression, connection)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {}
 
 
 class HeroSlide(models.Model):
@@ -36,8 +54,12 @@ class HomeTestimonial(models.Model):
         verbose_name = "Home testimonial"
         verbose_name_plural = "Home testimonials"
 
-    def __str__(self):
-        return f"{self.author}: {self.text[:40]}…"
+    def __str__(self) -> str:
+        author = (self.author or "").strip() or "(no author)"
+        raw = self.text
+        body = raw if isinstance(raw, str) else ("" if raw is None else str(raw))
+        snippet = (body[:40] + "...") if len(body) > 40 else body
+        return f"{author}: {snippet}"
 
 
 class Holiday(models.Model):
@@ -93,12 +115,12 @@ class Holiday(models.Model):
 class HomePageContent(models.Model):
     """Singleton (use pk=1): JSON for marketing sections on the main homepage."""
 
-    data = models.JSONField(default=dict)
+    data = HomePageJSONField(default=dict)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         verbose_name = "Home page content"
         verbose_name_plural = "Home page content"
 
-    def __str__(self):
-        return "Home page content"
+    def __str__(self) -> str:
+        return f"Home page content (pk={self.pk})" if self.pk else "Home page content (new)"
