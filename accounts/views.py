@@ -12,6 +12,8 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenObtainPairView
 
 from accounts.permissions import IsAdminUser, IsParentUser
+from accounts.profile_access import parent_profile_for_user
+
 from .serializers import CustomTokenObtainPairSerializer, ParentTokenObtainPairSerializer, UserSerializer
 from .models import User
 from django.contrib.auth.password_validation import validate_password
@@ -177,7 +179,7 @@ class ParentSelfProfileView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsParentUser]
 
     def get(self, request):
-        pp = getattr(request.user, "parent_profile", None)
+        pp = parent_profile_for_user(request.user)
         if not pp:
             return Response({"detail": "Parent profile not found"}, status=404)
         f = pp.franchise
@@ -199,7 +201,7 @@ class ParentSelfProfileView(APIView):
 
     def patch(self, request):
         user = request.user
-        pp = getattr(user, "parent_profile", None)
+        pp = parent_profile_for_user(user)
         if not pp:
             return Response({"detail": "Parent profile not found"}, status=404)
 

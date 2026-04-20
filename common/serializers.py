@@ -28,6 +28,21 @@ class HomeTestimonialSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["id", "created_at", "updated_at"]
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        for key in ("text", "author", "relation", "location"):
+            val = data.get(key)
+            if val is None:
+                data[key] = ""
+            elif not isinstance(val, str):
+                data[key] = str(val)
+        try:
+            r = int(data.get("rating", 5))
+        except (TypeError, ValueError):
+            r = 5
+        data["rating"] = max(1, min(5, r))
+        return data
+
 
 class HolidaySerializer(serializers.ModelSerializer):
     document = RelativeFileField()

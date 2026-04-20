@@ -4,7 +4,10 @@ class RelativeImageField(serializers.ImageField):
     def to_representation(self, value):
         if not value:
             return None
-        url = super().to_representation(value)
+        try:
+            url = super().to_representation(value)
+        except (OSError, ValueError, AttributeError):
+            return None
         # If the URL is absolute (contains http/https), strip the domain
         if url and "http" in url:
             from django.conf import settings
@@ -14,7 +17,7 @@ class RelativeImageField(serializers.ImageField):
             # However, simpler approach: return value.url directly if available.
             try:
                 return value.url
-            except AttributeError:
+            except (AttributeError, OSError, ValueError):
                 pass
         return url
 
@@ -22,10 +25,13 @@ class RelativeFileField(serializers.FileField):
     def to_representation(self, value):
         if not value:
             return None
-        url = super().to_representation(value)
+        try:
+            url = super().to_representation(value)
+        except (OSError, ValueError, AttributeError):
+            return None
         if url and "http" in url:
             try:
                 return value.url
-            except AttributeError:
+            except (AttributeError, OSError, ValueError):
                 pass
         return url

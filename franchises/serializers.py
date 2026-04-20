@@ -81,9 +81,39 @@ class FranchiseLocationSerializer(serializers.ModelSerializer):
 
 
 class FranchiseSerializer(serializers.ModelSerializer):
-    admin = UserSerializer(read_only=True)
-    user = UserSerializer(read_only=True)
+    admin = serializers.SerializerMethodField()
+    user = serializers.SerializerMethodField()
     hero_image = RelativeImageField(required=False, allow_null=True)
+
+    def get_admin(self, obj: Franchise):
+        if not obj.admin_id:
+            return None
+        try:
+            return UserSerializer(obj.admin).data
+        except User.DoesNotExist:
+            return {
+                "id": obj.admin_id,
+                "email": "",
+                "username": None,
+                "full_name": f"(missing user #{obj.admin_id})",
+                "role": None,
+                "is_active": False,
+            }
+
+    def get_user(self, obj: Franchise):
+        if not obj.user_id:
+            return None
+        try:
+            return UserSerializer(obj.user).data
+        except User.DoesNotExist:
+            return {
+                "id": obj.user_id,
+                "email": "",
+                "username": None,
+                "full_name": f"(missing user #{obj.user_id})",
+                "role": None,
+                "is_active": False,
+            }
 
     class Meta:
         model = Franchise
@@ -139,17 +169,28 @@ class FranchiseCreateSerializer(FranchiseSerializer):
             "franchise_password",
             "franchise_full_name",
         ]
+        extra_kwargs = {
+            **FranchiseSerializer.Meta.extra_kwargs,
+            "city": {"required": False, "allow_blank": True},
+            "contact_email": {"required": False, "allow_blank": True},
+            "contact_phone": {"required": False, "allow_blank": True},
+        }
 
     def validate(self, attrs):
-        required_fields = [
-            "name",
-            "city",
-            "contact_email",
-            "contact_phone",
-        ]
-        missing = [f for f in required_fields if not attrs.get(f)]
-        if missing:
-            raise serializers.ValidationError({"detail": f"Missing required fields: {', '.join(missing)}"})
+        for key in list(attrs.keys()):
+            val = attrs.get(key)
+            if isinstance(val, str):
+                attrs[key] = val.strip()
+        if not attrs.get("name"):
+            raise serializers.ValidationError({"name": "This field is required."})
+        if not attrs.get("franchise_full_name"):
+            raise serializers.ValidationError({"franchise_full_name": "This field is required."})
+        if not attrs.get("contact_email"):
+            attrs["contact_email"] = attrs.get("franchise_email") or ""
+        if attrs.get("contact_phone") is None:
+            attrs["contact_phone"] = ""
+        if not attrs.get("city"):
+            attrs["city"] = ""
         return attrs
 
     def create(self, validated_data):
@@ -167,7 +208,11 @@ class FranchiseCreateSerializer(FranchiseSerializer):
         if not admin_user:
             request = self.context.get("request")
             admin_user = request.user if request else None
-        
+        if not admin_user or not getattr(admin_user, "pk", None):
+            raise serializers.ValidationError(
+                {"detail": "An authenticated admin user is required to create a franchise."}
+            )
+
         user = User.objects.create_user(
             email=franchise_email,
             password=franchise_password,
@@ -253,7 +298,10 @@ class ParentSerializer(serializers.ModelSerializer):
 
 
 class FranchiseHeroSlideSerializer(serializers.ModelSerializer):
+    """Use RelativeImageField so missing/corrupt files on disk do not 500 list/detail JSON."""
+
     is_active = serializers.BooleanField(default=True)
+    image = RelativeImageField()
 
     class Meta:
         model = FranchiseHeroSlide

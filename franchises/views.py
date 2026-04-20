@@ -5,6 +5,7 @@ from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 
 from accounts.permissions import IsAdminUser, IsFranchiseUser
+from accounts.profile_access import franchise_profile_for_user
 from .models import Franchise, ParentProfile, FranchiseLocation, FranchiseHeroSlide, FranchiseGalleryItem
 from .serializers import (
     FranchiseCreateSerializer,
@@ -81,7 +82,7 @@ class FranchiseProfileView(generics.RetrieveUpdateAPIView):
     permission_classes = [IsFranchiseUser]
 
     def get_object(self):
-        franchise = getattr(self.request.user, "franchise_profile", None)
+        franchise = franchise_profile_for_user(self.request.user)
         if not franchise:
             raise PermissionDenied("Franchise profile not found")
         return franchise
@@ -93,18 +94,18 @@ class FranchiseParentViewSet(viewsets.ModelViewSet):
     queryset = ParentProfile.objects.select_related("user", "franchise")
 
     def get_queryset(self):
-        franchise = getattr(self.request.user, "franchise_profile", None)
+        franchise = franchise_profile_for_user(self.request.user)
         if not franchise:
             return ParentProfile.objects.none()
         return self.queryset.filter(franchise=franchise)
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
-        context["franchise"] = getattr(self.request.user, "franchise_profile", None)
+        context["franchise"] = franchise_profile_for_user(self.request.user)
         return context
 
     def perform_destroy(self, instance):
-        franchise = getattr(self.request.user, "franchise_profile", None)
+        franchise = franchise_profile_for_user(self.request.user)
         if instance.franchise != franchise:
             raise PermissionDenied("Cannot delete parent outside your franchise")
         instance.user.delete()
@@ -236,26 +237,27 @@ class FranchiseHeroSlideViewSet(viewsets.ModelViewSet):
     permission_classes = [IsFranchiseUser] # Only logged-in franchise users can manage
 
     def get_queryset(self):
-        # Return slides only for the logged-in user's franchise
-        if not hasattr(self.request.user, "franchise_profile"):
+        franchise = franchise_profile_for_user(self.request.user)
+        if not franchise:
             return FranchiseHeroSlide.objects.none()
-        return FranchiseHeroSlide.objects.filter(franchise=self.request.user.franchise_profile)
+        return FranchiseHeroSlide.objects.filter(franchise=franchise)
 
     def perform_create(self, serializer):
         import logging
+
         logger = logging.getLogger(__name__)
-        
-        try:
-            if not hasattr(self.request.user, "franchise_profile"):
-                logger.error(f"User {self.request.user.email} (role: {self.request.user.role}) has no franchise_profile")
-                raise PermissionDenied("You must be a franchise user with a valid franchise profile to create a slide.")
-            
-            franchise = self.request.user.franchise_profile
-            logger.info(f"Creating hero slide for franchise: {franchise.name}")
-            serializer.save(franchise=franchise)
-        except Exception as e:
-            logger.exception(f"Error creating hero slide: {str(e)}")
-            raise
+        franchise = franchise_profile_for_user(self.request.user)
+        if not franchise:
+            logger.error(
+                "User %s (role: %s) has no franchise_profile",
+                getattr(self.request.user, "email", ""),
+                getattr(self.request.user, "role", ""),
+            )
+            raise PermissionDenied(
+                "You must be a franchise user with a valid franchise profile to create a slide."
+            )
+        logger.info("Creating hero slide for franchise: %s", franchise.name)
+        serializer.save(franchise=franchise)
 
 
 class PublicFranchiseHeroSlideResultSet(viewsets.ReadOnlyModelViewSet):
@@ -284,13 +286,13 @@ class FranchiseGalleryItemViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         # Return items only for the logged-in user's franchise
-        franchise = getattr(self.request.user, "franchise_profile", None)
+        franchise = franchise_profile_for_user(self.request.user)
         if not franchise:
             return FranchiseGalleryItem.objects.none()
         return FranchiseGalleryItem.objects.filter(franchise=franchise)
 
     def perform_create(self, serializer):
-        franchise = getattr(self.request.user, "franchise_profile", None)
+        franchise = franchise_profile_for_user(self.request.user)
         if not franchise:
             raise PermissionDenied("You must be a franchise user to create a gallery item.")
         serializer.save(franchise=franchise)

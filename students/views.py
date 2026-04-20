@@ -7,6 +7,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.permissions import IsFranchiseUser, IsParentUser
+from accounts.profile_access import franchise_profile_for_user, parent_profile_for_user
 from events.models import Event
 
 from .models import Grade, StudentAchievement, StudentProfile
@@ -27,7 +28,7 @@ class ParentStudentListView(generics.ListAPIView):
     permission_classes = [IsParentUser]
 
     def get_queryset(self):
-        parent_profile = getattr(self.request.user, "parent_profile", None)
+        parent_profile = parent_profile_for_user(self.request.user)
         if not parent_profile:
             return StudentProfile.objects.none()
         return StudentProfile.objects.filter(
@@ -42,7 +43,7 @@ class ParentStudentDetailView(generics.RetrieveAPIView):
     permission_classes = [IsParentUser]
 
     def get_queryset(self):
-        parent_profile = getattr(self.request.user, "parent_profile", None)
+        parent_profile = parent_profile_for_user(self.request.user)
         if not parent_profile:
             return StudentProfile.objects.none()
         return StudentProfile.objects.filter(
@@ -58,7 +59,7 @@ class ParentStudentGradesView(generics.ListAPIView):
 
     def get_queryset(self):
         student_id = self.kwargs.get('student_id')
-        parent_profile = getattr(self.request.user, "parent_profile", None)
+        parent_profile = parent_profile_for_user(self.request.user)
         if not parent_profile:
             return Grade.objects.none()
         
@@ -80,7 +81,7 @@ class ParentDashboardView(APIView):
     permission_classes = [IsParentUser]
 
     def get(self, request):
-        parent_profile = getattr(request.user, "parent_profile", None)
+        parent_profile = parent_profile_for_user(request.user)
         if not parent_profile:
             return Response({"error": "Parent profile not found"}, status=404)
         
@@ -135,7 +136,7 @@ class ParentAchievementListView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        parent_profile = getattr(self.request.user, "parent_profile", None)
+        parent_profile = parent_profile_for_user(self.request.user)
         if not parent_profile:
             return StudentAchievement.objects.none()
         kids = StudentProfile.objects.filter(parent=parent_profile, is_active=True)
@@ -156,7 +157,7 @@ class FranchiseStudentMiniListView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        franchise = getattr(self.request.user, "franchise_profile", None)
+        franchise = franchise_profile_for_user(self.request.user)
         if not franchise:
             return StudentProfile.objects.none()
         return StudentProfile.objects.filter(parent__franchise=franchise, is_active=True).select_related("parent")
@@ -168,7 +169,7 @@ class FranchiseStudentListCreateView(generics.ListCreateAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        franchise = getattr(self.request.user, "franchise_profile", None)
+        franchise = franchise_profile_for_user(self.request.user)
         if not franchise:
             return StudentProfile.objects.none()
         return StudentProfile.objects.filter(parent__franchise=franchise).select_related("parent")
@@ -184,7 +185,7 @@ class FranchiseStudentDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = FranchiseStudentSerializer
 
     def get_queryset(self):
-        franchise = getattr(self.request.user, "franchise_profile", None)
+        franchise = franchise_profile_for_user(self.request.user)
         if not franchise:
             return StudentProfile.objects.none()
         return StudentProfile.objects.filter(parent__franchise=franchise).select_related("parent")
@@ -201,7 +202,7 @@ class FranchiseGradeListCreateView(generics.ListCreateAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        franchise = getattr(self.request.user, "franchise_profile", None)
+        franchise = franchise_profile_for_user(self.request.user)
         if not franchise:
             return Grade.objects.none()
         return Grade.objects.filter(student__parent__franchise=franchise).select_related("student")
@@ -212,7 +213,7 @@ class FranchiseGradeListCreateView(generics.ListCreateAPIView):
         return ctx
 
     def perform_create(self, serializer):
-        franchise = getattr(self.request.user, "franchise_profile", None)
+        franchise = franchise_profile_for_user(self.request.user)
         student = serializer.validated_data["student"]
         if not franchise or student.parent.franchise_id != franchise.id:
             raise PermissionDenied("Student is not enrolled at your centre")
@@ -224,7 +225,7 @@ class FranchiseGradeDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = GradeSerializer
 
     def get_queryset(self):
-        franchise = getattr(self.request.user, "franchise_profile", None)
+        franchise = franchise_profile_for_user(self.request.user)
         if not franchise:
             return Grade.objects.none()
         return Grade.objects.filter(student__parent__franchise=franchise).select_related("student")
@@ -235,7 +236,7 @@ class FranchiseGradeDetailView(generics.RetrieveUpdateDestroyAPIView):
         return ctx
 
     def perform_update(self, serializer):
-        franchise = getattr(self.request.user, "franchise_profile", None)
+        franchise = franchise_profile_for_user(self.request.user)
         student = serializer.validated_data.get("student", serializer.instance.student)
         if not franchise or student.parent.franchise_id != franchise.id:
             raise PermissionDenied("Student is not enrolled at your centre")
@@ -248,7 +249,7 @@ class FranchiseAchievementListCreateView(generics.ListCreateAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        franchise = getattr(self.request.user, "franchise_profile", None)
+        franchise = franchise_profile_for_user(self.request.user)
         if not franchise:
             return StudentAchievement.objects.none()
         return StudentAchievement.objects.filter(franchise=franchise).select_related("student")
@@ -259,7 +260,7 @@ class FranchiseAchievementListCreateView(generics.ListCreateAPIView):
         return ctx
 
     def perform_create(self, serializer):
-        franchise = getattr(self.request.user, "franchise_profile", None)
+        franchise = franchise_profile_for_user(self.request.user)
         if not franchise:
             raise PermissionDenied("Franchise profile not found")
         serializer.save(franchise=franchise)
@@ -270,7 +271,7 @@ class FranchiseAchievementDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = StudentAchievementSerializer
 
     def get_queryset(self):
-        franchise = getattr(self.request.user, "franchise_profile", None)
+        franchise = franchise_profile_for_user(self.request.user)
         if not franchise:
             return StudentAchievement.objects.none()
         return StudentAchievement.objects.filter(franchise=franchise).select_related("student")
@@ -289,7 +290,7 @@ class FranchiseStudentListCreateView(generics.ListCreateAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        franchise = getattr(self.request.user, "franchise_profile", None)
+        franchise = franchise_profile_for_user(self.request.user)
         if not franchise:
             return StudentProfile.objects.none()
         return StudentProfile.objects.filter(parent__franchise=franchise).select_related("parent", "parent__user")
@@ -302,7 +303,7 @@ class FranchiseStudentListCreateView(generics.ListCreateAPIView):
     def perform_create(self, serializer):
         # Verify parent belongs to franchise
         parent = serializer.validated_data.get('parent')
-        franchise = getattr(self.request.user, "franchise_profile", None)
+        franchise = franchise_profile_for_user(self.request.user)
         if parent.franchise != franchise:
             raise PermissionDenied("Parent does not belong to your centre.")
         serializer.save()
@@ -313,7 +314,7 @@ class FranchiseStudentDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = StudentProfileSerializer
 
     def get_queryset(self):
-        franchise = getattr(self.request.user, "franchise_profile", None)
+        franchise = franchise_profile_for_user(self.request.user)
         if not franchise:
             return StudentProfile.objects.none()
         return StudentProfile.objects.filter(parent__franchise=franchise).select_related("parent", "parent__user")
@@ -330,7 +331,7 @@ class FranchiseGradeListCreateView(generics.ListCreateAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        franchise = getattr(self.request.user, "franchise_profile", None)
+        franchise = franchise_profile_for_user(self.request.user)
         if not franchise:
             return Grade.objects.none()
         return Grade.objects.filter(student__parent__franchise=franchise).select_related("student")
@@ -347,7 +348,7 @@ class FranchiseGradeDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = GradeSerializer
 
     def get_queryset(self):
-        franchise = getattr(self.request.user, "franchise_profile", None)
+        franchise = franchise_profile_for_user(self.request.user)
         if not franchise:
             return Grade.objects.none()
         return Grade.objects.filter(student__parent__franchise=franchise)

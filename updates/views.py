@@ -1,45 +1,44 @@
-from rest_framework import viewsets
-from rest_framework import generics
+from rest_framework import generics, viewsets
 from rest_framework.permissions import AllowAny
 from rest_framework.exceptions import PermissionDenied
-from .models import Update, SocialMediaUpload
-from .serializers import UpdateSerializer, SocialMediaUploadSerializer
+
 from accounts.models import UserRole
 from accounts.permissions import IsFranchiseUser, IsAdminOrApproverUser
+from accounts.profile_access import franchise_profile_for_user as _franchise_profile_for_user
+
+from .models import SocialMediaUpload, Update
+from .serializers import SocialMediaUploadSerializer, UpdateSerializer
+
 
 class UpdateViewSet(viewsets.ModelViewSet):
-    queryset = Update.objects.all()
+    queryset = Update.objects.select_related("franchise").all()
     serializer_class = UpdateSerializer
-    permission_classes = [AllowAny] # Ideally should be IsAuthenticated for write, AllowAny for read
+    permission_classes = [AllowAny]  # Ideally should be IsAuthenticated for write, AllowAny for read
 
     def get_queryset(self):
-        queryset = Update.objects.all().order_by('-start_date')
-        
-        # Filter by franchise slug (for public school page)
-        franchise_slug = self.request.query_params.get('franchise_slug')
+        queryset = Update.objects.select_related("franchise").all().order_by("-start_date")
+
+        franchise_slug = self.request.query_params.get("franchise_slug")
         if franchise_slug:
-            queryset = queryset.filter(franchise__slug=franchise_slug, is_active=True)
-            return queryset
+            return queryset.filter(franchise__slug=franchise_slug, is_active=True)
 
-        # Filter by logged-in user's franchise (for dashboard)
         user = self.request.user
-        if user.is_authenticated and hasattr(user, 'franchise_profile'):
-            return queryset.filter(franchise=user.franchise_profile)
+        profile = _franchise_profile_for_user(user)
+        if profile is not None:
+            return queryset.filter(franchise=profile)
 
-        # Head office dashboards (full list for admin UI)
         if user.is_authenticated and getattr(user, "role", None) in (UserRole.ADMIN, UserRole.APPROVER):
             return queryset
 
-        # Public and other roles: main-site slides only (no franchise on row)
         return queryset.filter(franchise__isnull=True, is_active=True)
 
     def perform_create(self, serializer):
         user = self.request.user
-        if user.is_authenticated and hasattr(user, 'franchise_profile'):
-            serializer.save(franchise=user.franchise_profile)
+        profile = _franchise_profile_for_user(user)
+        if profile is not None:
+            serializer.save(franchise=profile)
         else:
-             # Fallback for testing/admin if needed, or raise error
-             serializer.save()
+            serializer.save()
 
 
 class FranchiseSocialMediaUploadListCreateView(generics.ListCreateAPIView):
@@ -49,16 +48,16 @@ class FranchiseSocialMediaUploadListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsFranchiseUser]
 
     def get_queryset(self):
-        franchise_profile = getattr(self.request.user, "franchise_profile", None)
-        if not franchise_profile:
+        profile = _franchise_profile_for_user(self.request.user)
+        if not profile:
             return SocialMediaUpload.objects.none()
-        return SocialMediaUpload.objects.filter(franchise=franchise_profile).order_by("-created_at")
+        return SocialMediaUpload.objects.filter(franchise=profile).select_related("franchise").order_by("-created_at")
 
     def perform_create(self, serializer):
-        franchise_profile = getattr(self.request.user, "franchise_profile", None)
-        if not franchise_profile:
+        profile = _franchise_profile_for_user(self.request.user)
+        if not profile:
             raise PermissionDenied("Franchise profile not found")
-        serializer.save(franchise=franchise_profile)
+        serializer.save(franchise=profile)
 
 
 class AdminSocialMediaUploadListView(generics.ListAPIView):
@@ -69,7 +68,7 @@ class AdminSocialMediaUploadListView(generics.ListAPIView):
 
     def get_queryset(self):
         status = self.request.query_params.get("status")
-        qs = SocialMediaUpload.objects.all().order_by("-created_at")
+        qs = SocialMediaUpload.objects.select_related("franchise").all().order_by("-created_at")
         if status:
             qs = qs.filter(status=status)
         return qs
@@ -80,4 +79,6 @@ class AdminSocialMediaUploadUpdateView(generics.UpdateAPIView):
 
     serializer_class = SocialMediaUploadSerializer
     permission_classes = [IsAdminOrApproverUser]
-    queryset = SocialMediaUpload.objects.all().order_by("-created_at")
+
+    def get_queryset(self):
+        return SocialMediaUpload.objects.select_related("franchise").all().order_by("-created_at")

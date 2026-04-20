@@ -3,6 +3,7 @@ from rest_framework import generics, permissions, viewsets
 from rest_framework.exceptions import PermissionDenied
 
 from accounts.permissions import IsAdminUser, IsFranchiseUser, IsParentUser
+from accounts.profile_access import franchise_profile_for_user, parent_profile_for_user
 from franchises.models import Franchise
 from .models import Event, EventMedia
 from .serializers import EventMediaSerializer, EventSerializer
@@ -33,25 +34,25 @@ class FranchiseEventViewSet(viewsets.ModelViewSet):
     permission_classes = [IsFranchiseUser]
 
     def get_queryset(self):
-        franchise = getattr(self.request.user, "franchise_profile", None)
+        franchise = franchise_profile_for_user(self.request.user)
         if not franchise:
             return Event.objects.none()
         return Event.objects.filter(franchise=franchise)
 
     def perform_create(self, serializer):
-        franchise = getattr(self.request.user, "franchise_profile", None)
+        franchise = franchise_profile_for_user(self.request.user)
         if not franchise:
             raise PermissionDenied("Franchise profile not found for this user")
         serializer.save(franchise=franchise, created_by=self.request.user)
 
     def perform_update(self, serializer):
-        franchise = getattr(self.request.user, "franchise_profile", None)
+        franchise = franchise_profile_for_user(self.request.user)
         if not franchise:
             raise PermissionDenied("Franchise profile not found for this user")
         serializer.save(franchise=franchise)
 
     def perform_destroy(self, instance):
-        franchise = getattr(self.request.user, "franchise_profile", None)
+        franchise = franchise_profile_for_user(self.request.user)
         if instance.franchise != franchise:
             raise PermissionDenied("Cannot delete events outside your franchise")
         instance.delete()
@@ -63,14 +64,14 @@ class EventMediaListCreateView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         event = get_object_or_404(Event, pk=self.kwargs["event_id"])
-        franchise = getattr(self.request.user, "franchise_profile", None)
+        franchise = franchise_profile_for_user(self.request.user)
         if event.franchise != franchise:
             raise PermissionDenied("Cannot view media for another franchise")
         return EventMedia.objects.filter(event=event)
 
     def perform_create(self, serializer):
         event = get_object_or_404(Event, pk=self.kwargs["event_id"])
-        franchise = getattr(self.request.user, "franchise_profile", None)
+        franchise = franchise_profile_for_user(self.request.user)
         if event.franchise != franchise:
             raise PermissionDenied("Cannot add media to another franchise")
         serializer.save(event=event, uploaded_by=self.request.user)
@@ -83,7 +84,7 @@ class EventMediaDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def get_queryset(self):
         event = get_object_or_404(Event, pk=self.kwargs["event_id"])
-        franchise = getattr(self.request.user, "franchise_profile", None)
+        franchise = franchise_profile_for_user(self.request.user)
         if event.franchise != franchise:
             raise PermissionDenied("Cannot access media for another franchise")
         return EventMedia.objects.filter(event=event)
@@ -91,7 +92,7 @@ class EventMediaDetailView(generics.RetrieveUpdateDestroyAPIView):
     def perform_update(self, serializer):
         # Ensure the media belongs to the franchise's event
         event = get_object_or_404(Event, pk=self.kwargs["event_id"])
-        franchise = getattr(self.request.user, "franchise_profile", None)
+        franchise = franchise_profile_for_user(self.request.user)
         if event.franchise != franchise:
             raise PermissionDenied("Cannot update media for another franchise")
         serializer.save()
@@ -99,7 +100,7 @@ class EventMediaDetailView(generics.RetrieveUpdateDestroyAPIView):
     def perform_destroy(self, instance):
         # Ensure the media belongs to the franchise's event
         event = get_object_or_404(Event, pk=self.kwargs["event_id"])
-        franchise = getattr(self.request.user, "franchise_profile", None)
+        franchise = franchise_profile_for_user(self.request.user)
         if event.franchise != franchise:
             raise PermissionDenied("Cannot delete media for another franchise")
         instance.delete()
@@ -110,7 +111,7 @@ class ParentEventListView(generics.ListAPIView):
     permission_classes = [IsParentUser]
 
     def get_queryset(self):
-        parent_profile = getattr(self.request.user, "parent_profile", None)
+        parent_profile = parent_profile_for_user(self.request.user)
         if not parent_profile:
             return Event.objects.none()
         return Event.objects.filter(franchise=parent_profile.franchise)
