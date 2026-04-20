@@ -223,8 +223,15 @@ class FranchiseHeroSlide(models.Model):
         verbose_name = "Franchise Hero Slide"
         verbose_name_plural = "Franchise Hero Slides"
 
-    def __str__(self):
-        return f"{self.franchise.name} - Slide {self.order}"
+    def __str__(self) -> str:
+        if not self.franchise_id:
+            centre = "(no franchise)"
+        else:
+            try:
+                centre = (self.franchise.name or "").strip() or "(unnamed centre)"
+            except Franchise.DoesNotExist:
+                centre = f"missing franchise #{self.franchise_id}"
+        return f"{centre} - Slide {self.order}"
 
 
 class FranchiseGalleryItem(models.Model):

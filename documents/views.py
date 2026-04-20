@@ -4,6 +4,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework.exceptions import PermissionDenied
 from accounts.permissions import IsFranchiseUser, IsParentUser, IsAdminOrApproverUser
+from accounts.profile_access import franchise_profile_for_user, parent_profile_for_user
 from .models import ParentDocument, DocumentCategory, FranchiseDocument, FranchiseDocumentCategory, IndentRequest
 from .serializers import ParentDocumentSerializer, FranchiseDocumentSerializer, IndentRequestSerializer
 
@@ -15,7 +16,7 @@ class ParentDocumentListView(generics.ListAPIView):
     pagination_class = None  # Disable pagination to show all documents
 
     def get_queryset(self):
-        parent_profile = getattr(self.request.user, "parent_profile", None)
+        parent_profile = parent_profile_for_user(self.request.user)
         
         # If parent has a profile, show franchise-specific + global documents
         # If no profile, show only global documents
@@ -38,7 +39,7 @@ class ParentDocumentListView(generics.ListAPIView):
 @permission_classes([IsParentUser])
 def parent_documents_by_category(request, category):
     """Get documents filtered by category"""
-    parent_profile = getattr(request.user, "parent_profile", None)
+    parent_profile = parent_profile_for_user(request.user)
     if not parent_profile:
         return Response({"error": "Parent profile not found"}, status=404)
     
@@ -67,7 +68,7 @@ def franchise_documents_by_category(request, category: str):
     Get franchise resource hub documents filtered by category.
     Returns franchise-specific documents and also global documents (franchise is null).
     """
-    franchise_profile = getattr(request.user, "franchise_profile", None)
+    franchise_profile = franchise_profile_for_user(request.user)
     if not franchise_profile:
         return Response({"error": "Franchise profile not found"}, status=403)
 
@@ -96,13 +97,13 @@ class FranchiseParentDocumentListCreateView(generics.ListCreateAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        franchise_profile = getattr(self.request.user, "franchise_profile", None)
+        franchise_profile = franchise_profile_for_user(self.request.user)
         if not franchise_profile:
             return ParentDocument.objects.none()
         return ParentDocument.objects.filter(franchise=franchise_profile).order_by("category", "order", "-created_at")
 
     def perform_create(self, serializer):
-        franchise_profile = getattr(self.request.user, "franchise_profile", None)
+        franchise_profile = franchise_profile_for_user(self.request.user)
         if not franchise_profile:
             raise PermissionDenied("Franchise profile not found")
         serializer.save(franchise=franchise_profile)
@@ -115,7 +116,7 @@ class FranchiseParentDocumentDeleteView(generics.DestroyAPIView):
     permission_classes = [IsFranchiseUser]
 
     def get_queryset(self):
-        franchise_profile = getattr(self.request.user, "franchise_profile", None)
+        franchise_profile = franchise_profile_for_user(self.request.user)
         if not franchise_profile:
             return ParentDocument.objects.none()
         return ParentDocument.objects.filter(franchise=franchise_profile)
@@ -128,13 +129,13 @@ class FranchiseIndentRequestListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsFranchiseUser]
 
     def get_queryset(self):
-        franchise_profile = getattr(self.request.user, "franchise_profile", None)
+        franchise_profile = franchise_profile_for_user(self.request.user)
         if not franchise_profile:
             return IndentRequest.objects.none()
         return IndentRequest.objects.filter(franchise=franchise_profile)
 
     def perform_create(self, serializer):
-        franchise_profile = getattr(self.request.user, "franchise_profile", None)
+        franchise_profile = franchise_profile_for_user(self.request.user)
         if not franchise_profile:
             raise PermissionDenied("Franchise profile not found")
         serializer.save(franchise=franchise_profile)

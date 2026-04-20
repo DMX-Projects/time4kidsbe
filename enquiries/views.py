@@ -5,6 +5,7 @@ from django.db.models import Q
 from rest_framework import generics, permissions
 
 from accounts.permissions import IsAdminUser, IsFranchiseUser
+from accounts.profile_access import franchise_profile_for_user
 from .models import Enquiry, EnquiryType
 from .serializers import EnquirySerializer
 
@@ -56,7 +57,7 @@ class FranchiseEnquiryListView(generics.ListAPIView):
     permission_classes = [IsFranchiseUser]
 
     def get_queryset(self):
-        franchise = getattr(self.request.user, "franchise_profile", None)
+        franchise = franchise_profile_for_user(self.request.user)
         if not franchise:
             return Enquiry.objects.none()
         return Enquiry.objects.filter(franchise=franchise)
@@ -93,7 +94,7 @@ class FranchiseEnquiryUpdateView(generics.UpdateAPIView):
     lookup_field = "pk"
 
     def get_queryset(self):
-        franchise = getattr(self.request.user, "franchise_profile", None)
+        franchise = franchise_profile_for_user(self.request.user)
         if not franchise:
             return Enquiry.objects.none()
         return Enquiry.objects.filter(franchise=franchise)

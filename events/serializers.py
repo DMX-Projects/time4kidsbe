@@ -1,3 +1,4 @@
+from django.core.exceptions import ObjectDoesNotExist
 from rest_framework import serializers
 
 from accounts.serializers import UserSerializer
@@ -17,8 +18,9 @@ class EventMediaSerializer(serializers.ModelSerializer):
 
 class EventSerializer(serializers.ModelSerializer):
     media = EventMediaSerializer(many=True, read_only=True)
-    franchise_city = serializers.CharField(source="franchise.city", read_only=True)
-    franchise_name = serializers.CharField(source="franchise.name", read_only=True)
+    franchise = serializers.SerializerMethodField()
+    franchise_city = serializers.SerializerMethodField()
+    franchise_name = serializers.SerializerMethodField()
     year = serializers.SerializerMethodField()
 
     class Meta:
@@ -44,3 +46,23 @@ class EventSerializer(serializers.ModelSerializer):
         if obj.start_date:
             return obj.start_date.year
         return None
+
+    def _safe_franchise(self, obj: Event):
+        if not obj.franchise_id:
+            return None
+        try:
+            return obj.franchise
+        except ObjectDoesNotExist:
+            return None
+
+    def get_franchise(self, obj: Event):
+        fr = self._safe_franchise(obj)
+        return getattr(fr, "id", None)
+
+    def get_franchise_name(self, obj: Event):
+        fr = self._safe_franchise(obj)
+        return getattr(fr, "name", None) if fr is not None else None
+
+    def get_franchise_city(self, obj: Event):
+        fr = self._safe_franchise(obj)
+        return getattr(fr, "city", None) if fr is not None else None

@@ -2,6 +2,8 @@ from django.contrib.auth import authenticate
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
+from accounts.profile_access import parent_profile_for_user
+
 from .models import User, UserRole
 
 
@@ -106,12 +108,7 @@ class ParentTokenObtainPairSerializer(TokenObtainPairSerializer):
         attrs["email"] = user.email
         data = super().validate(attrs)
         
-        # Get parent profile information
-        parent_profile = None
-        try:
-            parent_profile = user.parent_profile
-        except:
-            pass
+        parent_profile = parent_profile_for_user(user)
         
         data["user"] = {
             "id": self.user.id,

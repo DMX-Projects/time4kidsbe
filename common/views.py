@@ -1,3 +1,5 @@
+import copy
+
 from rest_framework import viewsets
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
@@ -51,21 +53,37 @@ class HomePageContentView(APIView):
     def get(self, request):
         obj, _ = HomePageContent.objects.get_or_create(
             pk=1,
-            defaults={"data": DEFAULT_HOME_PAGE_DATA},
+            defaults={"data": copy.deepcopy(DEFAULT_HOME_PAGE_DATA)},
         )
-        if not obj.data:
-            obj.data = DEFAULT_HOME_PAGE_DATA
+        data = obj.data
+        if not isinstance(data, dict):
+            data = copy.deepcopy(DEFAULT_HOME_PAGE_DATA)
+            obj.data = data
             obj.save(update_fields=["data", "updated_at"])
-        return Response(normalize_home_page_data(obj.data))
+        elif not data:
+            data = copy.deepcopy(DEFAULT_HOME_PAGE_DATA)
+            obj.data = data
+            obj.save(update_fields=["data", "updated_at"])
+        try:
+            payload = normalize_home_page_data(data)
+        except Exception:
+            payload = copy.deepcopy(DEFAULT_HOME_PAGE_DATA)
+        return Response(payload)
 
     def put(self, request):
         body = request.data
         if not isinstance(body, dict):
             raise ValidationError({"detail": "Body must be a JSON object."})
-        obj, _ = HomePageContent.objects.get_or_create(pk=1, defaults={"data": DEFAULT_HOME_PAGE_DATA})
+        obj, _ = HomePageContent.objects.get_or_create(
+            pk=1,
+            defaults={"data": copy.deepcopy(DEFAULT_HOME_PAGE_DATA)},
+        )
         obj.data = body
         obj.save(update_fields=["data", "updated_at"])
-        return Response(obj.data)
+        try:
+            return Response(normalize_home_page_data(obj.data))
+        except Exception:
+            return Response(copy.deepcopy(DEFAULT_HOME_PAGE_DATA))
 
 
 class HomePageContentResetView(APIView):
@@ -74,6 +92,9 @@ class HomePageContentResetView(APIView):
     def post(self, request):
         obj, _ = HomePageContent.objects.update_or_create(
             pk=1,
-            defaults={"data": DEFAULT_HOME_PAGE_DATA},
+            defaults={"data": copy.deepcopy(DEFAULT_HOME_PAGE_DATA)},
         )
-        return Response(normalize_home_page_data(obj.data))
+        try:
+            return Response(normalize_home_page_data(obj.data))
+        except Exception:
+            return Response(copy.deepcopy(DEFAULT_HOME_PAGE_DATA))

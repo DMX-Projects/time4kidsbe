@@ -1,4 +1,7 @@
+from django.core.exceptions import ObjectDoesNotExist
 from rest_framework import serializers
+
+from accounts.profile_access import franchise_profile_for_user
 from franchises.models import ParentProfile
 
 from .models import (
@@ -40,7 +43,7 @@ class GradeSerializer(serializers.ModelSerializer):
 
     def validate_student(self, value):
         request = self.context.get("request")
-        franchise = getattr(getattr(request, "user", None), "franchise_profile", None)
+        franchise = franchise_profile_for_user(getattr(request, "user", None))
         if not franchise or value.parent.franchise_id != franchise.id:
             raise serializers.ValidationError("Student is not enrolled at your centre.")
         return value
@@ -60,10 +63,33 @@ class StudentProfileSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'created_at', 'updated_at', 'parent_info', 'grades_count']
 
     def get_parent_info(self, obj):
+        try:
+            parent = obj.parent
+        except ObjectDoesNotExist:
+            return {"id": None, "parent_name": "", "franchise_name": ""}
+
+        parent_id = getattr(parent, "pk", None)
+        parent_name = ""
+        try:
+            user = parent.user
+            parent_name = (
+                (getattr(user, "full_name", None) or "").strip()
+                or getattr(user, "email", "")
+                or ""
+            )
+        except ObjectDoesNotExist:
+            pass
+
+        franchise_name = ""
+        try:
+            franchise_name = (parent.franchise.name or "").strip()
+        except ObjectDoesNotExist:
+            pass
+
         return {
-            'id': obj.parent.id,
-            'parent_name': obj.parent.user.full_name,
-            'franchise_name': obj.parent.franchise.name
+            "id": parent_id,
+            "parent_name": parent_name,
+            "franchise_name": franchise_name,
         }
 
     def get_grades_count(self, obj):
@@ -110,14 +136,16 @@ class FranchiseStudentSerializer(serializers.ModelSerializer):
 
     def validate_parent(self, value):
         request = self.context.get("request")
-        franchise = getattr(getattr(request, "user", None), "franchise_profile", None)
+        franchise = franchise_profile_for_user(getattr(request, "user", None))
         if not franchise or value.franchise_id != franchise.id:
             raise serializers.ValidationError("Parent is not assigned to your centre.")
         return value
 
 
 class StudentAchievementSerializer(serializers.ModelSerializer):
-    student_name = serializers.CharField(source="student.full_name", read_only=True)
+    """Franchise achievements list; student is optional (centre-wide) and FK may be orphan on live DB."""
+
+    student_name = serializers.SerializerMethodField()
 
     class Meta:
         model = StudentAchievement
@@ -134,11 +162,20 @@ class StudentAchievementSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["id", "franchise", "created_at", "updated_at", "student_name"]
 
+    def get_student_name(self, obj):
+        if not obj.student_id:
+            return None
+        try:
+            st = obj.student
+        except ObjectDoesNotExist:
+            return ""
+        return getattr(st, "full_name", "") or ""
+
     def validate_student(self, value):
         if value is None:
             return value
         request = self.context.get("request")
-        franchise = getattr(getattr(request, "user", None), "franchise_profile", None)
+        franchise = franchise_profile_for_user(getattr(request, "user", None))
         if not franchise or value.parent.franchise_id != franchise.id:
             raise serializers.ValidationError("Student is not enrolled at your centre.")
         return value
@@ -153,9 +190,13 @@ class ParentStudentAchievementSerializer(serializers.ModelSerializer):
         fields = ["id", "title", "notes", "achieved_date", "student_name", "scope", "created_at"]
 
     def get_student_name(self, obj):
-        if obj.student_id:
-            return obj.student.full_name
-        return None
+        if not obj.student_id:
+            return None
+        try:
+            st = obj.student
+        except ObjectDoesNotExist:
+            return None
+        return getattr(st, "full_name", "") or None
 
     def get_scope(self, obj):
         return "centre" if obj.student_id is None else "student"
@@ -184,7 +225,7 @@ class HomeworkAssignmentSerializer(serializers.ModelSerializer):
         if value is None:
             return value
         request = self.context.get("request")
-        franchise = getattr(getattr(request, "user", None), "franchise_profile", None)
+        franchise = franchise_profile_for_user(getattr(request, "user", None))
         if not franchise or value.parent.franchise_id != franchise.id:
             raise serializers.ValidationError("Student is not enrolled at your centre.")
         return value
@@ -207,7 +248,7 @@ class AnnouncementSerializer(serializers.ModelSerializer):
 
 
 class AttendanceRecordSerializer(serializers.ModelSerializer):
-    student_name = serializers.CharField(source="student.full_name", read_only=True)
+    student_name = serializers.SerializerMethodField()
 
     class Meta:
         model = AttendanceRecord
@@ -223,9 +264,16 @@ class AttendanceRecordSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["id", "student_name", "created_at", "updated_at"]
 
+    def get_student_name(self, obj):
+        try:
+            st = obj.student
+        except ObjectDoesNotExist:
+            return ""
+        return getattr(st, "full_name", "") or ""
+
     def validate_student(self, value):
         request = self.context.get("request")
-        franchise = getattr(getattr(request, "user", None), "franchise_profile", None)
+        franchise = franchise_profile_for_user(getattr(request, "user", None))
         if not franchise or value.parent.franchise_id != franchise.id:
             raise serializers.ValidationError("Student is not enrolled at your centre.")
         return value
@@ -253,7 +301,7 @@ class FeeRecordSerializer(serializers.ModelSerializer):
 
     def validate_student(self, value):
         request = self.context.get("request")
-        franchise = getattr(getattr(request, "user", None), "franchise_profile", None)
+        franchise = franchise_profile_for_user(getattr(request, "user", None))
         if not franchise or value.parent.franchise_id != franchise.id:
             raise serializers.ValidationError("Student is not enrolled at your centre.")
         return value
@@ -267,8 +315,10 @@ class SupportTicketParentSerializer(serializers.ModelSerializer):
 
 
 class SupportTicketFranchiseSerializer(serializers.ModelSerializer):
-    parent_name = serializers.CharField(source="parent.user.full_name", read_only=True)
-    parent_email = serializers.CharField(source="parent.user.email", read_only=True)
+    """Franchise ticket list; parent.user may be missing on live DB — avoid source= traversal."""
+
+    parent_name = serializers.SerializerMethodField()
+    parent_email = serializers.SerializerMethodField()
 
     class Meta:
         model = SupportTicket
@@ -285,6 +335,29 @@ class SupportTicketFranchiseSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
         read_only_fields = ["parent", "parent_name", "parent_email", "subject", "body", "created_at"]
+
+    def get_parent_name(self, obj):
+        try:
+            parent = obj.parent
+        except ObjectDoesNotExist:
+            return ""
+        try:
+            user = parent.user
+        except ObjectDoesNotExist:
+            return ""
+        name = (getattr(user, "full_name", None) or "").strip()
+        return name or getattr(user, "email", "") or ""
+
+    def get_parent_email(self, obj):
+        try:
+            parent = obj.parent
+        except ObjectDoesNotExist:
+            return ""
+        try:
+            user = parent.user
+        except ObjectDoesNotExist:
+            return ""
+        return getattr(user, "email", "") or ""
 
 
 class TransportRouteSerializer(serializers.ModelSerializer):

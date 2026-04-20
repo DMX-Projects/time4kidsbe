@@ -4,10 +4,12 @@ import threading
 
 from django.db import transaction
 from django.db.models import Q
+from django.utils.dateparse import parse_date
 from rest_framework import generics
 from rest_framework.exceptions import PermissionDenied
 
 from accounts.permissions import IsFranchiseUser, IsParentUser
+from accounts.profile_access import franchise_profile_for_user, parent_profile_for_user
 
 from .models import (
     Announcement,
@@ -51,7 +53,7 @@ class ParentHomeworkListView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        pp = getattr(self.request.user, "parent_profile", None)
+        pp = parent_profile_for_user(self.request.user)
         if not pp:
             return HomeworkAssignment.objects.none()
         return (
@@ -69,7 +71,7 @@ class ParentAnnouncementListView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        pp = getattr(self.request.user, "parent_profile", None)
+        pp = parent_profile_for_user(self.request.user)
         if not pp:
             return Announcement.objects.none()
         return Announcement.objects.filter(franchise=pp.franchise, is_active=True).order_by("-published_at")
@@ -81,7 +83,7 @@ class ParentAttendanceListView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        pp = getattr(self.request.user, "parent_profile", None)
+        pp = parent_profile_for_user(self.request.user)
         if not pp:
             return AttendanceRecord.objects.none()
         return (
@@ -97,7 +99,7 @@ class ParentFeeListView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        pp = getattr(self.request.user, "parent_profile", None)
+        pp = parent_profile_for_user(self.request.user)
         if not pp:
             return FeeRecord.objects.none()
         return (
@@ -113,7 +115,7 @@ class ParentGradeListView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        pp = getattr(self.request.user, "parent_profile", None)
+        pp = parent_profile_for_user(self.request.user)
         if not pp:
             return Grade.objects.none()
         return (
@@ -128,7 +130,7 @@ class ParentTransportListView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        pp = getattr(self.request.user, "parent_profile", None)
+        pp = parent_profile_for_user(self.request.user)
         if not pp:
             return TransportRoute.objects.none()
         return TransportRoute.objects.filter(franchise=pp.franchise).order_by("sort_order", "route_name")
@@ -140,13 +142,13 @@ class ParentSupportTicketListCreateView(generics.ListCreateAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        pp = getattr(self.request.user, "parent_profile", None)
+        pp = parent_profile_for_user(self.request.user)
         if not pp:
             return SupportTicket.objects.none()
         return SupportTicket.objects.filter(parent=pp).order_by("-created_at")
 
     def perform_create(self, serializer):
-        pp = getattr(self.request.user, "parent_profile", None)
+        pp = parent_profile_for_user(self.request.user)
         if not pp:
             raise PermissionDenied("Parent profile not found")
         serializer.save(parent=pp)
@@ -161,7 +163,7 @@ class FranchiseHomeworkListCreateView(generics.ListCreateAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        f = getattr(self.request.user, "franchise_profile", None)
+        f = franchise_profile_for_user(self.request.user)
         if not f:
             return HomeworkAssignment.objects.none()
         return HomeworkAssignment.objects.filter(franchise=f).select_related("student").order_by("-assigned_date")
@@ -172,7 +174,7 @@ class FranchiseHomeworkListCreateView(generics.ListCreateAPIView):
         return c
 
     def perform_create(self, serializer):
-        f = getattr(self.request.user, "franchise_profile", None)
+        f = franchise_profile_for_user(self.request.user)
         if not f:
             raise PermissionDenied("Franchise profile not found")
         serializer.save(franchise=f)
@@ -183,7 +185,7 @@ class FranchiseHomeworkDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = HomeworkAssignmentSerializer
 
     def get_queryset(self):
-        f = getattr(self.request.user, "franchise_profile", None)
+        f = franchise_profile_for_user(self.request.user)
         if not f:
             return HomeworkAssignment.objects.none()
         return HomeworkAssignment.objects.filter(franchise=f).select_related("student")
@@ -200,13 +202,13 @@ class FranchiseAnnouncementListCreateView(generics.ListCreateAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        f = getattr(self.request.user, "franchise_profile", None)
+        f = franchise_profile_for_user(self.request.user)
         if not f:
             return Announcement.objects.none()
         return Announcement.objects.filter(franchise=f).order_by("-published_at")
 
     def perform_create(self, serializer):
-        f = getattr(self.request.user, "franchise_profile", None)
+        f = franchise_profile_for_user(self.request.user)
         if not f:
             raise PermissionDenied("Franchise profile not found")
         announcement = serializer.save(franchise=f)
@@ -225,7 +227,7 @@ class FranchiseAnnouncementDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = AnnouncementSerializer
 
     def get_queryset(self):
-        f = getattr(self.request.user, "franchise_profile", None)
+        f = franchise_profile_for_user(self.request.user)
         if not f:
             return Announcement.objects.none()
         return Announcement.objects.filter(franchise=f)
@@ -237,18 +239,22 @@ class FranchiseAttendanceListCreateView(generics.ListCreateAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        f = getattr(self.request.user, "franchise_profile", None)
+        f = franchise_profile_for_user(self.request.user)
         if not f:
             return AttendanceRecord.objects.none()
         
         queryset = AttendanceRecord.objects.filter(student__parent__franchise=f)
-        
-        # Optional date filtering
-        date_str = self.request.query_params.get('date')
+
+        # Optional date filter (ISO YYYY-MM-DD). Raw strings can error on some DB/backends.
+        date_str = (self.request.query_params.get("date") or "").strip()
         if date_str:
-            queryset = queryset.filter(date=date_str)
-            
-        return queryset.select_related("student").order_by("-date", "student_id")
+            parsed = parse_date(date_str)
+            if parsed is not None:
+                queryset = queryset.filter(date=parsed)
+            else:
+                queryset = queryset.none()
+
+        return queryset.select_related("student", "student__parent").order_by("-date", "student_id")
 
     def get_serializer_context(self):
         c = super().get_serializer_context()
@@ -261,7 +267,7 @@ class FranchiseAttendanceDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = AttendanceRecordSerializer
 
     def get_queryset(self):
-        f = getattr(self.request.user, "franchise_profile", None)
+        f = franchise_profile_for_user(self.request.user)
         if not f:
             return AttendanceRecord.objects.none()
         return AttendanceRecord.objects.filter(student__parent__franchise=f).select_related("student")
@@ -278,7 +284,7 @@ class FranchiseFeeListCreateView(generics.ListCreateAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        f = getattr(self.request.user, "franchise_profile", None)
+        f = franchise_profile_for_user(self.request.user)
         if not f:
             return FeeRecord.objects.none()
         return FeeRecord.objects.filter(student__parent__franchise=f).select_related("student").order_by("-due_date")
@@ -294,7 +300,7 @@ class FranchiseFeeDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = FeeRecordSerializer
 
     def get_queryset(self):
-        f = getattr(self.request.user, "franchise_profile", None)
+        f = franchise_profile_for_user(self.request.user)
         if not f:
             return FeeRecord.objects.none()
         return FeeRecord.objects.filter(student__parent__franchise=f).select_related("student")
@@ -311,13 +317,13 @@ class FranchiseTransportListCreateView(generics.ListCreateAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        f = getattr(self.request.user, "franchise_profile", None)
+        f = franchise_profile_for_user(self.request.user)
         if not f:
             return TransportRoute.objects.none()
         return TransportRoute.objects.filter(franchise=f).order_by("sort_order", "route_name")
 
     def perform_create(self, serializer):
-        f = getattr(self.request.user, "franchise_profile", None)
+        f = franchise_profile_for_user(self.request.user)
         if not f:
             raise PermissionDenied("Franchise profile not found")
         serializer.save(franchise=f)
@@ -328,7 +334,7 @@ class FranchiseTransportDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = TransportRouteSerializer
 
     def get_queryset(self):
-        f = getattr(self.request.user, "franchise_profile", None)
+        f = franchise_profile_for_user(self.request.user)
         if not f:
             return TransportRoute.objects.none()
         return TransportRoute.objects.filter(franchise=f)
@@ -340,7 +346,7 @@ class FranchiseSupportTicketListView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        f = getattr(self.request.user, "franchise_profile", None)
+        f = franchise_profile_for_user(self.request.user)
         if not f:
             return SupportTicket.objects.none()
         return SupportTicket.objects.filter(parent__franchise=f).select_related("parent", "parent__user").order_by("-created_at")
@@ -351,7 +357,7 @@ class FranchiseSupportTicketDetailView(generics.RetrieveUpdateAPIView):
     serializer_class = SupportTicketFranchiseSerializer
 
     def get_queryset(self):
-        f = getattr(self.request.user, "franchise_profile", None)
+        f = franchise_profile_for_user(self.request.user)
         if not f:
             return SupportTicket.objects.none()
         qs = SupportTicket.objects.filter(parent__franchise=f).select_related("parent", "parent__user")
