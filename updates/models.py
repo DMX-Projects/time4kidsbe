@@ -11,7 +11,15 @@ class Update(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
-        return f"{self.franchise.name} - {self.date} - {self.text[:50]}"
+        label = self.franchise.name if self.franchise else "Global"
+        parts = []
+        if self.start_date:
+            parts.append(self.start_date.isoformat())
+        if self.end_date:
+            parts.append(self.end_date.isoformat())
+        when = " -> ".join(parts) if parts else "no dates"
+        snippet = self.text[:50] + ("..." if len(self.text) > 50 else "")
+        return f"{label} ({when}) {snippet}"
 
 
 class SocialMediaUpload(models.Model):

@@ -23,12 +23,14 @@ class StudentProfile(models.Model):
         verbose_name = "Student Profile"
         verbose_name_plural = "Student Profiles"
 
-    def __str__(self):
-        return f"{self.first_name} {self.last_name} ({self.class_name})"
+    def __str__(self) -> str:
+        name = f"{(self.first_name or '').strip()} {(self.last_name or '').strip()}".strip() or "(no name)"
+        cn = (self.class_name or "").strip() or "(class)"
+        return f"{name} ({cn})"
 
     @property
-    def full_name(self):
-        return f"{self.first_name} {self.last_name}"
+    def full_name(self) -> str:
+        return f"{(self.first_name or '').strip()} {(self.last_name or '').strip()}".strip() or "(no name)"
 
 
 class Grade(models.Model):
@@ -49,8 +51,17 @@ class Grade(models.Model):
         verbose_name = "Grade"
         verbose_name_plural = "Grades"
 
-    def __str__(self):
-        return f"{self.student.full_name} - {self.subject} ({self.exam_type})"
+    def __str__(self) -> str:
+        if not self.student_id:
+            who = "(no student)"
+        else:
+            try:
+                who = self.student.full_name
+            except StudentProfile.DoesNotExist:
+                who = f"missing student #{self.student_id}"
+        subj = (self.subject or "").strip() or "(subject)"
+        exam = (self.exam_type or "").strip() or "(exam type)"
+        return f"{who} - {subj} ({exam})"
 
     @property
     def percentage(self):
@@ -83,8 +94,15 @@ class StudentAchievement(models.Model):
         verbose_name_plural = "Student achievements"
 
     def __str__(self) -> str:
-        who = self.student.full_name if self.student else "Centre-wide"
-        return f"{self.title} ({who})"
+        t = (self.title or "").strip() or "(untitled)"
+        if not self.student_id:
+            who = "Centre-wide"
+        else:
+            try:
+                who = self.student.full_name
+            except StudentProfile.DoesNotExist:
+                who = f"missing student #{self.student_id}"
+        return f"{t} ({who})"
 
 
 class HomeworkAssignment(models.Model):
@@ -115,7 +133,8 @@ class HomeworkAssignment(models.Model):
         verbose_name_plural = "Homework assignments"
 
     def __str__(self) -> str:
-        return f"{self.title} ({self.assigned_date})"
+        t = (self.title or "").strip() or "(untitled)"
+        return f"{t} ({self.assigned_date})"
 
 
 class Announcement(models.Model):
@@ -133,7 +152,14 @@ class Announcement(models.Model):
         verbose_name_plural = "Announcements"
 
     def __str__(self) -> str:
-        return self.title
+        t = (self.title or "").strip() or "(untitled)"
+        if not self.franchise_id:
+            return f"{t} (no franchise)"
+        try:
+            centre = self.franchise.name
+        except Franchise.DoesNotExist:
+            return f"{t} (missing franchise #{self.franchise_id})"
+        return f"{t} ({centre})"
 
 
 class AttendanceRecord(models.Model):
@@ -160,7 +186,14 @@ class AttendanceRecord(models.Model):
         ]
 
     def __str__(self) -> str:
-        return f"{self.student.full_name} — {self.date} ({self.status})"
+        if not self.student_id:
+            who = "(no student)"
+        else:
+            try:
+                who = self.student.full_name
+            except StudentProfile.DoesNotExist:
+                who = f"missing student #{self.student_id}"
+        return f"{who} - {self.date} ({self.get_status_display()})"
 
 
 class FeeRecord(models.Model):
@@ -185,7 +218,15 @@ class FeeRecord(models.Model):
         verbose_name_plural = "Fee records"
 
     def __str__(self) -> str:
-        return f"{self.title} — {self.student.full_name}"
+        t = (self.title or "").strip() or "(untitled)"
+        if not self.student_id:
+            who = "(no student)"
+        else:
+            try:
+                who = self.student.full_name
+            except StudentProfile.DoesNotExist:
+                who = f"missing student #{self.student_id}"
+        return f"{t} - {who}"
 
 
 class SupportTicket(models.Model):
@@ -208,7 +249,15 @@ class SupportTicket(models.Model):
         verbose_name_plural = "Support tickets"
 
     def __str__(self) -> str:
-        return f"{self.subject} ({self.parent})"
+        subj = (self.subject or "").strip() or "(no subject)"
+        if not self.parent_id:
+            parent_label = "(no parent)"
+        else:
+            try:
+                parent_label = str(self.parent)
+            except ParentProfile.DoesNotExist:
+                parent_label = f"missing parent #{self.parent_id}"
+        return f"{subj} ({parent_label})"
 
 
 class TransportRoute(models.Model):
@@ -231,5 +280,13 @@ class TransportRoute(models.Model):
         verbose_name_plural = "Transport routes"
 
     def __str__(self) -> str:
-        return f"{self.route_name} ({self.franchise.name})"
+        rn = (self.route_name or "").strip() or "(route)"
+        if not self.franchise_id:
+            centre = "(no franchise)"
+        else:
+            try:
+                centre = self.franchise.name
+            except Franchise.DoesNotExist:
+                centre = f"missing franchise #{self.franchise_id}"
+        return f"{rn} ({centre})"
 

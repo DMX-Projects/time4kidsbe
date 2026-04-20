@@ -1,5 +1,7 @@
 from django.contrib import admin
 
+from franchises.models import Franchise, ParentProfile
+
 from .models import (
     Announcement,
     AttendanceRecord,
@@ -23,12 +25,29 @@ class GradeInline(admin.TabularInline):
 
 @admin.register(StudentProfile)
 class StudentProfileAdmin(admin.ModelAdmin):
-    list_display = ('full_name', 'class_name', 'parent', 'is_active', 'created_at')
+    list_display = ("full_name", "class_name", "display_parent", "is_active", "created_at")
     list_filter = ('is_active', 'class_name', 'created_at', 'parent__franchise')
     search_fields = ('first_name', 'last_name', 'roll_number', 'parent__user__email', 'parent__user__full_name')
     list_editable = ('is_active',)
     readonly_fields = ('created_at', 'updated_at')
     inlines = [GradeInline]
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related(
+            "parent",
+            "parent__user",
+            "parent__franchise",
+        )
+
+    def display_parent(self, obj: StudentProfile):
+        if not obj.parent_id:
+            return "—"
+        try:
+            return str(obj.parent)
+        except ParentProfile.DoesNotExist:
+            return f"(missing parent #{obj.parent_id})"
+
+    display_parent.short_description = "Parent"
     
     fieldsets = (
         ('Student Information', {
@@ -46,10 +65,36 @@ class StudentProfileAdmin(admin.ModelAdmin):
 
 @admin.register(Grade)
 class GradeAdmin(admin.ModelAdmin):
-    list_display = ('student', 'subject', 'exam_type', 'marks_obtained', 'total_marks', 'grade', 'get_percentage', 'exam_date')
+    list_display = (
+        "display_student",
+        "subject",
+        "exam_type",
+        "marks_obtained",
+        "total_marks",
+        "grade",
+        "get_percentage",
+        "exam_date",
+    )
     list_filter = ('exam_type', 'exam_date', 'subject', 'student__parent__franchise')
     search_fields = ('student__first_name', 'student__last_name', 'subject', 'student__parent__user__email')
     readonly_fields = ('created_at', 'updated_at', 'get_percentage')
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related(
+            "student",
+            "student__parent",
+            "student__parent__franchise",
+        )
+
+    def display_student(self, obj: Grade):
+        if not obj.student_id:
+            return "—"
+        try:
+            return str(obj.student)
+        except StudentProfile.DoesNotExist:
+            return f"(missing student #{obj.student_id})"
+
+    display_student.short_description = "Student"
     
     fieldsets = (
         ('Grade Information', {
@@ -71,46 +116,169 @@ class GradeAdmin(admin.ModelAdmin):
 
 @admin.register(StudentAchievement)
 class StudentAchievementAdmin(admin.ModelAdmin):
-    list_display = ("title", "franchise", "student", "achieved_date", "created_at")
+    list_display = ("title", "display_franchise", "display_student", "achieved_date", "created_at")
     list_filter = ("franchise", "achieved_date")
     search_fields = ("title", "notes", "student__first_name", "student__last_name")
     raw_id_fields = ("student",)
 
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related("franchise", "student")
+
+    def display_franchise(self, obj: StudentAchievement):
+        if not obj.franchise_id:
+            return "—"
+        try:
+            return obj.franchise.name
+        except Franchise.DoesNotExist:
+            return f"(missing franchise #{obj.franchise_id})"
+
+    display_franchise.short_description = "Franchise"
+
+    def display_student(self, obj: StudentAchievement):
+        if not obj.student_id:
+            return "—"
+        try:
+            return str(obj.student)
+        except StudentProfile.DoesNotExist:
+            return f"(missing student #{obj.student_id})"
+
+    display_student.short_description = "Student"
+
 
 @admin.register(HomeworkAssignment)
 class HomeworkAssignmentAdmin(admin.ModelAdmin):
-    list_display = ("title", "franchise", "assigned_date", "student", "class_name")
+    list_display = ("title", "display_franchise", "assigned_date", "display_student", "class_name")
     list_filter = ("franchise", "assigned_date")
     raw_id_fields = ("student",)
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related("franchise", "student")
+
+    def display_franchise(self, obj: HomeworkAssignment):
+        if not obj.franchise_id:
+            return "—"
+        try:
+            return obj.franchise.name
+        except Franchise.DoesNotExist:
+            return f"(missing franchise #{obj.franchise_id})"
+
+    display_franchise.short_description = "Franchise"
+
+    def display_student(self, obj: HomeworkAssignment):
+        if not obj.student_id:
+            return "—"
+        try:
+            return str(obj.student)
+        except StudentProfile.DoesNotExist:
+            return f"(missing student #{obj.student_id})"
+
+    display_student.short_description = "Student"
 
 
 @admin.register(Announcement)
 class AnnouncementAdmin(admin.ModelAdmin):
-    list_display = ("title", "franchise", "published_at", "is_active")
+    list_display = ("title", "display_franchise", "published_at", "is_active")
     list_filter = ("franchise", "is_active")
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related("franchise")
+
+    def display_franchise(self, obj):
+        if not obj.franchise_id:
+            return "—"
+        try:
+            return obj.franchise.name
+        except Franchise.DoesNotExist:
+            return f"(missing franchise #{obj.franchise_id})"
+
+    display_franchise.short_description = "Franchise"
 
 
 @admin.register(AttendanceRecord)
 class AttendanceRecordAdmin(admin.ModelAdmin):
-    list_display = ("student", "date", "status")
+    list_display = ("display_student", "date", "status")
     list_filter = ("status", "date", "student__parent__franchise")
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related(
+            "student",
+            "student__parent",
+            "student__parent__franchise",
+        )
+
+    def display_student(self, obj: AttendanceRecord):
+        if not obj.student_id:
+            return "—"
+        try:
+            return str(obj.student)
+        except StudentProfile.DoesNotExist:
+            return f"(missing student #{obj.student_id})"
+
+    display_student.short_description = "Student"
 
 
 @admin.register(FeeRecord)
 class FeeRecordAdmin(admin.ModelAdmin):
-    list_display = ("title", "student", "amount", "due_date", "status")
+    list_display = ("title", "display_student", "amount", "due_date", "status")
     list_filter = ("status", "student__parent__franchise")
     raw_id_fields = ("student",)
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related(
+            "student",
+            "student__parent",
+            "student__parent__franchise",
+        )
+
+    def display_student(self, obj: FeeRecord):
+        if not obj.student_id:
+            return "—"
+        try:
+            return str(obj.student)
+        except StudentProfile.DoesNotExist:
+            return f"(missing student #{obj.student_id})"
+
+    display_student.short_description = "Student"
 
 
 @admin.register(SupportTicket)
 class SupportTicketAdmin(admin.ModelAdmin):
-    list_display = ("subject", "parent", "status", "created_at")
+    list_display = ("subject", "display_parent", "status", "created_at")
     list_filter = ("status", "parent__franchise")
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related(
+            "parent",
+            "parent__user",
+            "parent__franchise",
+        )
+
+    def display_parent(self, obj: SupportTicket):
+        if not obj.parent_id:
+            return "—"
+        try:
+            return str(obj.parent)
+        except ParentProfile.DoesNotExist:
+            return f"(missing parent #{obj.parent_id})"
+
+    display_parent.short_description = "Parent"
 
 
 @admin.register(TransportRoute)
 class TransportRouteAdmin(admin.ModelAdmin):
-    list_display = ("route_name", "franchise", "sort_order")
+    list_display = ("route_name", "display_franchise", "sort_order")
     list_filter = ("franchise",)
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related("franchise")
+
+    def display_franchise(self, obj: TransportRoute):
+        if not obj.franchise_id:
+            return "—"
+        try:
+            return obj.franchise.name
+        except Franchise.DoesNotExist:
+            return f"(missing franchise #{obj.franchise_id})"
+
+    display_franchise.short_description = "Franchise"
 

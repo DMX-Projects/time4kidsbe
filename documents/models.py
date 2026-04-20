@@ -65,9 +65,15 @@ class ParentDocument(models.Model):
         verbose_name = "Parent Document"
         verbose_name_plural = "Parent Documents"
 
-    def __str__(self):
-        franchise_name = self.franchise.name if self.franchise else "Global"
-        return f"{self.get_category_display()} - {self.title} ({franchise_name})"
+    def __str__(self) -> str:
+        franchise_name = "Global"
+        if self.franchise_id:
+            try:
+                franchise_name = self.franchise.name
+            except Franchise.DoesNotExist:
+                franchise_name = f"(missing franchise #{self.franchise_id})"
+        title = (self.title or "").strip() or "(no title)"
+        return f"{self.get_category_display()} - {title} ({franchise_name})"
 
 
 class FranchiseDocumentCategory(models.TextChoices):
@@ -118,9 +124,15 @@ class FranchiseDocument(models.Model):
         verbose_name = "Franchise Resource Document"
         verbose_name_plural = "Franchise Resource Documents"
 
-    def __str__(self):
-        franchise_name = self.franchise.name if self.franchise else "Global"
-        return f"{self.get_category_display()} - {self.title} ({franchise_name})"
+    def __str__(self) -> str:
+        franchise_name = "Global"
+        if self.franchise_id:
+            try:
+                franchise_name = self.franchise.name
+            except Franchise.DoesNotExist:
+                franchise_name = f"(missing franchise #{self.franchise_id})"
+        title = (self.title or "").strip() or "(no title)"
+        return f"{self.get_category_display()} - {title} ({franchise_name})"
 
 
 class IndentRequest(models.Model):
@@ -156,6 +168,10 @@ class IndentRequest(models.Model):
     class Meta:
         ordering = ["-requested_at"]
 
-    def __str__(self):
-        return f"IndentRequest({self.franchise.name}) - {self.region} - {self.status}"
+    def __str__(self) -> str:
+        try:
+            franchise_label = self.franchise.name
+        except Franchise.DoesNotExist:
+            franchise_label = f"missing#{self.franchise_id}" if self.franchise_id else "none"
+        return f"IndentRequest({franchise_label}) - {self.region} - {self.status}"
 

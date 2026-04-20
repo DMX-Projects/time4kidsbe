@@ -21,7 +21,14 @@ class Event(models.Model):
         ordering = ["-start_date", "title"]
 
     def __str__(self) -> str:
-        return f"{self.title} ({self.franchise.name})"
+        title = (self.title or "").strip() or "(untitled)"
+        if not self.franchise_id:
+            return f"{title} (no franchise)"
+        try:
+            franchise_label = self.franchise.name
+        except Franchise.DoesNotExist:
+            franchise_label = f"missing franchise #{self.franchise_id}"
+        return f"{title} ({franchise_label})"
 
 
 class EventMedia(models.Model):
@@ -42,4 +49,11 @@ class EventMedia(models.Model):
         ordering = ["-uploaded_at"]
 
     def __str__(self) -> str:
-        return f"Media for {self.event.title}"
+        if not self.event_id:
+            return "Event media (unsaved)"
+        try:
+            ev = self.event
+        except Event.DoesNotExist:
+            return f"Event media (missing event #{self.event_id})"
+        etitle = (ev.title or "").strip() or "(untitled)"
+        return f"Media for {etitle}"
