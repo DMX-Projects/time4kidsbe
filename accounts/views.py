@@ -93,13 +93,10 @@ class PasswordResetRequestView(APIView):
             uidb64 = urlsafe_base64_encode(force_bytes(user.pk))
             token = default_token_generator.make_token(user)
 
-            # Use the first trusted origin as the frontend base for the reset link.
-            frontend_base = None
-            try:
-                frontend_base = settings.CSRF_TRUSTED_ORIGINS[0]
-            except Exception:
-                frontend_base = None
+            # Use explicit public site URL so domain changes are controlled by one env var.
+            frontend_base = (getattr(settings, "PUBLIC_SITE_URL", "") or "").strip().rstrip("/")
             if not frontend_base:
+                # Fallback for local/dev environments
                 frontend_base = "http://localhost:3000"
 
             reset_url = f"{frontend_base}/reset-password?uid={uidb64}&token={token}"
