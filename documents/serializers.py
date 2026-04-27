@@ -17,7 +17,7 @@ class ParentDocumentSerializer(serializers.ModelSerializer):
                   'file', 'thumbnail', 'franchise', 'franchise_name', 'is_active', 
                   'order', 'state', 'state_display', 'academic_year', 'display_title',
                   'created_at', 'updated_at']
-        read_only_fields = ['id', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'franchise', 'is_active', 'created_at', 'updated_at']
 
     def get_display_title(self, obj):
         """Return formatted title - for holiday lists, include state and academic year"""

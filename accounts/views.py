@@ -2,6 +2,7 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.tokens import default_token_generator
 from django.core.mail import send_mail
+import re
 from django.utils.decorators import method_decorator
 from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
@@ -18,6 +19,11 @@ from .serializers import CustomTokenObtainPairSerializer, ParentTokenObtainPairS
 from .models import User
 from django.contrib.auth.password_validation import validate_password
 from django.db.models import Q
+from accounts.models import UserRole
+
+EMAIL_REGEX = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+PHONE_REGEX = re.compile(r"^[6-9]\d{9}$")
+USERNAME_REGEX = re.compile(r"^[a-zA-Z0-9._-]{3,30}$")
 
 
 class AdminStatsView(APIView):
@@ -90,36 +96,7 @@ class PasswordResetRequestView(APIView):
             user = User.objects.filter(username__iexact=identifier).first()
 
         if user and user.is_active:
-            uidb64 = urlsafe_base64_encode(force_bytes(user.pk))
-            token = default_token_generator.make_token(user)
-
-            # Use explicit public site URL so domain changes are controlled by one env var.
-            frontend_base = (getattr(settings, "PUBLIC_SITE_URL", "") or "").strip().rstrip("/")
-            if not frontend_base:
-                # Fallback for local/dev environments
-                frontend_base = "http://localhost:3000"
-
-            reset_url = f"{frontend_base}/reset-password?uid={uidb64}&token={token}"
-
-            subject = "T.I.M.E. Kids - Password Reset"
-            message = (
-                f"Hi,\n\n"
-                f"You requested a password reset for your account.\n\n"
-                f"Reset link:\n{reset_url}\n\n"
-                f"If you did not request this, please ignore this email.\n"
-            )
-
-            try:
-                send_mail(
-                    subject=subject,
-                    message=message,
-                    from_email=getattr(settings, "DEFAULT_FROM_EMAIL", "no-reply@time4kids.app"),
-                    recipient_list=[user.email],
-                    fail_silently=False,
-                )
-            except Exception:
-                # Avoid failing the API just because email provider is misconfigured.
-                pass
+            _send_password_reset_email(user)
 
         return Response(
             {"detail": "If the email exists, you will receive reset instructions shortly."},
@@ -167,6 +144,106 @@ class PasswordResetConfirmView(APIView):
         user.save()
 
         return Response({"detail": "Password reset successful."}, status=200)
+
+
+def _build_reset_url(user: User) -> str:
+    uidb64 = urlsafe_base64_encode(force_bytes(user.pk))
+    token = default_token_generator.make_token(user)
+    frontend_base = (getattr(settings, "PUBLIC_SITE_URL", "") or "").strip().rstrip("/")
+    if not frontend_base:
+        frontend_base = "http://localhost:3000"
+    return f"{frontend_base}/reset-password?uid={uidb64}&token={token}"
+
+
+def _send_password_reset_email(user: User) -> str:
+    reset_url = _build_reset_url(user)
+    subject = "T.I.M.E. Kids - Password Reset"
+    message = (
+        f"Hi,\n\n"
+        f"Please set your password using the link below:\n\n"
+        f"{reset_url}\n\n"
+        f"If you did not request this, please ignore this email.\n"
+    )
+    try:
+        send_mail(
+            subject=subject,
+            message=message,
+            from_email=getattr(settings, "DEFAULT_FROM_EMAIL", "no-reply@time4kids.app"),
+            recipient_list=[user.email],
+            fail_silently=False,
+        )
+    except Exception:
+        # Avoid failing registration/reset flows if email provider is misconfigured.
+        pass
+    return reset_url
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class RegisterUserView(APIView):
+    """
+    Public registration endpoint.
+    Creates a parent user with unusable password and returns/sends reset link.
+    """
+
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        email = (request.data.get("email") or "").strip().lower()
+        full_name = (request.data.get("full_name") or request.data.get("name") or "").strip()
+        phone = re.sub(r"\D", "", (request.data.get("phone") or "").strip())
+        requested_username = (request.data.get("username") or "").strip()
+
+        if len(full_name) < 2:
+            return Response({"detail": "Full name must be at least 2 characters."}, status=400)
+        if not email:
+            return Response({"detail": "Email is required."}, status=400)
+        if not EMAIL_REGEX.match(email):
+            return Response({"detail": "Please provide a valid email address."}, status=400)
+        if not PHONE_REGEX.match(phone):
+            return Response({"detail": "Phone number must be 10 digits and start with 6, 7, 8, or 9."}, status=400)
+        if User.objects.filter(email__iexact=email).exists():
+            return Response({"detail": "An account with this email already exists."}, status=400)
+        if requested_username and not USERNAME_REGEX.match(requested_username):
+            return Response(
+                {
+                    "detail": (
+                        "Username must be 3-30 characters and can include letters, numbers, dot, underscore, and hyphen."
+                    )
+                },
+                status=400,
+            )
+
+        username = requested_username or email.split("@")[0]
+        base_username = username[:150] if username else "user"
+        if not base_username:
+            base_username = "user"
+
+        final_username = base_username
+        suffix = 1
+        while User.objects.filter(username__iexact=final_username).exists():
+            suffix_str = str(suffix)
+            final_username = f"{base_username[: max(1, 150 - len(suffix_str) - 1)]}-{suffix_str}"
+            suffix += 1
+
+        user = User.objects.create_user(
+            email=email,
+            password=None,
+            role=UserRole.PARENT,
+            username=final_username,
+            full_name=full_name,
+            is_active=True,
+        )
+        user.set_unusable_password()
+        user.save(update_fields=["password"])
+
+        reset_url = _send_password_reset_email(user)
+        return Response(
+            {
+                "detail": "Registration successful. Use the reset link to set your password.",
+                "reset_url": reset_url,
+            },
+            status=201,
+        )
 
 
 @method_decorator(csrf_exempt, name="dispatch")
