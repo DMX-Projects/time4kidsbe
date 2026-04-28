@@ -1,7 +1,7 @@
 from django.core.exceptions import ObjectDoesNotExist
 from rest_framework import serializers
 
-from accounts.profile_access import franchise_profile_for_user
+from accounts.profile_access import franchise_profile_for_user, parent_profile_for_user
 from franchises.models import ParentProfile
 
 from .models import (
@@ -10,6 +10,7 @@ from .models import (
     FeeRecord,
     Grade,
     HomeworkAssignment,
+    ParentNotificationRead,
     StudentAchievement,
     StudentProfile,
     SupportTicket,
@@ -203,7 +204,9 @@ class ParentStudentAchievementSerializer(serializers.ModelSerializer):
 
 
 class HomeworkAssignmentSerializer(serializers.ModelSerializer):
-    student_name = serializers.CharField(source="student.full_name", read_only=True)
+    student_name = serializers.SerializerMethodField()
+    is_read = serializers.SerializerMethodField()
+    read_status = serializers.SerializerMethodField()
 
     class Meta:
         model = HomeworkAssignment
@@ -216,10 +219,44 @@ class HomeworkAssignmentSerializer(serializers.ModelSerializer):
             "assigned_date",
             "title",
             "description",
+            "is_read",
+            "read_status",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "franchise", "created_at", "updated_at", "student_name"]
+        read_only_fields = ["id", "franchise", "created_at", "updated_at", "student_name", "is_read", "read_status"]
+
+    def get_student_name(self, obj):
+        if obj.student_id:
+            try:
+                st = obj.student
+                return getattr(st, "full_name", "") or ""
+            except ObjectDoesNotExist:
+                return ""
+        class_name = (getattr(obj, "class_name", "") or "").strip()
+        if class_name:
+            return f"All students ({class_name})"
+        return "All students"
+
+    def _parent_read_keys(self):
+        if hasattr(self, "_cached_parent_read_keys"):
+            return self._cached_parent_read_keys
+        request = self.context.get("request")
+        pp = parent_profile_for_user(getattr(request, "user", None))
+        if not pp:
+            self._cached_parent_read_keys = set()
+            return self._cached_parent_read_keys
+        self._cached_parent_read_keys = set(
+            ParentNotificationRead.objects.filter(parent=pp).values_list("notification_key", flat=True)
+        )
+        return self._cached_parent_read_keys
+
+    def get_is_read(self, obj):
+        # Homework read-state is tracked via shared notification key format.
+        return f"homework-{obj.id}" in self._parent_read_keys()
+
+    def get_read_status(self, obj):
+        return "READ" if self.get_is_read(obj) else "UNREAD"
 
     def validate_student(self, value):
         if value is None:
