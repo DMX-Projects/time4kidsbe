@@ -203,8 +203,13 @@ class FeeRecord(models.Model):
         OVERDUE = "OVERDUE", "Overdue"
 
     student = models.ForeignKey(StudentProfile, on_delete=models.CASCADE, related_name="fee_records")
+    fee_structure_name = models.CharField(max_length=255, blank=True)
+    id_card_no = models.CharField(max_length=100, blank=True)
+    course = models.CharField(max_length=255, blank=True)
     title = models.CharField(max_length=255)
     amount = models.DecimalField(max_digits=10, decimal_places=2)
+    discount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    amount_paid = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     due_date = models.DateField()
     paid_on = models.DateField(null=True, blank=True)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
@@ -289,4 +294,21 @@ class TransportRoute(models.Model):
             except Franchise.DoesNotExist:
                 centre = f"missing franchise #{self.franchise_id}"
         return f"{rn} ({centre})"
+
+
+class ParentNotificationRead(models.Model):
+    """Tracks which aggregated notifications were read by a parent."""
+
+    parent = models.ForeignKey(ParentProfile, on_delete=models.CASCADE, related_name="read_notifications")
+    notification_key = models.CharField(max_length=120)
+    read_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-read_at"]
+        constraints = [
+            models.UniqueConstraint(fields=["parent", "notification_key"], name="uniq_parent_notification_key"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.parent_id}:{self.notification_key}"
 
