@@ -9,8 +9,11 @@ from django.db.utils import OperationalError, ProgrammingError
 from django.db.models import Q
 from django.utils import timezone
 from django.utils.dateparse import parse_date
+from rest_framework import status
+from rest_framework.decorators import api_view, permission_classes
 from rest_framework import generics
 from rest_framework.exceptions import PermissionDenied
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -28,8 +31,12 @@ from .models import (
     ParentNotificationRead,
     StudentAchievement,
     StudentProfile,
+    StudentTransportAssignment,
+    StudentTripStatus,
     SupportTicket,
     TransportRoute,
+    TransportTrip,
+    TransportTripLocation,
 )
 from .serializers import (
     AnnouncementSerializer,
@@ -40,7 +47,10 @@ from .serializers import (
     ParentStudentAchievementSerializer,
     SupportTicketFranchiseSerializer,
     SupportTicketParentSerializer,
+    StudentTransportAssignmentSerializer,
     TransportRouteSerializer,
+    TransportTripLocationSerializer,
+    TransportTripSerializer,
 )
 
 
@@ -169,6 +179,74 @@ class ParentTransportListView(generics.ListAPIView):
         if not pp:
             return TransportRoute.objects.none()
         return TransportRoute.objects.filter(franchise=pp.franchise).order_by("sort_order", "route_name")
+
+
+class ParentLiveTransportView(APIView):
+    """Latest live transport trip for this parent's assigned route.
+
+    If no student assignment exists yet, falls back to the newest live trip at
+    the parent's centre so early centres can trial live tracking before full
+    route assignment data is entered.
+    """
+
+    permission_classes = [IsParentUser]
+
+    def get(self, request):
+        pp = parent_profile_for_user(request.user)
+        if not pp:
+            return Response({"live": False, "detail": "Parent profile not found"}, status=404)
+
+        students = StudentProfile.objects.filter(parent=pp, is_active=True)
+        assigned_routes = TransportRoute.objects.filter(
+            student_assignments__student__in=students,
+            student_assignments__is_active=True,
+        ).distinct()
+
+        routes = assigned_routes if assigned_routes.exists() else TransportRoute.objects.filter(franchise=pp.franchise)
+        trip = (
+            TransportTrip.objects.filter(route__in=routes, status=TransportTrip.Status.LIVE)
+            .select_related("route")
+            .prefetch_related("locations")
+            .order_by("-started_at", "-created_at")
+            .first()
+        )
+        if not trip:
+            route = routes.order_by("sort_order", "route_name").first()
+            return Response(
+                {
+                    "live": False,
+                    "route": TransportRouteSerializer(route).data if route else None,
+                    "trip": None,
+                    "latest_location": None,
+                    "student_status": None,
+                }
+            )
+
+        latest_location = trip.locations.order_by("-recorded_at").first()
+        student_status = (
+            trip.student_statuses.filter(student__in=students)
+            .select_related("student")
+            .order_by("-updated_at")
+            .first()
+        )
+
+        return Response(
+            {
+                "live": latest_location is not None,
+                "route": TransportRouteSerializer(trip.route).data,
+                "trip": TransportTripSerializer(trip).data,
+                "latest_location": TransportTripSerializer(trip).data.get("latest_location"),
+                "student_status": {
+                    "student_id": student_status.student_id,
+                    "student_name": student_status.student.full_name,
+                    "status": student_status.status,
+                    "note": student_status.note,
+                    "updated_at": student_status.updated_at,
+                }
+                if student_status
+                else None,
+            }
+        )
 
 
 class ParentSupportTicketListCreateView(generics.ListCreateAPIView):
@@ -629,6 +707,39 @@ class FranchiseTransportDetailView(generics.RetrieveUpdateDestroyAPIView):
         return TransportRoute.objects.filter(franchise=f)
 
 
+class FranchiseTransportAssignmentListCreateView(generics.ListCreateAPIView):
+    permission_classes = [IsFranchiseUser]
+    serializer_class = StudentTransportAssignmentSerializer
+    pagination_class = None
+
+    def get_queryset(self):
+        f = franchise_profile_for_user(self.request.user)
+        if not f:
+            return StudentTransportAssignment.objects.none()
+        return StudentTransportAssignment.objects.filter(route__franchise=f).select_related("student", "route")
+
+    def get_serializer_context(self):
+        c = super().get_serializer_context()
+        c["request"] = self.request
+        return c
+
+
+class FranchiseTransportAssignmentDetailView(generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [IsFranchiseUser]
+    serializer_class = StudentTransportAssignmentSerializer
+
+    def get_queryset(self):
+        f = franchise_profile_for_user(self.request.user)
+        if not f:
+            return StudentTransportAssignment.objects.none()
+        return StudentTransportAssignment.objects.filter(route__franchise=f).select_related("student", "route")
+
+    def get_serializer_context(self):
+        c = super().get_serializer_context()
+        c["request"] = self.request
+        return c
+
+
 class FranchiseSupportTicketListView(generics.ListAPIView):
     permission_classes = [IsFranchiseUser]
     serializer_class = SupportTicketFranchiseSerializer
@@ -651,3 +762,165 @@ class FranchiseSupportTicketDetailView(generics.RetrieveUpdateAPIView):
             return SupportTicket.objects.none()
         qs = SupportTicket.objects.filter(parent__franchise=f).select_related("parent", "parent__user")
         return qs
+
+
+def _route_from_driver_token(token):
+    return TransportRoute.objects.filter(driver_token=token).select_related("franchise").first()
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def driver_route_detail(request, token):
+    route = _route_from_driver_token(token)
+    if not route:
+        return Response({"detail": "Invalid driver link"}, status=404)
+    live_trip = route.trips.filter(status=TransportTrip.Status.LIVE).order_by("-started_at", "-created_at").first()
+    assignments = route.student_assignments.filter(is_active=True).select_related("student").order_by(
+        "pickup_time",
+        "student__first_name",
+    )
+    status_map = {}
+    if live_trip:
+        status_map = {
+            row.student_id: row
+            for row in live_trip.student_statuses.filter(student__in=[a.student for a in assignments]).select_related("student")
+        }
+    return Response(
+        {
+            "route": TransportRouteSerializer(route).data,
+            "active_trip": TransportTripSerializer(live_trip).data if live_trip else None,
+            "assigned_students": [
+                {
+                    "assignment_id": assignment.id,
+                    "student_id": assignment.student_id,
+                    "student_name": assignment.student.full_name,
+                    "class_name": assignment.student.class_name,
+                    "pickup_stop": assignment.pickup_stop,
+                    "drop_stop": assignment.drop_stop,
+                    "pickup_time": assignment.pickup_time,
+                    "drop_time": assignment.drop_time,
+                    "status": status_map.get(assignment.student_id).status if assignment.student_id in status_map else "WAITING",
+                    "status_note": status_map.get(assignment.student_id).note if assignment.student_id in status_map else "",
+                }
+                for assignment in assignments
+            ],
+        }
+    )
+
+
+@api_view(["POST"])
+@permission_classes([AllowAny])
+def driver_start_trip(request, token):
+    route = _route_from_driver_token(token)
+    if not route:
+        return Response({"detail": "Invalid driver link"}, status=404)
+    trip_type = str(request.data.get("trip_type") or TransportTrip.TripType.PICKUP).upper()
+    if trip_type not in TransportTrip.TripType.values:
+        trip_type = TransportTrip.TripType.PICKUP
+
+    route.trips.filter(status=TransportTrip.Status.LIVE).update(
+        status=TransportTrip.Status.COMPLETED,
+        completed_at=timezone.now(),
+    )
+    trip = TransportTrip.objects.create(
+        route=route,
+        trip_type=trip_type,
+        status=TransportTrip.Status.LIVE,
+        started_at=timezone.now(),
+    )
+    return Response(TransportTripSerializer(trip).data, status=status.HTTP_201_CREATED)
+
+
+@api_view(["POST"])
+@permission_classes([AllowAny])
+def driver_post_location(request, token):
+    route = _route_from_driver_token(token)
+    if not route:
+        return Response({"detail": "Invalid driver link"}, status=404)
+    trip = route.trips.filter(status=TransportTrip.Status.LIVE).order_by("-started_at", "-created_at").first()
+    if not trip:
+        return Response({"detail": "Start a trip before sending location."}, status=400)
+
+    try:
+        latitude = request.data.get("latitude")
+        longitude = request.data.get("longitude")
+        if latitude is None or longitude is None:
+            raise ValueError("Missing coordinates")
+        location = TransportTripLocation.objects.create(
+            trip=trip,
+            latitude=latitude,
+            longitude=longitude,
+            speed=request.data.get("speed"),
+            heading=request.data.get("heading"),
+            accuracy=request.data.get("accuracy"),
+        )
+    except Exception:
+        return Response({"detail": "Valid latitude and longitude are required."}, status=400)
+    return Response(TransportTripLocationSerializer(location).data, status=status.HTTP_201_CREATED)
+
+
+@api_view(["POST"])
+@permission_classes([AllowAny])
+def driver_complete_trip(request, token):
+    route = _route_from_driver_token(token)
+    if not route:
+        return Response({"detail": "Invalid driver link"}, status=404)
+    trip = route.trips.filter(status=TransportTrip.Status.LIVE).order_by("-started_at", "-created_at").first()
+    if not trip:
+        return Response({"detail": "No live trip found."}, status=404)
+    trip.status = TransportTrip.Status.COMPLETED
+    trip.completed_at = timezone.now()
+    trip.save(update_fields=["status", "completed_at", "updated_at"])
+    return Response(TransportTripSerializer(trip).data)
+
+
+@api_view(["POST"])
+@permission_classes([AllowAny])
+def driver_update_student_status(request, token):
+    try:
+        print(f"DEBUG: Updating student status for token {token}")
+        print(f"DEBUG: Data: {request.data}")
+        
+        route = _route_from_driver_token(token)
+        if not route:
+            return Response({"detail": "Invalid driver link"}, status=404)
+            
+        trip = route.trips.filter(status=TransportTrip.Status.LIVE).order_by("-started_at", "-created_at").first()
+        if not trip:
+            return Response({"detail": "Start a trip before updating student status."}, status=400)
+
+        sid = request.data.get("student_id")
+        if not sid:
+            return Response({"detail": "student_id is required."}, status=400)
+            
+        student_id = int(sid)
+        assignment = route.student_assignments.filter(student_id=student_id, is_active=True).select_related("student").first()
+        if not assignment:
+            return Response({"detail": "Student is not assigned to this route."}, status=404)
+
+        next_status = str(request.data.get("status") or "").upper()
+        
+        # Simple update or create
+        status_obj, created = StudentTripStatus.objects.update_or_create(
+            trip=trip,
+            student=assignment.student,
+            defaults={
+                "status": next_status,
+                "note": str(request.data.get("note") or "").strip(),
+            }
+        )
+        
+        return Response({
+            "student_id": student_id,
+            "student_name": assignment.student.full_name,
+            "status": status_obj.status,
+            "note": status_obj.note,
+            "updated_at": status_obj.updated_at.isoformat() if status_obj.updated_at else None,
+            "success": True
+        })
+
+    except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
+        print(f"CRITICAL ERROR: {error_trace}")
+        return Response({"detail": str(e), "traceback": error_trace}, status=500)

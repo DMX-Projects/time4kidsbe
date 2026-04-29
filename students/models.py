@@ -1,3 +1,5 @@
+import uuid
+
 from django.db import models
 from django.utils import timezone
 
@@ -270,6 +272,10 @@ class TransportRoute(models.Model):
     route_name = models.CharField(max_length=255)
     description = models.TextField(blank=True)
     map_url = models.URLField(blank=True, max_length=500)
+    vehicle_number = models.CharField(max_length=80, blank=True)
+    driver_name = models.CharField(max_length=255, blank=True)
+    driver_phone = models.CharField(max_length=40, blank=True)
+    driver_token = models.UUIDField(default=uuid.uuid4, db_index=True, editable=False)
     tracking_note = models.CharField(
         max_length=500,
         blank=True,
@@ -294,6 +300,92 @@ class TransportRoute(models.Model):
             except Franchise.DoesNotExist:
                 centre = f"missing franchise #{self.franchise_id}"
         return f"{rn} ({centre})"
+
+
+class StudentTransportAssignment(models.Model):
+    student = models.OneToOneField(StudentProfile, on_delete=models.CASCADE, related_name="transport_assignment")
+    route = models.ForeignKey(TransportRoute, on_delete=models.CASCADE, related_name="student_assignments")
+    pickup_stop = models.CharField(max_length=255, blank=True)
+    drop_stop = models.CharField(max_length=255, blank=True)
+    pickup_time = models.TimeField(null=True, blank=True)
+    drop_time = models.TimeField(null=True, blank=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["route__sort_order", "student__first_name"]
+
+    def __str__(self) -> str:
+        try:
+            student_label = self.student.full_name
+        except StudentProfile.DoesNotExist:
+            student_label = f"missing student #{self.student_id}"
+        return f"{student_label} -> {self.route_id}"
+
+
+class TransportTrip(models.Model):
+    class TripType(models.TextChoices):
+        PICKUP = "PICKUP", "Pickup"
+        DROP = "DROP", "Drop"
+
+    class Status(models.TextChoices):
+        NOT_STARTED = "NOT_STARTED", "Not started"
+        LIVE = "LIVE", "Live"
+        COMPLETED = "COMPLETED", "Completed"
+        CANCELLED = "CANCELLED", "Cancelled"
+
+    route = models.ForeignKey(TransportRoute, on_delete=models.CASCADE, related_name="trips")
+    trip_type = models.CharField(max_length=20, choices=TripType.choices, default=TripType.PICKUP)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.NOT_STARTED)
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return f"{self.route_id} {self.trip_type} {self.status}"
+
+
+class TransportTripLocation(models.Model):
+    trip = models.ForeignKey(TransportTrip, on_delete=models.CASCADE, related_name="locations")
+    latitude = models.DecimalField(max_digits=10, decimal_places=7)
+    longitude = models.DecimalField(max_digits=10, decimal_places=7)
+    speed = models.FloatField(null=True, blank=True)
+    heading = models.FloatField(null=True, blank=True)
+    accuracy = models.FloatField(null=True, blank=True)
+    recorded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-recorded_at"]
+
+    def __str__(self) -> str:
+        return f"{self.trip_id}: {self.latitude}, {self.longitude}"
+
+
+class StudentTripStatus(models.Model):
+    class Status(models.TextChoices):
+        WAITING = "WAITING", "Waiting"
+        PICKED_UP = "PICKED_UP", "Picked up"
+        DROPPED = "DROPPED", "Dropped"
+        ABSENT = "ABSENT", "Absent"
+
+    trip = models.ForeignKey(TransportTrip, on_delete=models.CASCADE, related_name="student_statuses")
+    student = models.ForeignKey(StudentProfile, on_delete=models.CASCADE, related_name="trip_statuses")
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.WAITING)
+    note = models.CharField(max_length=255, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["trip", "student"], name="uniq_trip_student_status"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.trip_id}:{self.student_id}:{self.status}"
 
 
 class ParentNotificationRead(models.Model):

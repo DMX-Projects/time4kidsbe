@@ -10,8 +10,12 @@ from .models import (
     HomeworkAssignment,
     StudentAchievement,
     StudentProfile,
+    StudentTransportAssignment,
+    StudentTripStatus,
     SupportTicket,
     TransportRoute,
+    TransportTrip,
+    TransportTripLocation,
 )
 
 
@@ -266,8 +270,9 @@ class SupportTicketAdmin(admin.ModelAdmin):
 
 @admin.register(TransportRoute)
 class TransportRouteAdmin(admin.ModelAdmin):
-    list_display = ("route_name", "display_franchise", "sort_order")
+    list_display = ("route_name", "display_franchise", "vehicle_number", "driver_name", "sort_order")
     list_filter = ("franchise",)
+    readonly_fields = ("driver_token", "created_at", "updated_at")
 
     def get_queryset(self, request):
         return super().get_queryset(request).select_related("franchise")
@@ -281,4 +286,53 @@ class TransportRouteAdmin(admin.ModelAdmin):
             return f"(missing franchise #{obj.franchise_id})"
 
     display_franchise.short_description = "Franchise"
+
+
+@admin.register(StudentTransportAssignment)
+class StudentTransportAssignmentAdmin(admin.ModelAdmin):
+    list_display = ("display_student", "route", "pickup_stop", "drop_stop", "is_active")
+    list_filter = ("route__franchise", "route", "is_active")
+    raw_id_fields = ("student", "route")
+
+    def display_student(self, obj: StudentTransportAssignment):
+        if not obj.student_id:
+            return "—"
+        try:
+            return obj.student.full_name
+        except StudentProfile.DoesNotExist:
+            return f"(missing student #{obj.student_id})"
+
+    display_student.short_description = "Student"
+
+
+class TransportTripLocationInline(admin.TabularInline):
+    model = TransportTripLocation
+    extra = 0
+    readonly_fields = ("latitude", "longitude", "speed", "heading", "accuracy", "recorded_at")
+    can_delete = False
+
+
+@admin.register(TransportTrip)
+class TransportTripAdmin(admin.ModelAdmin):
+    list_display = ("route", "trip_type", "status", "started_at", "completed_at")
+    list_filter = ("status", "trip_type", "route__franchise")
+    readonly_fields = ("created_at", "updated_at")
+    inlines = [TransportTripLocationInline]
+
+
+@admin.register(StudentTripStatus)
+class StudentTripStatusAdmin(admin.ModelAdmin):
+    list_display = ("trip", "display_student", "status", "updated_at")
+    list_filter = ("status", "trip__route__franchise")
+    raw_id_fields = ("trip", "student")
+
+    def display_student(self, obj: StudentTripStatus):
+        if not obj.student_id:
+            return "—"
+        try:
+            return obj.student.full_name
+        except StudentProfile.DoesNotExist:
+            return f"(missing student #{obj.student_id})"
+
+    display_student.short_description = "Student"
 

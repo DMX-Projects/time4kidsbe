@@ -13,8 +13,11 @@ from .models import (
     ParentNotificationRead,
     StudentAchievement,
     StudentProfile,
+    StudentTransportAssignment,
     SupportTicket,
     TransportRoute,
+    TransportTrip,
+    TransportTripLocation,
 )
 from common.fields import RelativeImageField
 
@@ -403,6 +406,8 @@ class SupportTicketFranchiseSerializer(serializers.ModelSerializer):
 
 
 class TransportRouteSerializer(serializers.ModelSerializer):
+    driver_token = serializers.SerializerMethodField()
+
     class Meta:
         model = TransportRoute
         fields = [
@@ -411,10 +416,97 @@ class TransportRouteSerializer(serializers.ModelSerializer):
             "route_name",
             "description",
             "map_url",
+            "vehicle_number",
+            "driver_name",
+            "driver_phone",
+            "driver_token",
             "tracking_note",
             "sort_order",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "franchise", "created_at", "updated_at"]
+        read_only_fields = ["id", "franchise", "driver_token", "created_at", "updated_at"]
 
+    def get_driver_token(self, obj):
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if getattr(user, "role", "") == "FRANCHISE":
+            return str(obj.driver_token)
+        return ""
+
+
+class StudentTransportAssignmentSerializer(serializers.ModelSerializer):
+    student_name = serializers.CharField(source="student.full_name", read_only=True)
+    route_name = serializers.CharField(source="route.route_name", read_only=True)
+
+    class Meta:
+        model = StudentTransportAssignment
+        fields = [
+            "id",
+            "student",
+            "student_name",
+            "route",
+            "route_name",
+            "pickup_stop",
+            "drop_stop",
+            "pickup_time",
+            "drop_time",
+            "is_active",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "student_name", "route_name", "created_at", "updated_at"]
+
+    def validate_student(self, value):
+        request = self.context.get("request")
+        franchise = franchise_profile_for_user(getattr(request, "user", None))
+        if not franchise or value.parent.franchise_id != franchise.id:
+            raise serializers.ValidationError("Student is not enrolled at your centre.")
+        return value
+
+    def validate_route(self, value):
+        request = self.context.get("request")
+        franchise = franchise_profile_for_user(getattr(request, "user", None))
+        if not franchise or value.franchise_id != franchise.id:
+            raise serializers.ValidationError("Route does not belong to your centre.")
+        return value
+
+
+class TransportTripLocationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TransportTripLocation
+        fields = ["id", "latitude", "longitude", "speed", "heading", "accuracy", "recorded_at"]
+        read_only_fields = ["id", "recorded_at"]
+
+
+class TransportTripSerializer(serializers.ModelSerializer):
+    route_name = serializers.CharField(source="route.route_name", read_only=True)
+    vehicle_number = serializers.CharField(source="route.vehicle_number", read_only=True)
+    driver_name = serializers.CharField(source="route.driver_name", read_only=True)
+    driver_phone = serializers.CharField(source="route.driver_phone", read_only=True)
+    latest_location = serializers.SerializerMethodField()
+
+    class Meta:
+        model = TransportTrip
+        fields = [
+            "id",
+            "route",
+            "route_name",
+            "vehicle_number",
+            "driver_name",
+            "driver_phone",
+            "trip_type",
+            "status",
+            "started_at",
+            "completed_at",
+            "latest_location",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "started_at", "completed_at", "latest_location", "created_at", "updated_at"]
+
+    def get_latest_location(self, obj):
+        latest = obj.locations.order_by("-recorded_at").first()
+        if not latest:
+            return None
+        return TransportTripLocationSerializer(latest).data
