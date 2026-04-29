@@ -3,7 +3,7 @@ import uuid
 from django.db import models
 from django.utils import timezone
 
-from franchises.models import Franchise, ParentProfile
+from franchises.models import DriverProfile, Franchise, ParentProfile
 
 
 class StudentProfile(models.Model):
@@ -275,6 +275,13 @@ class TransportRoute(models.Model):
     vehicle_number = models.CharField(max_length=80, blank=True)
     driver_name = models.CharField(max_length=255, blank=True)
     driver_phone = models.CharField(max_length=40, blank=True)
+    driver_profile = models.ForeignKey(
+        DriverProfile, 
+        on_delete=models.SET_NULL, 
+        null=True, 
+        blank=True, 
+        related_name="assigned_routes"
+    )
     driver_token = models.UUIDField(default=uuid.uuid4, db_index=True, editable=False)
     tracking_note = models.CharField(
         max_length=500,
@@ -352,8 +359,8 @@ class TransportTrip(models.Model):
 
 class TransportTripLocation(models.Model):
     trip = models.ForeignKey(TransportTrip, on_delete=models.CASCADE, related_name="locations")
-    latitude = models.DecimalField(max_digits=10, decimal_places=7)
-    longitude = models.DecimalField(max_digits=10, decimal_places=7)
+    latitude = models.DecimalField(max_digits=22, decimal_places=16)
+    longitude = models.DecimalField(max_digits=22, decimal_places=16)
     speed = models.FloatField(null=True, blank=True)
     heading = models.FloatField(null=True, blank=True)
     accuracy = models.FloatField(null=True, blank=True)
@@ -403,4 +410,3 @@ class ParentNotificationRead(models.Model):
 
     def __str__(self) -> str:
         return f"{self.parent_id}:{self.notification_key}"
-

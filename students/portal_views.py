@@ -1,3 +1,7 @@
+from accounts.permissions import IsDriverUser
+from accounts.profile_access import driver_profile_for_user
+from franchises.models import DriverProfile
+from franchises.serializers import DriverProfileSerializer, DriverCreateSerializer
 """Parent portal: homework, announcements, attendance, fees, transport, support tickets."""
 
 import threading
@@ -924,3 +928,202 @@ def driver_update_student_status(request, token):
         error_trace = traceback.format_exc()
         print(f"CRITICAL ERROR: {error_trace}")
         return Response({"detail": str(e), "traceback": error_trace}, status=500)
+
+
+# ----- Franchise: Driver Management -----
+
+class FranchiseDriverListCreateView(generics.ListCreateAPIView):
+    permission_classes = [IsFranchiseUser]
+    serializer_class = DriverProfileSerializer
+    pagination_class = None
+
+    def get_queryset(self):
+        f = franchise_profile_for_user(self.request.user)
+        if not f:
+            return DriverProfile.objects.none()
+        return DriverProfile.objects.filter(franchise=f).select_related("user").order_by("user__full_name")
+
+    def get_serializer_class(self):
+        if self.request.method == "POST":
+            return DriverCreateSerializer
+        return DriverProfileSerializer
+
+    def get_serializer_context(self):
+        c = super().get_serializer_context()
+        c["franchise"] = franchise_profile_for_user(self.request.user)
+        return c
+
+    def perform_create(self, serializer):
+        f = franchise_profile_for_user(self.request.user)
+        if not f:
+            raise PermissionDenied("Franchise profile not found")
+        serializer.save(franchise=f)
+
+
+class FranchiseDriverDetailView(generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [IsFranchiseUser]
+    serializer_class = DriverProfileSerializer
+
+    def get_queryset(self):
+        f = franchise_profile_for_user(self.request.user)
+        if not f:
+            return DriverProfile.objects.none()
+        return DriverProfile.objects.filter(franchise=f).select_related("user")
+
+
+# ----- Authenticated Driver Trip Endpoints -----
+
+@api_view(["GET"])
+@permission_classes([IsDriverUser])
+def auth_driver_trip_detail(request):
+    dp = driver_profile_for_user(request.user)
+    if not dp:
+        return Response({"detail": "Driver profile not found"}, status=404)
+    
+    # A driver might be assigned to multiple routes, but usually one at a time.
+    route = dp.assigned_routes.first()
+    if not route:
+        return Response({"detail": "No route assigned to you."}, status=404)
+    
+    live_trip = route.trips.filter(status=TransportTrip.Status.LIVE).order_by("-started_at", "-created_at").first()
+    assignments = route.student_assignments.filter(is_active=True).select_related("student").order_by(
+        "pickup_time",
+        "student__first_name",
+    )
+    
+    status_map = {}
+    if live_trip:
+        statuses = live_trip.student_statuses.all().select_related("student")
+        status_map = {row.student_id: row for row in statuses}
+        print(f"DEBUG: auth_driver_trip_detail - Trip: {live_trip.id}, Statuses found: {len(status_map)}")
+        for sid, row in status_map.items():
+             print(f"  - Student {sid}: {row.status}")
+
+    return Response({
+        "route": TransportRouteSerializer(route).data,
+        "active_trip": TransportTripSerializer(live_trip).data if live_trip else None,
+        "students": [
+            {
+                "student_id": a.student_id,
+                "student_name": a.student.full_name,
+                "class_name": a.student.class_name,
+                "pickup_stop": a.pickup_stop,
+                "drop_stop": a.drop_stop,
+                "pickup_time": a.pickup_time,
+                "drop_time": a.drop_time,
+                "status": status_map[a.student_id].status if a.student_id in status_map else "WAITING",
+                "note": status_map[a.student_id].note if a.student_id in status_map else "",
+            }
+            for a in assignments
+        ]
+    })
+
+@api_view(["POST"])
+@permission_classes([IsDriverUser])
+def auth_driver_start_trip(request):
+    dp = driver_profile_for_user(request.user)
+    if not dp:
+        return Response({"detail": "Driver profile not found"}, status=404)
+    
+    route = dp.assigned_routes.first()
+    if not route:
+        return Response({"detail": "No route assigned to you."}, status=404)
+    
+    trip_type = str(request.data.get("trip_type") or "PICKUP").upper()
+    
+    # Close any existing live trips for this route
+    route.trips.filter(status=TransportTrip.Status.LIVE).update(
+        status=TransportTrip.Status.COMPLETED,
+        completed_at=timezone.now()
+    )
+    
+    trip = TransportTrip.objects.create(
+        route=route,
+        trip_type=trip_type,
+        status=TransportTrip.Status.LIVE,
+        started_at=timezone.now()
+    )
+    return Response(TransportTripSerializer(trip).data)
+
+@api_view(["POST"])
+@permission_classes([IsDriverUser])
+def auth_driver_post_location(request):
+    dp = driver_profile_for_user(request.user)
+    if not dp:
+        return Response({"detail": "Driver profile not found"}, status=404)
+    
+    route = dp.assigned_routes.first()
+    if not route:
+        return Response({"detail": "No route assigned to you."}, status=404)
+    
+    trip = route.trips.filter(status=TransportTrip.Status.LIVE).order_by("-started_at", "-created_at").first()
+    if not trip:
+        return Response({"detail": "No live trip found"}, status=400)
+    
+    serializer = TransportTripLocationSerializer(data=request.data)
+    if serializer.is_valid():
+        location = serializer.save(trip=trip)
+        return Response(TransportTripLocationSerializer(location).data)
+    return Response(serializer.errors, status=400)
+
+@api_view(["POST"])
+@permission_classes([IsDriverUser])
+def auth_driver_update_student_status(request):
+    dp = driver_profile_for_user(request.user)
+    if not dp:
+        return Response({"detail": "Driver profile not found"}, status=404)
+    
+    route = dp.assigned_routes.first()
+    if not route:
+        return Response({"detail": "No route assigned to you."}, status=404)
+    
+    trip = route.trips.filter(status=TransportTrip.Status.LIVE).order_by("-started_at", "-created_at").first()
+    if not trip:
+        return Response({"detail": "No live trip found"}, status=400)
+
+    try:
+        sid = request.data.get("student_id")
+        student_id = int(sid)
+        assignment = route.student_assignments.filter(student_id=student_id, is_active=True).first()
+        if not assignment:
+            return Response({"detail": "Student not assigned to your route"}, status=404)
+            
+        next_status = str(request.data.get("status") or "").upper()
+        
+        status_obj, created = StudentTripStatus.objects.update_or_create(
+            trip=trip,
+            student_id=student_id,
+            defaults={
+                "status": next_status,
+                "note": str(request.data.get("note") or "").strip(),
+            }
+        )
+        print(f"DEBUG: auth_driver_update_student_status - Trip: {trip.id}, Student: {student_id}, New Status: {next_status}")
+        return Response({
+            "success": True, 
+            "status": status_obj.status,
+            "note": status_obj.note,
+            "student_name": assignment.student.full_name
+        })
+    except Exception as e:
+        return Response({"detail": str(e)}, status=500)
+
+@api_view(["POST"])
+@permission_classes([IsDriverUser])
+def auth_driver_complete_trip(request):
+    dp = driver_profile_for_user(request.user)
+    if not dp:
+        return Response({"detail": "Driver profile not found"}, status=404)
+    
+    route = dp.assigned_routes.first()
+    if not route:
+        return Response({"detail": "No route assigned to you."}, status=404)
+        
+    trip = route.trips.filter(status=TransportTrip.Status.LIVE).order_by("-started_at", "-created_at").first()
+    if not trip:
+        return Response({"detail": "No live trip to complete"}, status=400)
+    
+    trip.status = TransportTrip.Status.COMPLETED
+    trip.completed_at = timezone.now()
+    trip.save()
+    return Response(TransportTripSerializer(trip).data)

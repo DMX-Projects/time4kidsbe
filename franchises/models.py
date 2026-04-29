@@ -131,8 +131,8 @@ class Franchise(models.Model):
     programs = models.TextField(blank=True)
     facilities = models.TextField(blank=True)
     hero_image = models.ImageField(upload_to="franchises/hero/", null=True, blank=True)
-    latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
-    longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    latitude = models.DecimalField(max_digits=22, decimal_places=16, null=True, blank=True)
+    longitude = models.DecimalField(max_digits=22, decimal_places=16, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     is_active = models.BooleanField(default=True)
@@ -206,6 +206,25 @@ class ParentProfile(models.Model):
     @property
     def admin(self) -> User:
         return self.franchise.admin
+
+
+class DriverProfile(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="driver_profile")
+    franchise = models.ForeignKey(Franchise, on_delete=models.CASCADE, related_name="drivers")
+    phone = models.CharField(max_length=30, blank=True)
+    license_number = models.CharField(max_length=100, blank=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Driver"
+        verbose_name_plural = "Drivers"
+        ordering = ["user__full_name", "user__email"]
+
+    def __str__(self) -> str:
+        name = self.user.full_name or self.user.email
+        return f"Driver {name} - {self.franchise.name}"
 
 
 class FranchiseHeroSlide(models.Model):
