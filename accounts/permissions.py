@@ -25,3 +25,8 @@ class IsFranchiseUser(BasePermission):
 class IsParentUser(BasePermission):
     def has_permission(self, request, view):
         return bool(request.user and request.user.is_authenticated and request.user.role == UserRole.PARENT)
+
+
+class IsDriverUser(BasePermission):
+    def has_permission(self, request, view):
+        return bool(request.user and request.user.is_authenticated and request.user.role == UserRole.DRIVER)

@@ -5,7 +5,7 @@ from rest_framework import serializers
 from accounts.models import User, UserRole
 from accounts.serializers import UserSerializer
 from events.serializers import EventSerializer
-from .models import Franchise, ParentProfile, FranchiseLocation, FranchiseHeroSlide, FranchiseGalleryItem
+from .models import DriverProfile, Franchise, ParentProfile, FranchiseLocation, FranchiseHeroSlide, FranchiseGalleryItem
 from common.fields import RelativeImageField
 
 
@@ -295,6 +295,55 @@ class ParentSerializer(serializers.ModelSerializer):
             ) from exc
 
         return parent
+
+
+class DriverProfileSerializer(serializers.ModelSerializer):
+    user = UserSerializer(read_only=True)
+    
+    class Meta:
+        model = DriverProfile
+        fields = ["id", "user", "phone", "license_number", "is_active", "created_at"]
+        read_only_fields = ["id", "user", "created_at"]
+
+
+class DriverCreateSerializer(serializers.ModelSerializer):
+    email = serializers.EmailField(write_only=True)
+    password = serializers.CharField(write_only=True, min_length=8)
+    full_name = serializers.CharField(write_only=True)
+    phone = serializers.CharField(required=False, allow_blank=True)
+    license_number = serializers.CharField(required=False, allow_blank=True)
+
+    class Meta:
+        model = DriverProfile
+        fields = ["id", "email", "password", "full_name", "phone", "license_number"]
+
+    def create(self, validated_data):
+        # Always pop to avoid duplicate arguments, check context first as primary source
+        val_franchise = validated_data.pop("franchise", None)
+        franchise = self.context.get("franchise") or val_franchise
+        if not franchise:
+            raise serializers.ValidationError({"detail": "Franchise context is required."})
+
+        email = validated_data.pop("email")
+        password = validated_data.pop("password")
+        full_name = validated_data.pop("full_name")
+        
+        try:
+            with transaction.atomic():
+                # Set username = email to ensure uniqueness in databases that treat NULL as a single value
+                user = User.objects.create_user(
+                    email=email, 
+                    username=email,
+                    password=password, 
+                    full_name=full_name, 
+                    role=UserRole.DRIVER
+                )
+                driver = DriverProfile.objects.create(user=user, franchise=franchise, **validated_data)
+                return driver
+        except IntegrityError:
+            raise serializers.ValidationError({"email": "User with this email or username already exists."})
+        except Exception as e:
+            raise serializers.ValidationError({"detail": f"An unexpected error occurred: {str(e)}"})
 
 
 class FranchiseHeroSlideSerializer(serializers.ModelSerializer):

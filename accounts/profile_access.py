@@ -23,3 +23,12 @@ def parent_profile_for_user(user):
         return user.parent_profile
     except ObjectDoesNotExist:
         return None
+
+
+def driver_profile_for_user(user):
+    if not user or not getattr(user, "is_authenticated", False):
+        return None
+    try:
+        return user.driver_profile
+    except ObjectDoesNotExist:
+        return None

@@ -407,6 +407,7 @@ class SupportTicketFranchiseSerializer(serializers.ModelSerializer):
 
 class TransportRouteSerializer(serializers.ModelSerializer):
     driver_token = serializers.SerializerMethodField()
+    driver_info = serializers.SerializerMethodField()
 
     class Meta:
         model = TransportRoute
@@ -419,13 +420,25 @@ class TransportRouteSerializer(serializers.ModelSerializer):
             "vehicle_number",
             "driver_name",
             "driver_phone",
+            "driver_profile",
+            "driver_info",
             "driver_token",
             "tracking_note",
             "sort_order",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "franchise", "driver_token", "created_at", "updated_at"]
+        read_only_fields = ["id", "franchise", "driver_token", "driver_info", "created_at", "updated_at"]
+
+    def get_driver_info(self, obj):
+        if obj.driver_profile:
+            return {
+                "id": obj.driver_profile.id,
+                "full_name": obj.driver_profile.user.full_name,
+                "email": obj.driver_profile.user.email,
+                "phone": obj.driver_profile.phone,
+            }
+        return None
 
     def get_driver_token(self, obj):
         request = self.context.get("request")
@@ -473,6 +486,10 @@ class StudentTransportAssignmentSerializer(serializers.ModelSerializer):
 
 
 class TransportTripLocationSerializer(serializers.ModelSerializer):
+    speed = serializers.FloatField(allow_null=True, required=False)
+    heading = serializers.FloatField(allow_null=True, required=False)
+    accuracy = serializers.FloatField(allow_null=True, required=False)
+
     class Meta:
         model = TransportTripLocation
         fields = ["id", "latitude", "longitude", "speed", "heading", "accuracy", "recorded_at"]
@@ -482,8 +499,8 @@ class TransportTripLocationSerializer(serializers.ModelSerializer):
 class TransportTripSerializer(serializers.ModelSerializer):
     route_name = serializers.CharField(source="route.route_name", read_only=True)
     vehicle_number = serializers.CharField(source="route.vehicle_number", read_only=True)
-    driver_name = serializers.CharField(source="route.driver_name", read_only=True)
-    driver_phone = serializers.CharField(source="route.driver_phone", read_only=True)
+    driver_name = serializers.SerializerMethodField()
+    driver_phone = serializers.SerializerMethodField()
     latest_location = serializers.SerializerMethodField()
 
     class Meta:
@@ -504,6 +521,16 @@ class TransportTripSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
         read_only_fields = ["id", "started_at", "completed_at", "latest_location", "created_at", "updated_at"]
+
+    def get_driver_name(self, obj):
+        if obj.route.driver_profile:
+            return obj.route.driver_profile.user.full_name
+        return obj.route.driver_name
+
+    def get_driver_phone(self, obj):
+        if obj.route.driver_profile:
+            return obj.route.driver_profile.phone
+        return obj.route.driver_phone
 
     def get_latest_location(self, obj):
         latest = obj.locations.order_by("-recorded_at").first()

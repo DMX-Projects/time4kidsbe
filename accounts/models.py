@@ -9,6 +9,7 @@ class UserRole(models.TextChoices):
     APPROVER = "APPROVER", "Approver"
     FRANCHISE = "FRANCHISE", "Franchise"
     PARENT = "PARENT", "Parent"
+    DRIVER = "DRIVER", "Driver"
 
 
 class UserManager(BaseUserManager):
@@ -67,3 +68,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     @property
     def is_parent(self) -> bool:
         return self.role == UserRole.PARENT
+
+    @property
+    def is_driver(self) -> bool:
+        return self.role == UserRole.DRIVER

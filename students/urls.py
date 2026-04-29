@@ -31,6 +31,13 @@ from .portal_views import (
     driver_route_detail,
     driver_start_trip,
     driver_update_student_status,
+    FranchiseDriverListCreateView,
+    FranchiseDriverDetailView,
+    auth_driver_trip_detail,
+    auth_driver_start_trip,
+    auth_driver_post_location,
+    auth_driver_update_student_status,
+    auth_driver_complete_trip,
 )
 from .views import (
     FranchiseAchievementDetailView,
@@ -91,5 +98,16 @@ urlpatterns = [
     path("driver/transport/<uuid:token>/location/", driver_post_location, name="driver-post-location"),
     path("driver/transport/<uuid:token>/student-status/", driver_update_student_status, name="driver-student-status"),
     path("driver/transport/<uuid:token>/complete/", driver_complete_trip, name="driver-complete-trip"),
+
+    # Authenticated Driver URLs
+    path("driver/me/trip/", auth_driver_trip_detail, name="auth-driver-trip-detail"),
+    path("driver/me/trip/start/", auth_driver_start_trip, name="auth-driver-start-trip"),
+    path("driver/me/trip/location/", auth_driver_post_location, name="auth-driver-post-location"),
+    path("driver/me/trip/student-status/", auth_driver_update_student_status, name="auth-driver-update-status"),
+    path("driver/me/trip/complete/", auth_driver_complete_trip, name="auth-driver-complete-trip"),
+
+    # Franchise-side Driver Management
+    path("franchise/drivers/", FranchiseDriverListCreateView.as_view(), name="franchise-drivers"),
+    path("franchise/drivers/<int:pk>/", FranchiseDriverDetailView.as_view(), name="franchise-driver-detail"),
 ]
 
