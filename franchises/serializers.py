@@ -296,6 +296,33 @@ class ParentSerializer(serializers.ModelSerializer):
 
         return parent
 
+    def update(self, instance, validated_data):
+        email = validated_data.pop("email", None)
+        full_name = validated_data.pop("full_name", None)
+        password = validated_data.pop("password", None)
+        
+        user_updated = False
+        if email is not None and email != instance.user.email:
+            # Basic duplicate check for email update
+            if User.objects.filter(email=email).exclude(id=instance.user.id).exists():
+                raise serializers.ValidationError({"email": "An account with this email already exists."})
+            instance.user.email = email
+            instance.user.username = email
+            user_updated = True
+            
+        if full_name is not None:
+            instance.user.full_name = full_name
+            user_updated = True
+            
+        if password:
+            instance.user.set_password(password)
+            user_updated = True
+            
+        if user_updated:
+            instance.user.save()
+
+        return super().update(instance, validated_data)
+
 
 class DriverProfileSerializer(serializers.ModelSerializer):
     user = UserSerializer(read_only=True)

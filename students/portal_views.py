@@ -980,8 +980,8 @@ def auth_driver_trip_detail(request):
     if not dp:
         return Response({"detail": "Driver profile not found"}, status=404)
     
-    # A driver might be assigned to multiple routes, but usually one at a time.
-    route = dp.assigned_routes.first()
+    # A driver might be assigned to multiple routes; pick the most recently updated one.
+    route = dp.assigned_routes.order_by("-updated_at").first()
     if not route:
         return Response({"detail": "No route assigned to you."}, status=404)
     
@@ -1025,7 +1025,7 @@ def auth_driver_start_trip(request):
     if not dp:
         return Response({"detail": "Driver profile not found"}, status=404)
     
-    route = dp.assigned_routes.first()
+    route = dp.assigned_routes.order_by("-updated_at").first()
     if not route:
         return Response({"detail": "No route assigned to you."}, status=404)
     
@@ -1043,6 +1043,7 @@ def auth_driver_start_trip(request):
         status=TransportTrip.Status.LIVE,
         started_at=timezone.now()
     )
+    print(f"DEBUG: auth_driver_start_trip - Driver: {dp.user.email}, Route: {route.route_name}, Type: {trip_type}")
     return Response(TransportTripSerializer(trip).data)
 
 @api_view(["POST"])
@@ -1052,7 +1053,7 @@ def auth_driver_post_location(request):
     if not dp:
         return Response({"detail": "Driver profile not found"}, status=404)
     
-    route = dp.assigned_routes.first()
+    route = dp.assigned_routes.order_by("-updated_at").first()
     if not route:
         return Response({"detail": "No route assigned to you."}, status=404)
     
@@ -1063,7 +1064,9 @@ def auth_driver_post_location(request):
     serializer = TransportTripLocationSerializer(data=request.data)
     if serializer.is_valid():
         location = serializer.save(trip=trip)
+        print(f"DEBUG: auth_driver_post_location - Lat: {location.latitude}, Lon: {location.longitude}")
         return Response(TransportTripLocationSerializer(location).data)
+    print(f"DEBUG: auth_driver_post_location ERRORS: {serializer.errors}")
     return Response(serializer.errors, status=400)
 
 @api_view(["POST"])
@@ -1073,7 +1076,7 @@ def auth_driver_update_student_status(request):
     if not dp:
         return Response({"detail": "Driver profile not found"}, status=404)
     
-    route = dp.assigned_routes.first()
+    route = dp.assigned_routes.order_by("-updated_at").first()
     if not route:
         return Response({"detail": "No route assigned to you."}, status=404)
     
@@ -1115,7 +1118,7 @@ def auth_driver_complete_trip(request):
     if not dp:
         return Response({"detail": "Driver profile not found"}, status=404)
     
-    route = dp.assigned_routes.first()
+    route = dp.assigned_routes.order_by("-updated_at").first()
     if not route:
         return Response({"detail": "No route assigned to you."}, status=404)
         
@@ -1127,3 +1130,24 @@ def auth_driver_complete_trip(request):
     trip.completed_at = timezone.now()
     trip.save()
     return Response(TransportTripSerializer(trip).data)
+
+@api_view(["POST"])
+@permission_classes([IsDriverUser])
+def auth_driver_toggle_gps(request):
+    dp = driver_profile_for_user(request.user)
+    if not dp:
+        return Response({"detail": "Driver profile not found"}, status=404)
+    
+    route = dp.assigned_routes.order_by("-updated_at").first()
+    if not route:
+        return Response({"detail": "No route assigned to you."}, status=404)
+        
+    trip = route.trips.filter(status=TransportTrip.Status.LIVE).order_by("-started_at", "-created_at").first()
+    if not trip:
+        return Response({"detail": "No live trip found"}, status=400)
+    
+    active = request.data.get("active", True)
+    trip.is_gps_active = bool(active)
+    trip.save()
+    print(f"DEBUG: auth_driver_toggle_gps - Trip: {trip.id}, Active: {trip.is_gps_active}")
+    return Response({"is_gps_active": trip.is_gps_active})
