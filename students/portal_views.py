@@ -200,6 +200,13 @@ class ParentLiveTransportView(APIView):
         if not pp:
             return Response({"live": False, "detail": "Parent profile not found"}, status=404)
 
+        school_location = None
+        if pp.franchise.latitude and pp.franchise.longitude:
+            school_location = {
+                "latitude": float(pp.franchise.latitude),
+                "longitude": float(pp.franchise.longitude),
+            }
+
         students = StudentProfile.objects.filter(parent=pp, is_active=True)
         assigned_routes = TransportRoute.objects.filter(
             student_assignments__student__in=students,
@@ -223,6 +230,7 @@ class ParentLiveTransportView(APIView):
                     "trip": None,
                     "latest_location": None,
                     "student_status": None,
+                    "school_location": school_location,
                 }
             )
 
@@ -249,6 +257,7 @@ class ParentLiveTransportView(APIView):
                 }
                 if student_status
                 else None,
+                "school_location": school_location,
             }
         )
 
