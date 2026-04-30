@@ -38,6 +38,7 @@ from .portal_views import (
     auth_driver_post_location,
     auth_driver_update_student_status,
     auth_driver_complete_trip,
+    auth_driver_toggle_gps,
 )
 from .views import (
     FranchiseAchievementDetailView,
@@ -105,6 +106,7 @@ urlpatterns = [
     path("driver/me/trip/location/", auth_driver_post_location, name="auth-driver-post-location"),
     path("driver/me/trip/student-status/", auth_driver_update_student_status, name="auth-driver-update-status"),
     path("driver/me/trip/complete/", auth_driver_complete_trip, name="auth-driver-complete-trip"),
+    path("driver/me/trip/toggle-gps/", auth_driver_toggle_gps, name="auth-driver-toggle-gps"),
 
     # Franchise-side Driver Management
     path("franchise/drivers/", FranchiseDriverListCreateView.as_view(), name="franchise-drivers"),

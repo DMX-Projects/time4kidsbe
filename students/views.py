@@ -37,8 +37,8 @@ class ParentStudentListView(generics.ListAPIView):
         ).select_related('parent', 'parent__user', 'parent__franchise')
 
 
-class ParentStudentDetailView(generics.RetrieveAPIView):
-    """Get detailed student profile with grades"""
+class ParentStudentDetailView(generics.RetrieveUpdateAPIView):
+    """Get or update detailed student profile with grades"""
     serializer_class = StudentDetailSerializer
     permission_classes = [IsParentUser]
 
