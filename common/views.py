@@ -14,11 +14,22 @@ from .home_page_defaults import DEFAULT_HOME_PAGE_DATA, normalize_home_page_data
 
 
 class HeroSlideViewSet(viewsets.ModelViewSet):
-
-    queryset = HeroSlide.objects.filter(is_active=True)
     serializer_class = HeroSlideSerializer
-    permission_classes = []
-    pagination_class = None  # Show all slides at once
+    pagination_class = None
+
+    def get_queryset(self):
+        qs = HeroSlide.objects.all().order_by("order", "id")
+        if self.action in ("list", "retrieve"):
+            user = self.request.user
+            if user.is_authenticated and getattr(user, "role", None) == UserRole.ADMIN:
+                return qs
+            return qs.filter(is_active=True)
+        return qs
+
+    def get_permissions(self):
+        if self.action in ("list", "retrieve"):
+            return [AllowAny()]
+        return [IsAdminUser()]
 
 
 class HomeTestimonialViewSet(viewsets.ModelViewSet):

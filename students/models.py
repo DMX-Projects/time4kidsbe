@@ -291,6 +291,7 @@ class TransportRoute(models.Model):
         blank=True,
         help_text="Transport desk / GPS notice — live tracking is optional",
     )
+    destination = models.CharField(max_length=255, blank=True)
     sort_order = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

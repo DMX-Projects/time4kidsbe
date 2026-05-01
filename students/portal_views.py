@@ -214,36 +214,24 @@ class ParentLiveTransportView(APIView):
         ).distinct()
 
         routes = assigned_routes if assigned_routes.exists() else TransportRoute.objects.filter(franchise=pp.franchise)
-        trip = (
+        trips_qs = (
             TransportTrip.objects.filter(route__in=routes, status=TransportTrip.Status.LIVE)
             .select_related("route")
             .prefetch_related("locations")
             .order_by("-started_at", "-created_at")
-            .first()
         )
-        if not trip:
-            route = routes.order_by("sort_order", "route_name").first()
-            return Response(
-                {
-                    "live": False,
-                    "route": TransportRouteSerializer(route).data if route else None,
-                    "trip": None,
-                    "latest_location": None,
-                    "student_status": None,
-                    "school_location": school_location,
-                }
+        
+        trips_data = []
+        for trip in trips_qs:
+            latest_location = trip.locations.order_by("-recorded_at").first()
+            student_status = (
+                trip.student_statuses.filter(student__in=students)
+                .select_related("student")
+                .order_by("-updated_at")
+                .first()
             )
-
-        latest_location = trip.locations.order_by("-recorded_at").first()
-        student_status = (
-            trip.student_statuses.filter(student__in=students)
-            .select_related("student")
-            .order_by("-updated_at")
-            .first()
-        )
-
-        return Response(
-            {
+            
+            trips_data.append({
                 "live": latest_location is not None,
                 "route": TransportRouteSerializer(trip.route).data,
                 "trip": TransportTripSerializer(trip).data,
@@ -254,9 +242,21 @@ class ParentLiveTransportView(APIView):
                     "status": student_status.status,
                     "note": student_status.note,
                     "updated_at": student_status.updated_at,
-                }
-                if student_status
-                else None,
+                } if student_status else None,
+            })
+
+        # For backward compatibility, also return the first one as "default" fields
+        first_trip = trips_data[0] if trips_data else None
+
+        return Response(
+            {
+                "live": len(trips_data) > 0,
+                "trips": trips_data,
+                # Legacy fields for existing frontend versions:
+                "route": first_trip["route"] if first_trip else (TransportRouteSerializer(routes.order_by("sort_order", "route_name").first()).data if routes.exists() else None),
+                "trip": first_trip["trip"] if first_trip else None,
+                "latest_location": first_trip["latest_location"] if first_trip else None,
+                "student_status": first_trip["student_status"] if first_trip else None,
                 "school_location": school_location,
             }
         )
@@ -889,6 +889,22 @@ def driver_complete_trip(request, token):
 
 @api_view(["POST"])
 @permission_classes([AllowAny])
+def driver_toggle_gps(request, token):
+    route = _route_from_driver_token(token)
+    if not route:
+        return Response({"detail": "Invalid driver link"}, status=404)
+    trip = route.trips.filter(status=TransportTrip.Status.LIVE).order_by("-started_at", "-created_at").first()
+    if not trip:
+        return Response({"detail": "No live trip found"}, status=400)
+    
+    active = request.data.get("active", True)
+    trip.is_gps_active = bool(active)
+    trip.save(update_fields=["is_gps_active", "updated_at"])
+    return Response({"is_gps_active": trip.is_gps_active})
+
+
+@api_view(["POST"])
+@permission_classes([AllowAny])
 def driver_update_student_status(request, token):
     try:
         print(f"DEBUG: Updating student status for token {token}")
@@ -989,10 +1005,21 @@ def auth_driver_trip_detail(request):
     if not dp:
         return Response({"detail": "Driver profile not found"}, status=404)
     
-    # A driver might be assigned to multiple routes; pick the most recently updated one.
-    route = dp.assigned_routes.order_by("-updated_at").first()
+    assigned_routes = dp.assigned_routes.all().order_by("sort_order", "route_name")
+    
+    route_id = request.query_params.get("route_id")
+    if route_id:
+        route = assigned_routes.filter(id=route_id).first()
+    else:
+        route = assigned_routes.order_by("-updated_at").first()
+
     if not route:
-        return Response({"detail": "No route assigned to you."}, status=404)
+        return Response({
+            "route": None,
+            "active_trip": None,
+            "students": [],
+            "all_routes": TransportRouteSerializer(assigned_routes, many=True).data
+        })
     
     live_trip = route.trips.filter(status=TransportTrip.Status.LIVE).order_by("-started_at", "-created_at").first()
     assignments = route.student_assignments.filter(is_active=True).select_related("student").order_by(
@@ -1004,9 +1031,6 @@ def auth_driver_trip_detail(request):
     if live_trip:
         statuses = live_trip.student_statuses.all().select_related("student")
         status_map = {row.student_id: row for row in statuses}
-        print(f"DEBUG: auth_driver_trip_detail - Trip: {live_trip.id}, Statuses found: {len(status_map)}")
-        for sid, row in status_map.items():
-             print(f"  - Student {sid}: {row.status}")
 
     return Response({
         "route": TransportRouteSerializer(route).data,
@@ -1024,7 +1048,8 @@ def auth_driver_trip_detail(request):
                 "note": status_map[a.student_id].note if a.student_id in status_map else "",
             }
             for a in assignments
-        ]
+        ],
+        "all_routes": TransportRouteSerializer(assigned_routes, many=True).data
     })
 
 @api_view(["POST"])
@@ -1034,7 +1059,12 @@ def auth_driver_start_trip(request):
     if not dp:
         return Response({"detail": "Driver profile not found"}, status=404)
     
-    route = dp.assigned_routes.order_by("-updated_at").first()
+    route_id = request.data.get("route_id") or request.query_params.get("route_id")
+    if route_id:
+        route = dp.assigned_routes.filter(id=route_id).first()
+    else:
+        route = dp.assigned_routes.order_by("-updated_at").first()
+
     if not route:
         return Response({"detail": "No route assigned to you."}, status=404)
     
@@ -1062,7 +1092,12 @@ def auth_driver_post_location(request):
     if not dp:
         return Response({"detail": "Driver profile not found"}, status=404)
     
-    route = dp.assigned_routes.order_by("-updated_at").first()
+    route_id = request.data.get("route_id") or request.query_params.get("route_id")
+    if route_id:
+        route = dp.assigned_routes.filter(id=route_id).first()
+    else:
+        route = dp.assigned_routes.order_by("-updated_at").first()
+
     if not route:
         return Response({"detail": "No route assigned to you."}, status=404)
     
@@ -1085,7 +1120,12 @@ def auth_driver_update_student_status(request):
     if not dp:
         return Response({"detail": "Driver profile not found"}, status=404)
     
-    route = dp.assigned_routes.order_by("-updated_at").first()
+    route_id = request.data.get("route_id") or request.query_params.get("route_id")
+    if route_id:
+        route = dp.assigned_routes.filter(id=route_id).first()
+    else:
+        route = dp.assigned_routes.order_by("-updated_at").first()
+
     if not route:
         return Response({"detail": "No route assigned to you."}, status=404)
     
@@ -1127,7 +1167,12 @@ def auth_driver_complete_trip(request):
     if not dp:
         return Response({"detail": "Driver profile not found"}, status=404)
     
-    route = dp.assigned_routes.order_by("-updated_at").first()
+    route_id = request.data.get("route_id") or request.query_params.get("route_id")
+    if route_id:
+        route = dp.assigned_routes.filter(id=route_id).first()
+    else:
+        route = dp.assigned_routes.order_by("-updated_at").first()
+
     if not route:
         return Response({"detail": "No route assigned to you."}, status=404)
         
@@ -1147,7 +1192,12 @@ def auth_driver_toggle_gps(request):
     if not dp:
         return Response({"detail": "Driver profile not found"}, status=404)
     
-    route = dp.assigned_routes.order_by("-updated_at").first()
+    route_id = request.data.get("route_id") or request.query_params.get("route_id")
+    if route_id:
+        route = dp.assigned_routes.filter(id=route_id).first()
+    else:
+        route = dp.assigned_routes.order_by("-updated_at").first()
+
     if not route:
         return Response({"detail": "No route assigned to you."}, status=404)
         
