@@ -30,6 +30,7 @@ from .portal_views import (
     driver_post_location,
     driver_route_detail,
     driver_start_trip,
+    driver_toggle_gps,
     driver_update_student_status,
     FranchiseDriverListCreateView,
     FranchiseDriverDetailView,
@@ -99,6 +100,7 @@ urlpatterns = [
     path("driver/transport/<uuid:token>/location/", driver_post_location, name="driver-post-location"),
     path("driver/transport/<uuid:token>/student-status/", driver_update_student_status, name="driver-student-status"),
     path("driver/transport/<uuid:token>/complete/", driver_complete_trip, name="driver-complete-trip"),
+    path("driver/transport/<uuid:token>/toggle-gps/", driver_toggle_gps, name="driver-toggle-gps"),
 
     # Authenticated Driver URLs
     path("driver/me/trip/", auth_driver_trip_detail, name="auth-driver-trip-detail"),

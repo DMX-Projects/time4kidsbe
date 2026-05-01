@@ -8,7 +8,7 @@ from .views import (
 )
 
 router = DefaultRouter()
-router.register(r'hero-slides', HeroSlideViewSet)
+router.register(r'hero-slides', HeroSlideViewSet, basename='hero-slides')
 router.register(r'home-testimonials', HomeTestimonialViewSet, basename='home-testimonials')
 
 urlpatterns = [

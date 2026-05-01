@@ -427,6 +427,7 @@ class TransportRouteSerializer(serializers.ModelSerializer):
             "driver_info",
             "driver_token",
             "tracking_note",
+            "destination",
             "sort_order",
             "created_at",
             "updated_at",
