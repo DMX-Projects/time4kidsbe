@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import HeroSlide, Holiday, HomeTestimonial
+from .models import HeroSlide, Holiday, HomeTestimonial, MarketingAsset
 from .fields import RelativeImageField, RelativeFileField
 
 class HeroSlideSerializer(serializers.ModelSerializer):
@@ -57,3 +57,12 @@ class HolidaySerializer(serializers.ModelSerializer):
     def get_display_title(self, obj):
         """Return title if provided, otherwise state name"""
         return obj.title or obj.get_state_display()
+
+
+class MarketingAssetSerializer(serializers.ModelSerializer):
+    file = RelativeFileField(required=False, allow_null=True)
+
+    class Meta:
+        model = MarketingAsset
+        fields = '__all__'
+        read_only_fields = ['id', 'created_at', 'updated_at']

@@ -8,8 +8,8 @@ from rest_framework.exceptions import ValidationError
 
 from accounts.models import UserRole
 from accounts.permissions import IsAdminUser
-from .models import HeroSlide, HomeTestimonial, HomePageContent
-from .serializers import HeroSlideSerializer, HomeTestimonialSerializer
+from .models import HeroSlide, HomeTestimonial, HomePageContent, MarketingAsset
+from .serializers import HeroSlideSerializer, HomeTestimonialSerializer, MarketingAssetSerializer
 from .home_page_defaults import DEFAULT_HOME_PAGE_DATA, normalize_home_page_data
 
 
@@ -40,6 +40,26 @@ class HomeTestimonialViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         qs = HomeTestimonial.objects.all().order_by("order", "id")
+        if self.action in ("list", "retrieve"):
+            user = self.request.user
+            if user.is_authenticated and getattr(user, "role", None) == UserRole.ADMIN:
+                return qs
+            return qs.filter(is_active=True)
+        return qs
+
+    def get_permissions(self):
+        if self.action in ("list", "retrieve"):
+            return [AllowAny()]
+        return [IsAdminUser()]
+
+
+class MarketingAssetViewSet(viewsets.ModelViewSet):
+    """Public list: active assets only. Admin: full CRUD."""
+    serializer_class = MarketingAssetSerializer
+    pagination_class = None
+
+    def get_queryset(self):
+        qs = MarketingAsset.objects.all().order_by("-updated_at")
         if self.action in ("list", "retrieve"):
             user = self.request.user
             if user.is_authenticated and getattr(user, "role", None) == UserRole.ADMIN:
@@ -109,3 +129,44 @@ class HomePageContentResetView(APIView):
             return Response(normalize_home_page_data(obj.data))
         except Exception:
             return Response(copy.deepcopy(DEFAULT_HOME_PAGE_DATA))
+
+
+class PageContentView(APIView):
+    """
+    GET: public JSON for a specific page's marketing sections (slug-based).
+    PUT: admin replaces entire document for that page.
+    """
+
+    def get_permissions(self):
+        if self.request.method == "GET":
+            return [AllowAny()]
+        return [IsAdminUser()]
+
+    def get_default_data(self, slug):
+        from .home_page_defaults import ADMISSION_PAGE_DATA, FRANCHISE_PAGE_DATA
+        if slug == "admission":
+            return ADMISSION_PAGE_DATA
+        if slug == "franchise-opportunity":
+            return FRANCHISE_PAGE_DATA
+        return {}
+
+    def get(self, request, slug):
+        from .models import PageContent
+        obj, _ = PageContent.objects.get_or_create(
+            slug=slug,
+            defaults={"data": copy.deepcopy(self.get_default_data(slug))},
+        )
+        return Response(obj.data)
+
+    def put(self, request, slug):
+        from .models import PageContent
+        body = request.data
+        if not isinstance(body, dict):
+            raise ValidationError({"detail": "Body must be a JSON object."})
+        obj, _ = PageContent.objects.get_or_create(
+            slug=slug,
+            defaults={"data": copy.deepcopy(self.get_default_data(slug))},
+        )
+        obj.data = body
+        obj.save(update_fields=["data", "updated_at"])
+        return Response(obj.data)

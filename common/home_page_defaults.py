@@ -153,3 +153,110 @@ DEFAULT_HOME_PAGE_DATA: dict = {
         ],
     },
 }
+
+
+ADMISSION_PAGE_DATA: dict = {
+    "why_preschool": [
+        "Strong foundation for future",
+        "Social & emotional growth",
+        "Ready for big school!",
+        "Brain development boost",
+        "Confidence building",
+    ],
+    "why_time_kids": [
+        "17 Years of Happiness",
+        "250+ Centers in India",
+        "NEP 2020 Compliant",
+        "Loving & Trained Teachers",
+        "Safe, Colorful Spaces",
+        "Fun Activity Learning",
+    ],
+    "skills": [
+        {"title": "Cognitive", "desc": "Problem solving", "icon": "Brain", "color": "bg-purple-500"},
+        {"title": "Emotional", "desc": "Self-awareness", "icon": "Heart", "color": "bg-pink-500"},
+        {"title": "Social", "desc": "Team work", "icon": "Users", "color": "bg-blue-500"},
+        {"title": "Creative", "desc": "Art & Craft", "icon": "Palette", "color": "bg-orange-500"},
+        {"title": "Musical", "desc": "Rhythm & Beat", "icon": "Music", "color": "bg-green-500"},
+        {"title": "Physical", "desc": "Motor skills", "icon": "Dumbbell", "color": "bg-red-500"},
+        {"title": "Language", "desc": "Reading skills", "icon": "BookOpen", "color": "bg-indigo-500"},
+        {"title": "Nature", "desc": "Eco awareness", "icon": "Globe", "color": "bg-teal-500"},
+    ],
+    "faqs": [
+        {
+            "question": "What is the admission process?",
+            "answer": "Fill out the enquiry form, schedule a school tour, meet with our counselor, complete the registration form, and submit required documents. We will guide you through each step.",
+        },
+        {
+            "question": "What documents are required for admission?",
+            "answer": "Birth certificate of the child, recent passport-size photographs, address proof, and parent ID proof. Additional documents may be required based on the program.",
+        },
+        {
+            "question": "What is the fee structure?",
+            "answer": "Fee structure varies by location and program. Please contact your nearest T.I.M.E. Kids centre or fill the enquiry form for detailed fee information.",
+        },
+        {
+            "question": "Is there a trial class available?",
+            "answer": "Yes, we offer trial classes so your child can experience our learning environment. Contact your nearest centre to schedule a trial class.",
+        },
+        {
+            "question": "What is the student-teacher ratio?",
+            "answer": "We maintain a low student-teacher ratio of 1:10 to ensure personalized attention for every child.",
+        },
+        {
+            "question": "Are meals provided?",
+            "answer": "Nutritious snacks and meals are provided for children enrolled in full-day programs and day care. We follow strict hygiene standards.",
+        },
+        {
+            "question": "What safety measures are in place?",
+            "answer": "We have CCTV surveillance, secure entry/exit points, trained staff, child-safe furniture and equipment, and regular safety drills.",
+        },
+        {
+            "question": "Can parents visit the school?",
+            "answer": "Yes, we encourage parents to schedule a visit. You can tour our facilities, meet our teachers, and understand our curriculum and approach.",
+        },
+    ],
+}
+
+
+FRANCHISE_PAGE_DATA: dict = {
+    "benefits": [
+        {
+            "icon": "Award",
+            "title": "Strong Brand Name",
+            "description": "Leverage 17 years of T.I.M.E. Kids legacy and 30+ years of T.I.M.E. Group expertise",
+        },
+        {
+            "icon": "DollarSign",
+            "title": "Low Investment, High Returns",
+            "description": "Profitable business model with quick ROI and sustainable growth",
+        },
+        {
+            "icon": "BookOpen",
+            "title": "Complete Curriculum Support",
+            "description": "NEP 2020 updated curriculum, teaching materials, and activity plans",
+        },
+        {
+            "icon": "Users",
+            "title": "Regular Staff Training",
+            "description": "Continuous training programs for teachers and staff development",
+        },
+        {
+            "icon": "Headphones",
+            "title": "Operational Support",
+            "description": "End-to-end support in setup, marketing, and daily operations",
+        },
+        {
+            "icon": "TrendingUp",
+            "title": "Marketing Assistance",
+            "description": "National and local marketing support to grow your centre",
+        },
+    ],
+    "offerings": [
+        "Proven business model with 250+ successful centres",
+        "Comprehensive training for franchisees and staff",
+        "Marketing and promotional materials",
+        "Technology platform for operations",
+        "Quality assurance and monitoring",
+        "Parent engagement programs",
+    ],
+}
