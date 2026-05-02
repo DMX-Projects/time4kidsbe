@@ -124,3 +124,35 @@ class HomePageContent(models.Model):
 
     def __str__(self) -> str:
         return f"Home page content (pk={self.pk})" if self.pk else "Home page content (new)"
+
+
+class PageContent(models.Model):
+    """Generic JSON for marketing sections on any page (admission, franchise, etc.)."""
+    slug = models.SlugField(unique=True, help_text="Page identifier (e.g. 'admission', 'franchise-opportunity')")
+    data = models.JSONField(default=dict)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Page content"
+        verbose_name_plural = "Page contents"
+
+    def __str__(self) -> str:
+        return f"Page Content: {self.slug}"
+
+
+class MarketingAsset(models.Model):
+    """Assets like brochures, virtual tour links, etc. that can be downloaded or viewed."""
+    title = models.CharField(max_length=255)
+    slug = models.SlugField(unique=True, help_text="e.g. 'admission-brochure', 'franchise-brochure', 'virtual-tour'")
+    file = models.FileField(upload_to='assets/', blank=True, null=True, help_text="Upload the file (PDF, etc.)")
+    link = models.URLField(blank=True, max_length=500, help_text="Or provide a link (e.g. YouTube virtual tour)")
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Marketing asset"
+        verbose_name_plural = "Marketing assets"
+
+    def __str__(self):
+        return f"{self.title} ({self.slug})"

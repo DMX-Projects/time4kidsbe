@@ -2,6 +2,7 @@ import uuid
 
 from django.db import models
 from django.utils import timezone
+from django.core.validators import RegexValidator
 
 from franchises.models import DriverProfile, Franchise, ParentProfile
 
@@ -277,7 +278,11 @@ class TransportRoute(models.Model):
     map_url = models.URLField(blank=True, max_length=500)
     vehicle_number = models.CharField(max_length=80, blank=True)
     driver_name = models.CharField(max_length=255, blank=True)
-    driver_phone = models.CharField(max_length=40, blank=True)
+    driver_phone = models.CharField(
+        max_length=10, 
+        blank=True,
+        validators=[RegexValidator(r'^\d{10}$', 'Phone number must be exactly 10 digits.')]
+    )
     driver_profile = models.ForeignKey(
         DriverProfile, 
         on_delete=models.SET_NULL, 
@@ -292,6 +297,8 @@ class TransportRoute(models.Model):
         help_text="Transport desk / GPS notice — live tracking is optional",
     )
     destination = models.CharField(max_length=255, blank=True)
+    destination_latitude = models.DecimalField(max_digits=22, decimal_places=16, null=True, blank=True)
+    destination_longitude = models.DecimalField(max_digits=22, decimal_places=16, null=True, blank=True)
     sort_order = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

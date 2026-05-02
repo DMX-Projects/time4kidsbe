@@ -1,6 +1,7 @@
 from django.conf import settings
 from django.db import models
 from django.utils.text import slugify
+from django.core.validators import RegexValidator
 
 from accounts.models import User, UserRole
 
@@ -118,7 +119,11 @@ class Franchise(models.Model):
     country = models.CharField(max_length=100, blank=True)
     postal_code = models.CharField(max_length=20, blank=True)
     contact_email = models.EmailField(blank=True)
-    contact_phone = models.CharField(max_length=30, blank=True)
+    contact_phone = models.CharField(
+        max_length=10, 
+        blank=True,
+        validators=[RegexValidator(r'^\d{10}$', 'Phone number must be exactly 10 digits.')]
+    )
     
     # Enhanced Fields
     google_map_link = models.URLField(blank=True, max_length=500)
@@ -169,7 +174,12 @@ class ParentProfile(models.Model):
     franchise = models.ForeignKey(Franchise, on_delete=models.CASCADE, related_name="parents")
     child_name = models.CharField(max_length=255, blank=True)
     notes = models.TextField(blank=True)
-    phone = models.CharField(max_length=30, blank=True, default="")
+    phone = models.CharField(
+        max_length=10, 
+        blank=True, 
+        default="",
+        validators=[RegexValidator(r'^\d{10}$', 'Phone number must be exactly 10 digits.')]
+    )
     address = models.TextField(blank=True, default="")
     city = models.CharField(max_length=100, blank=True, default="")
     photo_url = models.URLField(blank=True, default="", max_length=500)
@@ -211,7 +221,11 @@ class ParentProfile(models.Model):
 class DriverProfile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="driver_profile")
     franchise = models.ForeignKey(Franchise, on_delete=models.CASCADE, related_name="drivers")
-    phone = models.CharField(max_length=30, blank=True)
+    phone = models.CharField(
+        max_length=10, 
+        blank=True,
+        validators=[RegexValidator(r'^\d{10}$', 'Phone number must be exactly 10 digits.')]
+    )
     license_number = models.CharField(max_length=100, blank=True)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)

@@ -213,6 +213,8 @@ class HomeworkAssignmentSerializer(serializers.ModelSerializer):
     student_name = serializers.SerializerMethodField()
     is_read = serializers.SerializerMethodField()
     read_status = serializers.SerializerMethodField()
+    read_count = serializers.SerializerMethodField()
+    viewed_by_parents = serializers.SerializerMethodField()
 
     class Meta:
         model = HomeworkAssignment
@@ -227,10 +229,22 @@ class HomeworkAssignmentSerializer(serializers.ModelSerializer):
             "description",
             "is_read",
             "read_status",
+            "read_count",
+            "viewed_by_parents",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "franchise", "created_at", "updated_at", "student_name", "is_read", "read_status"]
+        read_only_fields = [
+            "id",
+            "franchise",
+            "created_at",
+            "updated_at",
+            "student_name",
+            "is_read",
+            "read_status",
+            "read_count",
+            "viewed_by_parents",
+        ]
 
     def get_student_name(self, obj):
         if obj.student_id:
@@ -263,6 +277,26 @@ class HomeworkAssignmentSerializer(serializers.ModelSerializer):
 
     def get_read_status(self, obj):
         return "READ" if self.get_is_read(obj) else "UNREAD"
+
+    def get_read_count(self, obj):
+        request = self.context.get("request")
+        if not request or getattr(request.user, "role", "") != "FRANCHISE":
+            return None
+        return ParentNotificationRead.objects.filter(notification_key=f"homework-{obj.id}").count()
+
+    def get_viewed_by_parents(self, obj):
+        request = self.context.get("request")
+        if not request or getattr(request.user, "role", "") != "FRANCHISE":
+            return None
+        reads = ParentNotificationRead.objects.filter(notification_key=f"homework-{obj.id}").select_related("parent", "parent__user")
+        return [
+            {
+                "parent_id": r.parent.id,
+                "parent_name": str(r.parent),
+                "read_at": r.read_at,
+            }
+            for r in reads
+        ]
 
     def validate_student(self, value):
         if value is None:
@@ -428,6 +462,8 @@ class TransportRouteSerializer(serializers.ModelSerializer):
             "driver_token",
             "tracking_note",
             "destination",
+            "destination_latitude",
+            "destination_longitude",
             "sort_order",
             "created_at",
             "updated_at",
@@ -505,7 +541,11 @@ class TransportTripSerializer(serializers.ModelSerializer):
     vehicle_number = serializers.CharField(source="route.vehicle_number", read_only=True)
     driver_name = serializers.SerializerMethodField()
     driver_phone = serializers.SerializerMethodField()
+    destination = serializers.CharField(source="route.destination", read_only=True)
+    destination_latitude = serializers.DecimalField(source="route.destination_latitude", max_digits=22, decimal_places=16, read_only=True)
+    destination_longitude = serializers.DecimalField(source="route.destination_longitude", max_digits=22, decimal_places=16, read_only=True)
     latest_location = serializers.SerializerMethodField()
+    recent_locations = serializers.SerializerMethodField()
 
     class Meta:
         model = TransportTrip
@@ -514,6 +554,7 @@ class TransportTripSerializer(serializers.ModelSerializer):
             "route",
             "route_name",
             "vehicle_number",
+            "destination",
             "driver_name",
             "driver_phone",
             "trip_type",
@@ -521,6 +562,9 @@ class TransportTripSerializer(serializers.ModelSerializer):
             "started_at",
             "completed_at",
             "latest_location",
+            "recent_locations",
+            "destination_latitude",
+            "destination_longitude",
             "created_at",
             "updated_at",
         ]
@@ -541,3 +585,8 @@ class TransportTripSerializer(serializers.ModelSerializer):
         if not latest:
             return None
         return TransportTripLocationSerializer(latest).data
+
+    def get_recent_locations(self, obj):
+        # Return last 50 locations for polyline drawing
+        locations = obj.locations.order_by("-recorded_at")[:50]
+        return TransportTripLocationSerializer(locations, many=True).data

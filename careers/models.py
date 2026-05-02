@@ -1,5 +1,6 @@
 from django.conf import settings
 from django.db import models
+from django.core.validators import RegexValidator
 
 
 class Career(models.Model):
@@ -32,7 +33,10 @@ class JobApplication(models.Model):
     career = models.ForeignKey(Career, on_delete=models.CASCADE, related_name="applications")
     full_name = models.CharField(max_length=255)
     email = models.EmailField()
-    phone = models.CharField(max_length=20)
+    phone = models.CharField(
+        max_length=10,
+        validators=[RegexValidator(r'^\d{10}$', 'Phone number must be exactly 10 digits.')]
+    )
     linkedin_url = models.URLField(max_length=500, blank=True)
     resume = models.FileField(upload_to='resumes/')
     cover_letter = models.TextField(blank=True)

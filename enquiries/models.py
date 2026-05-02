@@ -1,4 +1,5 @@
 from django.db import models
+from django.core.validators import RegexValidator
 
 from franchises.models import Franchise
 
@@ -13,7 +14,11 @@ class Enquiry(models.Model):
     enquiry_type = models.CharField(max_length=20, choices=EnquiryType.choices)
     name = models.CharField(max_length=255)
     email = models.EmailField()
-    phone = models.CharField(max_length=30, blank=True)
+    phone = models.CharField(
+        max_length=10, 
+        blank=True,
+        validators=[RegexValidator(r'^\d{10}$', 'Phone number must be exactly 10 digits.')]
+    )
     message = models.TextField(blank=True)
     franchise = models.ForeignKey(Franchise, on_delete=models.SET_NULL, null=True, blank=True, related_name="enquiries")
     city = models.CharField(max_length=100, blank=True)
