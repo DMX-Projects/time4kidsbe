@@ -17,6 +17,7 @@ from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework import generics
 from rest_framework.exceptions import PermissionDenied
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -541,6 +542,7 @@ class FranchiseHomeworkListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsFranchiseUser]
     serializer_class = HomeworkAssignmentSerializer
     pagination_class = None
+    parser_classes = [JSONParser, FormParser, MultiPartParser]
 
     def get_queryset(self):
         f = franchise_profile_for_user(self.request.user)
@@ -563,6 +565,7 @@ class FranchiseHomeworkListCreateView(generics.ListCreateAPIView):
 class FranchiseHomeworkDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsFranchiseUser]
     serializer_class = HomeworkAssignmentSerializer
+    parser_classes = [JSONParser, FormParser, MultiPartParser]
 
     def get_queryset(self):
         f = franchise_profile_for_user(self.request.user)
