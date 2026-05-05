@@ -114,6 +114,10 @@ class StudentAchievement(models.Model):
 class HomeworkAssignment(models.Model):
     """Date-wise homework; optional per-student or per-class or whole centre."""
 
+    class AttachmentKind(models.TextChoices):
+        IMAGE = "IMAGE", "Image"
+        PDF = "PDF", "PDF"
+
     franchise = models.ForeignKey(Franchise, on_delete=models.CASCADE, related_name="homework_assignments")
     student = models.ForeignKey(
         StudentProfile,
@@ -130,6 +134,9 @@ class HomeworkAssignment(models.Model):
     assigned_date = models.DateField()
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True)
+    attachment = models.FileField(upload_to="students/homework/", null=True, blank=True)
+    attachment_name = models.CharField(max_length=255, blank=True, default="")
+    attachment_kind = models.CharField(max_length=10, choices=AttachmentKind.choices, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

@@ -19,7 +19,7 @@ from .models import (
     TransportTrip,
     TransportTripLocation,
 )
-from common.fields import RelativeImageField
+from common.fields import RelativeFileField, RelativeImageField
 
 
 class GradeSerializer(serializers.ModelSerializer):
@@ -215,6 +215,7 @@ class HomeworkAssignmentSerializer(serializers.ModelSerializer):
     read_status = serializers.SerializerMethodField()
     read_count = serializers.SerializerMethodField()
     viewed_by_parents = serializers.SerializerMethodField()
+    attachment = RelativeFileField(required=False, allow_null=True)
 
     class Meta:
         model = HomeworkAssignment
@@ -227,6 +228,9 @@ class HomeworkAssignmentSerializer(serializers.ModelSerializer):
             "assigned_date",
             "title",
             "description",
+            "attachment",
+            "attachment_name",
+            "attachment_kind",
             "is_read",
             "read_status",
             "read_count",
@@ -245,6 +249,36 @@ class HomeworkAssignmentSerializer(serializers.ModelSerializer):
             "read_count",
             "viewed_by_parents",
         ]
+
+    def validate_attachment(self, value):
+        if not value:
+            return value
+        max_size = 5 * 1024 * 1024  # 5MB
+        if getattr(value, "size", 0) and value.size > max_size:
+            raise serializers.ValidationError("Attachment too large. Max 5MB.")
+        ct = (getattr(value, "content_type", "") or "").lower()
+        name = (getattr(value, "name", "") or "").lower()
+        is_pdf = ct == "application/pdf" or name.endswith(".pdf")
+        is_image = ct.startswith("image/")
+        if not (is_pdf or is_image):
+            raise serializers.ValidationError("Only image or PDF attachments are allowed.")
+        return value
+
+    def validate(self, attrs):
+        # Auto-fill attachment metadata when a new file is posted.
+        attachment = attrs.get("attachment")
+        if attachment:
+            ct = (getattr(attachment, "content_type", "") or "").lower()
+            name = (getattr(attachment, "name", "") or "").strip()
+            if name and not attrs.get("attachment_name"):
+                attrs["attachment_name"] = name
+            if not attrs.get("attachment_kind"):
+                attrs["attachment_kind"] = "PDF" if ct == "application/pdf" or name.lower().endswith(".pdf") else "IMAGE"
+        # If attachment removed (set to null), clear metadata too.
+        if "attachment" in attrs and not attrs.get("attachment"):
+            attrs["attachment_name"] = ""
+            attrs["attachment_kind"] = ""
+        return attrs
 
     def get_student_name(self, obj):
         if obj.student_id:
