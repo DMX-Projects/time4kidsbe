@@ -136,6 +136,9 @@ class Franchise(models.Model):
     programs = models.TextField(blank=True)
     facilities = models.TextField(blank=True)
     hero_image = models.ImageField(upload_to="franchises/hero/", null=True, blank=True)
+    # Optional per-centre overrides for the public school page "Our Classes / Learning Pathways" cards.
+    # Store a list like: [{ "id": 1, "image": "/media/..." }, ...]
+    school_program_cards = models.JSONField(default=list, blank=True)
     latitude = models.DecimalField(max_digits=22, decimal_places=16, null=True, blank=True)
     longitude = models.DecimalField(max_digits=22, decimal_places=16, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
