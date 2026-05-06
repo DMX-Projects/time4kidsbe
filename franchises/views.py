@@ -198,10 +198,16 @@ class PublicStatsView(generics.GenericAPIView):
 class PublicLocationListView(generics.GenericAPIView):
     """Return all active locations with their franchise counts."""
     permission_classes = [permissions.AllowAny]
+    # DRF's browsable API renderer calls `get_queryset()` even if we override `get()`.
+    # Provide a queryset to avoid AssertionError in DEBUG mode.
+    queryset = FranchiseLocation.objects.filter(is_active=True)
+
+    def get_queryset(self):
+        return self.queryset.order_by("display_order", "city_name")
 
     def get(self, request, *args, **kwargs):
         # Get all active locations
-        active_locations = FranchiseLocation.objects.filter(is_active=True).order_by('display_order', 'city_name')
+        active_locations = self.get_queryset()
         
         # Get franchise counts per city (case-insensitive grouping would be better but city is CharField)
         # We'll do a simple count for now.
