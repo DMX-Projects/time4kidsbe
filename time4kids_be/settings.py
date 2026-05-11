@@ -103,7 +103,8 @@ TEMPLATES = [
 WSGI_APPLICATION = "time4kids_be.wsgi.application"
 
 # Database Configuration
-DB_ENGINE = os.getenv("DB_ENGINE", "sqlite3").lower()
+# Default: PostgreSQL for local and development. Set DB_ENGINE=sqlite3 to use file-based SQLite.
+DB_ENGINE = os.getenv("DB_ENGINE", "postgresql").lower()
 
 if DB_ENGINE == "postgresql":
     DATABASES = {
@@ -120,7 +121,7 @@ if DB_ENGINE == "postgresql":
         }
     }
 else:
-    # Default to SQLite for development
+    # Opt-in SQLite (set DB_ENGINE=sqlite3), e.g. when PostgreSQL is not installed.
     DATABASES = {
         "default": {
             "ENGINE": "django.db.backends.sqlite3",
