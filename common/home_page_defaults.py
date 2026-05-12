@@ -55,8 +55,8 @@ def normalize_home_page_data(data):
 
 DEFAULT_HOME_PAGE_DATA: dict = {
     "key_navigation": [
-        {"icon": "/icon-tour.png", "alt": "Virtual Tour", "href": "/media", "label": "Virtual\nTour", "nav_class": "nav-link1"},
-        {"icon": "/icon-gallery.png", "alt": "Photo / Video Gallery", "href": "/media", "label": "Photo / Video Gallery", "nav_class": "nav-link2"},
+        {"icon": "/icon-tour.png", "alt": "Virtual Tour", "href": "/gallery", "label": "Virtual\nTour", "nav_class": "nav-link1"},
+        {"icon": "/icon-gallery.png", "alt": "Photo / Video Gallery", "href": "/gallery", "label": "Photo / Video Gallery", "nav_class": "nav-link2"},
         {"icon": "/icon-nearstcenter.png", "alt": "Find your Nearest Centre", "href": "/locate-centre", "label": "Find your Nearest  Centre", "nav_class": "nav-link3"},
         {"icon": "/icon-franchise.png", "alt": "Become a Franchise", "href": "/franchise", "label": "Become a Franchise", "nav_class": "nav-link1"},
         {
