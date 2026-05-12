@@ -18,6 +18,7 @@ class Event(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
+        db_table = "event"
         ordering = ["-start_date", "title"]
 
     def __str__(self) -> str:

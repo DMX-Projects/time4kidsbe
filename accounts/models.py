@@ -49,6 +49,9 @@ class User(AbstractBaseUser, PermissionsMixin):
     USERNAME_FIELD = "email"
     REQUIRED_FIELDS: list[str] = []
 
+    class Meta:
+        db_table = "users"
+
     def __str__(self) -> str:
         identifier = self.username or self.email
         return f"{identifier} ({self.role})"

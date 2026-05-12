@@ -32,7 +32,7 @@ def send_enquiry_email(enquiry):
     recipients = [to_email]
     if enquiry.franchise and enquiry.franchise.contact_email:
         recipients.append(enquiry.franchise.contact_email)
-    if enquiry.franchise and enquiry.franchise.admin.email:
+    if enquiry.franchise and getattr(enquiry.franchise, "admin", None) and enquiry.franchise.admin.email:
         recipients.append(enquiry.franchise.admin.email)
     
     # Remove duplicates
@@ -141,4 +141,103 @@ def send_enquiry_email(enquiry):
             
     except Exception as e:
         logger.error(f"Error sending enquiry email: {str(e)}")
+        return False
+
+
+def send_franchise_enquiry_email(lead):
+    """
+    Send email when a new franchise opportunity lead is submitted (stored in `FranchiseEnquiry`).
+    """
+    api_key = getattr(settings, "SENDGRID_API_KEY", None)
+    if not api_key:
+        logger.error("SendGrid API key not configured in settings")
+        return False
+
+    from_email = getattr(settings, "MAIL_FROM_ADDRESS", "info@time4education.com")
+    to_email = getattr(settings, "MAIL_TO_ADDRESS", "mdsahilkhan634@gmail.com")
+
+    recipients = [to_email]
+    if lead.franchise and lead.franchise.contact_email:
+        recipients.append(lead.franchise.contact_email)
+    if lead.franchise and getattr(lead.franchise, "admin", None) and lead.franchise.admin.email:
+        recipients.append(lead.franchise.admin.email)
+
+    recipients = list(set(recipients))
+
+    subject = f"New Franchise Opportunity Lead from {lead.name}"
+
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <style>
+            body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
+            .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
+            .header {{ background: linear-gradient(135deg, #085390 0%, #0a6bb5 100%); color: white; padding: 20px; border-radius: 8px 8px 0 0; }}
+            .content {{ background: #f9f9f9; padding: 20px; border: 1px solid #ddd; border-top: none; border-radius: 0 0 8px 8px; }}
+            .field {{ margin-bottom: 15px; }}
+            .label {{ font-weight: bold; color: #085390; }}
+            .value {{ margin-top: 5px; padding: 10px; background: white; border-left: 3px solid #e6952e; }}
+            .footer {{ margin-top: 20px; padding-top: 15px; border-top: 2px solid #ddd; font-size: 12px; color: #666; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h2 style="margin: 0;">📬 New Franchise Opportunity Lead</h2>
+            </div>
+            <div class="content">
+                <div class="field">
+                    <div class="label">👤 Name:</div>
+                    <div class="value">{lead.name}</div>
+                </div>
+                <div class="field">
+                    <div class="label">📧 Email:</div>
+                    <div class="value"><a href="mailto:{lead.email}">{lead.email}</a></div>
+                </div>
+                <div class="field">
+                    <div class="label">📱 Phone:</div>
+                    <div class="value">{lead.phone}</div>
+                </div>
+                <div class="field">
+                    <div class="label">🏙️ City:</div>
+                    <div class="value">{lead.city}</div>
+                </div>
+                {f'''
+                <div class="field">
+                    <div class="label">🏢 Franchise:</div>
+                    <div class="value">{lead.franchise.name}</div>
+                </div>
+                ''' if lead.franchise else ''}
+                <div class="field">
+                    <div class="label">💬 Details:</div>
+                    <div class="value" style="white-space: pre-wrap;">{lead.message}</div>
+                </div>
+                <div class="footer">
+                    <p style="margin-top: 15px; color: #999;">
+                        This is an automated notification from T.I.M.E. Kids.
+                    </p>
+                </div>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
+    try:
+        message = Mail(
+            from_email=from_email,
+            to_emails=recipients,
+            subject=subject,
+            html_content=html_content,
+        )
+        sg = SendGridAPIClient(api_key)
+        response = sg.send(message)
+        if response.status_code == 202:
+            logger.info(f"Franchise lead email sent for: {lead.name}")
+            return True
+        logger.warning(f"SendGrid returned status code: {response.status_code}")
+        return False
+    except Exception as e:
+        logger.error(f"Error sending franchise lead email: {str(e)}")
         return False
