@@ -90,8 +90,8 @@ DEFAULT_HOME_PAGE_DATA: dict = {
         "heading_prefix": "Why Choose ",
         "heading_accent": "T.I.M.E. Kids?",
         "features": [
-            {"image": "/infra.jpg", "title": "Safe Infrastructure", "desc": "Secure premises for complete peace of mind.", "color": "#FEE2E2", "accent": "#EF4444"},
-            {"image": "/11.png", "title": "Trained Teachers", "desc": "Experienced educators nurturing your child.", "color": "#E0F2FE", "accent": "#0EA5E9"},
+            {"image": "/feature-safe-infrastructure.png", "title": "Safe Infrastructure", "desc": "Secure premises for complete peace of mind.", "color": "#FEE2E2", "accent": "#EF4444"},
+            {"image": "/feature-trained-teachers.png", "title": "Trained Teachers", "desc": "Experienced educators nurturing your child.", "color": "#E0F2FE", "accent": "#0EA5E9"},
             {"image": "/4.png", "title": "NEP 2020 Curriculum", "desc": "Modern curriculum for holistic growth.", "color": "#FFEDD5", "accent": "#F97316"},
             {"image": "/17.png", "title": "17 Years Legacy", "desc": "Educational expertise since 2005.", "color": "#DCFCE7", "accent": "#22C55E"},
             {"image": "/18.png", "title": "Caring Environment", "desc": "A second home for your little one.", "color": "#FDF2F8", "accent": "#EC4899"},
@@ -235,14 +235,14 @@ ADMISSION_PAGE_DATA: dict = {
             "author": "T.I.M.E. Kids Kilpauk",
             "location": "Chennai",
             "video_url": "/chaninai kilpauk-AnnualDay-Video-2018-19.mp4",
-            "thumbnail_url": "/day care.png",
+            "thumbnail_url": "/feature-annual-day-celebrations.png",
         },
         {
             "title": "School Activities",
             "author": "T.I.M.E. Kids Chennai",
             "location": "Chennai",
             "video_url": "/chennai2.mp4",
-            "thumbnail_url": "/infra.jpg",
+            "thumbnail_url": "/feature-safe-infrastructure.png",
         },
         {
             "title": "Happy Moments",
