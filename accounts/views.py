@@ -30,7 +30,7 @@ class AdminStatsView(APIView):
     permission_classes = [IsAdminUser]
 
     def get(self, request):
-        from enquiries.models import Enquiry
+        from enquiries.models import Enquiry, FranchiseEnquiry
         from franchises.models import Franchise, ParentProfile
 
         admin_user = request.user
@@ -39,11 +39,10 @@ class AdminStatsView(APIView):
         # Match AdminFranchiseViewSet list: all franchises an admin may manage
         franchise_count = Franchise.objects.count()
         # Global enquiries + enquiries tied to franchises owned by this admin
-        enquiries_count = (
-            Enquiry.objects.filter(Q(franchise__isnull=True) | Q(franchise__admin=admin_user))
-            .distinct()
-            .count()
-        )
+        base_enq = Q(franchise__isnull=True) | Q(franchise__admin=admin_user)
+        enquiries_count = Enquiry.objects.filter(base_enq).distinct().count() + FranchiseEnquiry.objects.filter(
+            base_enq
+        ).distinct().count()
         parents_count = ParentProfile.objects.filter(franchise__admin=admin_user).count()
 
         return Response(

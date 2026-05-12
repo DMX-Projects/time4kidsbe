@@ -98,6 +98,7 @@ class FranchiseLocation(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
+        db_table = "franchise_location"
         ordering = ['display_order', 'city_name']
         verbose_name = "Franchise Location"
         verbose_name_plural = "Franchise Locations"
@@ -146,6 +147,7 @@ class Franchise(models.Model):
     is_active = models.BooleanField(default=True)
 
     class Meta:
+        db_table = "franchise"
         ordering = ["name"]
 
     def save(self, *args, **kwargs):
