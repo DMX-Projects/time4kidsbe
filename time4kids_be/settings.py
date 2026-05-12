@@ -204,7 +204,11 @@ MAIL_TO_ADDRESS = os.getenv("MAIL_TO_ADDRESS", "mdsahilkhan634@gmail.com")
 PUBLIC_SITE_URL = os.getenv("PUBLIC_SITE_URL", "http://localhost:3000").rstrip("/")
 
 # CSRF Configuration - must include scheme (http:// or https://)
-csrf_origins = os.getenv("CSRF_TRUSTED_ORIGINS", "http://localhost:3000")
+# Next dev may use 3001 if 3000 is busy — include both ports for localhost / 127.0.0.1.
+csrf_origins = os.getenv(
+    "CSRF_TRUSTED_ORIGINS",
+    "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001",
+)
 CSRF_TRUSTED_ORIGINS = [
     origin.strip() 
     for origin in csrf_origins.split(",") 
