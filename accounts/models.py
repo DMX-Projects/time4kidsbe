@@ -56,22 +56,26 @@ class User(AbstractBaseUser, PermissionsMixin):
         identifier = self.username or self.email
         return f"{identifier} ({self.role})"
 
+    def normalized_role(self) -> str:
+        """Uppercase role for comparisons (legacy imports used lowercase)."""
+        return str(self.role or "").strip().upper()
+
     @property
     def is_admin(self) -> bool:
-        return self.role == UserRole.ADMIN
+        return self.normalized_role() == UserRole.ADMIN.value
 
     @property
     def is_approver(self) -> bool:
-        return self.role == UserRole.APPROVER
+        return self.normalized_role() == UserRole.APPROVER.value
 
     @property
     def is_franchise(self) -> bool:
-        return self.role == UserRole.FRANCHISE
+        return self.normalized_role() == UserRole.FRANCHISE.value
 
     @property
     def is_parent(self) -> bool:
-        return self.role == UserRole.PARENT
+        return self.normalized_role() == UserRole.PARENT.value
 
     @property
     def is_driver(self) -> bool:
-        return self.role == UserRole.DRIVER
+        return self.normalized_role() == UserRole.DRIVER.value

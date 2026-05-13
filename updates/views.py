@@ -2,7 +2,7 @@ from rest_framework import generics, viewsets
 from rest_framework.permissions import AllowAny
 from rest_framework.exceptions import PermissionDenied
 
-from accounts.models import UserRole
+from accounts.models import User, UserRole
 from accounts.permissions import IsFranchiseUser, IsAdminOrApproverUser
 from accounts.profile_access import franchise_profile_for_user as _franchise_profile_for_user
 
@@ -31,7 +31,10 @@ class UpdateViewSet(viewsets.ModelViewSet):
         if profile is not None:
             return queryset.filter(franchise=profile)
 
-        if user.is_authenticated and getattr(user, "role", None) in (UserRole.ADMIN, UserRole.APPROVER):
+        if user.is_authenticated and isinstance(user, User) and user.normalized_role() in (
+            UserRole.ADMIN.value,
+            UserRole.APPROVER.value,
+        ):
             return queryset
 
         return queryset.filter(franchise__isnull=True, is_active=True)
