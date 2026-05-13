@@ -6,7 +6,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.exceptions import ValidationError
 
-from accounts.models import UserRole
+from accounts.models import User, UserRole
 from accounts.permissions import IsAdminUser
 from .models import HeroSlide, HomeTestimonial, HomePageContent, MarketingAsset
 from .serializers import HeroSlideSerializer, HomeTestimonialSerializer, MarketingAssetSerializer
@@ -21,7 +21,7 @@ class HeroSlideViewSet(viewsets.ModelViewSet):
         qs = HeroSlide.objects.all().order_by("order", "id")
         if self.action in ("list", "retrieve"):
             user = self.request.user
-            if user.is_authenticated and getattr(user, "role", None) == UserRole.ADMIN:
+            if user.is_authenticated and isinstance(user, User) and user.normalized_role() == UserRole.ADMIN.value:
                 return qs
             return qs.filter(is_active=True)
         return qs
@@ -42,7 +42,7 @@ class HomeTestimonialViewSet(viewsets.ModelViewSet):
         qs = HomeTestimonial.objects.all().order_by("order", "id")
         if self.action in ("list", "retrieve"):
             user = self.request.user
-            if user.is_authenticated and getattr(user, "role", None) == UserRole.ADMIN:
+            if user.is_authenticated and isinstance(user, User) and user.normalized_role() == UserRole.ADMIN.value:
                 return qs
             return qs.filter(is_active=True)
         return qs
@@ -62,7 +62,7 @@ class MarketingAssetViewSet(viewsets.ModelViewSet):
         qs = MarketingAsset.objects.all().order_by("-updated_at")
         if self.action in ("list", "retrieve"):
             user = self.request.user
-            if user.is_authenticated and getattr(user, "role", None) == UserRole.ADMIN:
+            if user.is_authenticated and isinstance(user, User) and user.normalized_role() == UserRole.ADMIN.value:
                 return qs
             return qs.filter(is_active=True)
         return qs

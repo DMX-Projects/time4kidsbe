@@ -314,13 +314,13 @@ class HomeworkAssignmentSerializer(serializers.ModelSerializer):
 
     def get_read_count(self, obj):
         request = self.context.get("request")
-        if not request or getattr(request.user, "role", "") != "FRANCHISE":
+        if not request or str(getattr(request.user, "role", "") or "").strip().upper() != "FRANCHISE":
             return None
         return ParentNotificationRead.objects.filter(notification_key=f"homework-{obj.id}").count()
 
     def get_viewed_by_parents(self, obj):
         request = self.context.get("request")
-        if not request or getattr(request.user, "role", "") != "FRANCHISE":
+        if not request or str(getattr(request.user, "role", "") or "").strip().upper() != "FRANCHISE":
             return None
         reads = ParentNotificationRead.objects.filter(notification_key=f"homework-{obj.id}").select_related("parent", "parent__user")
         return [
@@ -517,7 +517,7 @@ class TransportRouteSerializer(serializers.ModelSerializer):
     def get_driver_token(self, obj):
         request = self.context.get("request")
         user = getattr(request, "user", None)
-        if getattr(user, "role", "") == "FRANCHISE":
+        if str(getattr(user, "role", "") or "").strip().upper() == "FRANCHISE":
             return str(obj.driver_token)
         return ""
 
