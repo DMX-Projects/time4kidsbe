@@ -257,50 +257,115 @@ ADMISSION_PAGE_DATA: dict = {
 
 FRANCHISE_PAGE_DATA: dict = {
     "hero": {
-        "title_prefix": "Franchise",
-        "title_accent": "Opportunity",
-        "subtitle": "Partner with India's trusted preschool brand and build a rewarding business",
+        "title_prefix": "Why Partner with",
+        "title_accent": "T.I.M.E. Kids Preschools?",
+        "subtitle": "Join India's Most Trusted Preschool Franchise Network",
+        "intro_paragraphs": [
+            "Build a meaningful and rewarding business with T.I.M.E. Kids Preschools — a preschool brand backed by the educational legacy of T.I.M.E., one of India's most respected names in learning and test preparation.",
+            "With decades of educational expertise, a strong nationwide presence, and a child-first philosophy, T.I.M.E. Kids offers aspiring entrepreneurs an opportunity to create both financial success and lasting social impact.",
+        ],
+    },
+    "benefits_section": {
+        "heading_prefix": "The T.I.M.E. Kids",
+        "heading_accent": "Advantage",
+        "blurb": "",
     },
     "benefits": [
         {
             "icon": "Award",
-            "title": "Strong Brand Name",
-            "description": "Leverage 17 years of T.I.M.E. Kids legacy and 30+ years of T.I.M.E. Group expertise",
-        },
-        {
-            "icon": "DollarSign",
-            "title": "Low Investment, High Returns",
-            "description": "Profitable business model with quick ROI and sustainable growth",
-        },
-        {
-            "icon": "BookOpen",
-            "title": "Complete Curriculum Support",
-            "description": "NEP 2020 updated curriculum, teaching materials, and activity plans",
-        },
-        {
-            "icon": "Users",
-            "title": "Regular Staff Training",
-            "description": "Continuous training programs for teachers and staff development",
-        },
-        {
-            "icon": "Headphones",
-            "title": "Operational Support",
-            "description": "End-to-end support in setup, marketing, and daily operations",
+            "title": "Proven Educational Legacy",
+            "description": (
+                "Leverage the strength of a trusted education group that has built a growing network of 250+ preschool centres across 60+ cities, "
+                "creating a strong foundation of trust, quality, and educational excellence."
+            ),
         },
         {
             "icon": "TrendingUp",
-            "title": "Marketing Assistance",
-            "description": "National and local marketing support to grow your centre",
+            "title": "Fast-Growing Preschool Industry",
+            "description": (
+                "India's preschool sector continues to witness rapid growth, making this the ideal time to invest in early childhood education — "
+                "a segment driven by increasing awareness of quality foundational learning among parents."
+            ),
+        },
+        {
+            "icon": "BookOpen",
+            "title": "Research-Based Curriculum",
+            "description": (
+                "Gain access to a professionally designed and continuously evolving curriculum aligned with modern early learning methodologies "
+                "and compatible with CBSE, ICSE, and SSC educational frameworks.\n\n"
+                "The curriculum follows a playway method of teaching focused on the holistic development of every child, "
+                "preparing them confidently for primary schooling."
+            ),
+        },
+        {
+            "icon": "Heart",
+            "title": "Strong Brand Credibility",
+            "description": (
+                "Benefit from the reputation and trust associated with the T.I.M.E. brand — known nationwide for academic excellence, "
+                "structured systems, and student success."
+            ),
+        },
+        {
+            "icon": "Headphones",
+            "title": "Comprehensive Franchise Support",
+            "description": (
+                "At T.I.M.E. Kids, franchisees receive end-to-end support at every stage — from setup and launch to operations and long-term growth."
+            ),
         },
     ],
+    "offerings_section": {
+        "heading_prefix": "Comprehensive",
+        "heading_accent": "Franchise Support",
+        "intro": (
+            "At T.I.M.E. Kids, franchisees receive end-to-end support at every stage — from setup and launch to operations and long-term growth."
+        ),
+        "blurb": "",
+    },
     "offerings": [
-        "Proven business model with 250+ successful centres",
-        "Comprehensive training for franchisees and staff",
-        "Marketing and promotional materials",
-        "Technology platform for operations",
-        "Quality assurance and monitoring",
-        "Parent engagement programs",
+        "Infrastructure & Setup Guidance — Expert assistance in planning and establishing child-friendly infrastructure that meets preschool operational and safety standards.",
+        "Recruitment & Teacher Training — Support in recruiting qualified staff along with professional training programs for teachers and centre teams.",
+        "Marketing & Admissions Support — Guidance on local marketing initiatives, branding activities, parent outreach, and admissions strategies to help build strong enrolments.",
+        "Academic & Operational Training — Comprehensive training on curriculum delivery, classroom management, child engagement practices, and day-to-day centre operations.",
+        "Continuous Handholding — Ongoing academic and operational support designed to help centres achieve stability, sustained growth, and long-term profitability.",
     ],
+    "getting_started": {
+        "heading": "What You Need to Get Started",
+        "intro": "We are looking for passionate individuals who believe in nurturing young learners while building a successful and impactful business.",
+        "items": [
+            {
+                "title": "Space Requirement",
+                "description": (
+                    "Minimum 1,800 sq. ft. constructed area. Independent building or house in a good residential locality preferred."
+                ),
+            },
+            {
+                "title": "Investment",
+                "description": (
+                    "Approximate investment: ₹12–15 lakhs. Includes infrastructure setup and operational readiness for launching the preschool."
+                ),
+            },
+        ],
+    },
+    "closing": {
+        "heading": "Start Your Journey with T.I.M.E. Kids",
+        "paragraphs": [
+            "Become part of a growing national preschool network committed to creating safe, engaging, and joyful learning environments for children across India.",
+            'Together, we can build centres that truly become a "second home" for every child.',
+        ],
+    },
+    "quick_highlights": {
+        "heading": "Quick Highlights",
+        "items": [
+            "250+ Centres Across India",
+            "34+ Years of Educational Excellence",
+            "Child-Safe & Non-Toxic Infrastructure Standards",
+            "Low Investment with Strong Growth Potential",
+            "High Social-Impact Business Opportunity",
+            "End-to-End Academic & Operational Support",
+            "Proven Systems & Structured Processes",
+            "Trusted Brand with Nationwide Recognition",
+        ],
+    },
     "testimonials": [
         {"title": "Best business decision", "author": "Franchise Partner", "location": "Bangalore", "video_url": "", "thumbnail_url": ""},
         {"title": "Complete support from day one", "author": "Franchise Partner", "location": "Chennai", "video_url": "", "thumbnail_url": ""},
@@ -331,6 +396,58 @@ FRANCHISE_PAGE_DATA: dict = {
 }
 
 
+PROGRAM_DESCRIPTIONS: dict = {
+    "play_group": (
+        "At TimeKids Play Group, we provide a warm, safe, and joyful environment where toddlers begin their learning journey through play, exploration, and interaction. "
+        "The Play Group program is a child's first step into a world beyond home, focusing on a smooth transition through a caring and playful atmosphere. "
+        "Our educators nurture a love for discovery, helping children understand the world around them while strengthening their cognitive and social abilities.\n\n"
+        "The program focuses on developing social skills, sensory experiences, communication, and motor coordination through fun-filled activities, music, storytelling, and guided play. "
+        "Our caring educators ensure that every child feels comfortable, confident, and emotionally secure while gradually adapting to a structured learning environment. "
+        "We encourage curiosity, creativity, and independent expression, helping children build a strong foundation for future learning in a happy and nurturing atmosphere. "
+        "It truly becomes a home away from home for your child."
+    ),
+    "nursery": (
+        "The Nursery program at TimeKids is designed to nurture curiosity, confidence, and early learning skills in young minds. "
+        "At this stage, the focus shifts toward building a strong foundation in language, numbers, and self-expression. "
+        "Through activity-based learning, children are introduced to language development, phonics, numbers, creative expression, and social interaction in an engaging and enjoyable manner.\n\n"
+        "Our curriculum encourages children to explore, ask questions, and develop communication and thinking abilities through stories, music, art, games, and hands-on activities. "
+        "Children are also introduced to pre-writing strokes of alphabets and numbers. "
+        "Special emphasis is placed on emotional development, classroom participation, and building independence, helping children smoothly transition into structured academic learning with confidence and enthusiasm."
+    ),
+    "pp1": (
+        "The PP-1 program focuses on strengthening foundational academic and life skills through an interactive and child-friendly approach. "
+        "Children are introduced to pre-reading, pre-writing, phonics, number concepts, logical thinking, and problem-solving activities that prepare them for advanced learning.\n\n"
+        "The curriculum promotes creativity, confidence, communication, and teamwork through experiential learning, role play, projects, and classroom activities. "
+        "The PP-1 program is designed to expand a child's horizons from the classroom to the world around them. "
+        "We nurture curious and interactive learners by encouraging them to ask questions and explore how and why.\n\n"
+        "The curriculum also focuses on building strong foundations in reading readiness, logical thinking, and environmental awareness. "
+        "Our educators create a stimulating environment where every child is encouraged to explore their potential, develop independent thinking, and build the confidence required for formal schooling and lifelong learning."
+    ),
+    "pp2": (
+        "The PP-2 program prepares children for a smooth transition into primary school by building strong academic readiness and essential life skills. "
+        "The curriculum focuses on reading readiness, writing skill development, vocabulary building, mathematical concepts, reasoning, creativity, and independent learning.\n\n"
+        "As the final preschool stage, the PP-2 program focuses on refining communication, independence, and core academic skills. "
+        "Through engaging classroom activities, collaborative learning, and hands-on experiences, children develop confidence, communication abilities, and problem-solving skills.\n\n"
+        "Equal importance is given to personality development, discipline, social interaction, and emotional growth, ensuring that children are well-prepared to confidently step into formal schooling with enthusiasm and a love for learning. "
+        "Our graduates emerge as well-rounded individuals, equipped with the knowledge and social maturity needed to excel in any formal school environment."
+    ),
+    "summer": (
+        "At TimeKids, we offer two types of Summer Programs: Summer Camp and Refresher Course.\n\n"
+        "Summer Camp provides a safe, caring, and stimulating environment where children feel secure, happy, and engaged throughout the program. "
+        "It combines supervised care with age-appropriate learning activities, creative play, storytelling, music, indoor games, and social interaction to ensure holistic development.\n\n"
+        "With trained caregivers, child-friendly infrastructure, and a nurturing atmosphere, we focus on every child's emotional well-being, hygiene, comfort, and daily routine. "
+        "The program is thoughtfully designed to support working parents while ensuring children enjoy a balanced day filled with learning, care, fun, and meaningful engagement.\n\n"
+        "The camp includes a healthy mix of rest, nutritious meals, and supervised play. "
+        "We also offer enrichment activities such as creative hobbies, physical games, and interactive group activities to keep children active, productive, and happy. "
+        "Whether exploring a new storybook or participating in team activities, children receive personalized attention that supports their emotional and social development until they are reunited with their parents.\n\n"
+        "The TimeKids Refresher Program focuses on improving writing readiness and confidence in young learners. "
+        "Designed for children in the 3-4 years and 4-5 years age groups, the program includes pre-writing skills, writing improvement exercises, and activities that help children gain confidence in writing alphabets and numbers.\n\n"
+        "The program prepares children for a smooth and confident transition into PP-1 and PP-2 after the summer break. "
+        "As the name suggests, the Refresher Program strengthens and refreshes the basics of writing skills, making children more confident, fluent, and comfortable with writing activities appropriate to their age group."
+    ),
+}
+
+
 PROGRAMS_PAGE_DATA: dict = {
     "hero": {
         "badge": "Bright futures start here",
@@ -344,42 +461,42 @@ PROGRAMS_PAGE_DATA: dict = {
         {
             "image": "/1.png",
             "name": "Play Group",
-            "ageGroup": "2 - 3 years",
+            "ageGroup": "Age Group: 2-3 Years",
             "duration": "2-3 hours",
-            "description": "A magical start to learning! We focus on sensory play, making friends, and discovering the colorful world around us.",
-            "features": ["Messy & Sensory Play", "Music & Dance", "Making Friends", "Fun with Colors"],
+            "description": PROGRAM_DESCRIPTIONS["play_group"],
+            "features": ["Smooth Transition Beyond Home", "Sensory & Guided Play", "Music and Storytelling", "Social and Motor Skills"],
         },
         {
             "image": "/2 (1).png",
             "name": "Nursery",
-            "ageGroup": "3 - 4 years",
+            "ageGroup": "Age Group: 3-4 Years",
             "duration": "3-4 hours",
-            "description": "Building bridges to big ideas! Hands-on activities that spark curiosity, language, and creativity in little minds.",
-            "features": ["Story Time Fun", "Arts & Crafts", "Counting Games", "Outdoor Exploration"],
+            "description": PROGRAM_DESCRIPTIONS["nursery"],
+            "features": ["Language and Phonics", "Numbers and Pre-Writing", "Creative Expression", "Confidence and Independence"],
         },
         {
             "image": "/2.png",
-            "name": "Pre-Primary 1",
-            "ageGroup": "4 - 5 years",
+            "name": "PP-1 / Junior KG / LKG",
+            "ageGroup": "Age Group: 4-5 Years",
             "duration": "4 hours",
-            "description": "Ready, set, grow! We introduce phonics, writing, and numbers through exciting themes and interactive play.",
-            "features": ["Phonics & Reading", "Writing Fun", "Number Magic", "World Around Us"],
+            "description": PROGRAM_DESCRIPTIONS["pp1"],
+            "features": ["Pre-Reading and Phonics", "Number Concepts", "Logical Thinking", "Projects and Role Play"],
         },
         {
             "image": "/16.png",
-            "name": "Pre-Primary 2",
-            "ageGroup": "5 - 6 years",
+            "name": "PP-2 / Senior KG / UKG",
+            "ageGroup": "Age Group: 5-6 Years",
             "duration": "4-5 hours",
-            "description": "Future school superstars! Advanced concepts in math, science, and language to prep for big school with confidence.",
-            "features": ["Little Scientists", "Math Whiz", "Creative Writing", "Public Speaking"],
+            "description": PROGRAM_DESCRIPTIONS["pp2"],
+            "features": ["Reading and Writing Readiness", "Vocabulary and Maths", "Reasoning and Creativity", "Primary School Confidence"],
         },
         {
             "image": "/day care.png",
-            "name": "Day Care",
-            "ageGroup": "2 - 10 years",
+            "name": "Summer Programs",
+            "ageGroup": "Summer Camp and Refresher Course",
             "duration": "Full Day",
-            "description": "A home away from home! Safe, loving, and engaging care with nutritious meals and help with homework.",
-            "features": ["Homework Help", "Yummy Meals", "Nap Time", "Free Play"],
+            "description": PROGRAM_DESCRIPTIONS["summer"],
+            "features": ["Summer Camp", "Refresher Course", "Writing Readiness", "Care, Play, and Enrichment"],
         },
     ],
 }
