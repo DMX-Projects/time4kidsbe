@@ -25,16 +25,15 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         # Try to find user by email first, then by username
         user = None
         if identifier:
-            # Try authenticating with email
-            user = authenticate(email=identifier, password=password)
+            # Try authenticating with email - ModelBackend expects 'username' keyword
+            user = authenticate(username=identifier, password=password)
             
             # If email auth fails, try to find user by username and authenticate
             if not user:
                 try:
-                    from .models import User
                     user_obj = User.objects.filter(username=identifier).first()
                     if user_obj:
-                        user = authenticate(email=user_obj.email, password=password)
+                        user = authenticate(username=user_obj.email, password=password)
                 except:
                     pass
         
@@ -43,14 +42,25 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         if not user.is_active:
             raise serializers.ValidationError("User account is disabled")
         
-        # Call parent validate with email to generate tokens
-        attrs["email"] = user.email
-        data = super().validate(attrs)
+        # We've authenticated the user manually. 
+        # SimpleJWT TokenObtainPairSerializer uses self.user to generate tokens.
+        self.user = user
+        
+        # Generate tokens manually instead of calling super().validate(attrs)
+        # to avoid the parent's authenticate() call which might fail with email= keyword
+        from rest_framework_simplejwt.tokens import RefreshToken
+        refresh = RefreshToken.for_user(user)
+        
+        data = {
+            'refresh': str(refresh),
+            'access': str(refresh.access_token),
+        }
+        
         data["user"] = {
-            "id": self.user.id,
-            "email": self.user.email,
-            "full_name": self.user.full_name,
-            "role": self.user.role,
+            "id": user.id,
+            "email": user.email,
+            "full_name": user.full_name,
+            "role": user.role,
         }
         return data
 
@@ -82,15 +92,15 @@ class ParentTokenObtainPairSerializer(TokenObtainPairSerializer):
         # Try to find user by email first, then by username
         user = None
         if identifier:
-            # Try authenticating with email
-            user = authenticate(email=identifier, password=password)
+            # Try authenticating with email - ModelBackend expects 'username' keyword
+            user = authenticate(username=identifier, password=password)
             
             # If email auth fails, try to find user by username and authenticate
             if not user:
                 try:
                     user_obj = User.objects.filter(username=identifier).first()
                     if user_obj:
-                        user = authenticate(email=user_obj.email, password=password)
+                        user = authenticate(username=user_obj.email, password=password)
                 except:
                     pass
         
@@ -104,17 +114,25 @@ class ParentTokenObtainPairSerializer(TokenObtainPairSerializer):
         if user.role != UserRole.PARENT:
             raise serializers.ValidationError("This login is only for parent accounts")
         
-        # Call parent validate with email to generate tokens
-        attrs["email"] = user.email
-        data = super().validate(attrs)
+        # We've authenticated the user manually.
+        self.user = user
+        
+        # Generate tokens manually
+        from rest_framework_simplejwt.tokens import RefreshToken
+        refresh = RefreshToken.for_user(user)
+        
+        data = {
+            'refresh': str(refresh),
+            'access': str(refresh.access_token),
+        }
         
         parent_profile = parent_profile_for_user(user)
         
         data["user"] = {
-            "id": self.user.id,
-            "email": self.user.email,
-            "full_name": self.user.full_name,
-            "role": self.user.role,
+            "id": user.id,
+            "email": user.email,
+            "full_name": user.full_name,
+            "role": user.role,
         }
         
         # Add parent profile information if available
@@ -127,4 +145,4 @@ class ParentTokenObtainPairSerializer(TokenObtainPairSerializer):
                 "child_name": parent_profile.child_name,
             }
         
-        return data
+        return data

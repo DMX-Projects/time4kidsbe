@@ -39,6 +39,12 @@ class HeroSlide(models.Model):
 class HomeTestimonial(models.Model):
     """Parent quotes on the public home page (horizontal testimonial section)."""
 
+    CATEGORY_CHOICES = (
+        ("parent", "Parent"),
+        ("franchisee", "Franchisee"),
+    )
+
+    category = models.CharField(max_length=20, choices=CATEGORY_CHOICES, default="parent")
     text = models.TextField()
     author = models.CharField(max_length=200)
     relation = models.CharField(max_length=200, blank=True)

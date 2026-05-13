@@ -141,7 +141,7 @@ DEFAULT_HOME_PAGE_DATA: dict = {
             },
             {
                 "image": "/images/landing-banner.jpg",
-                "programName": "Day Care",
+                "programName": "Summer Programs",
                 "ageGroup": "2 - 10 years",
                 "description": "Extended care with engaging activities throughout the day.",
                 "color": "#ff9f43",

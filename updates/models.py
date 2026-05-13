@@ -2,7 +2,13 @@ from django.db import models
 from franchises.models import Franchise
 
 class Update(models.Model):
+    PLACEMENT_CHOICES = (
+        ("intro", "Intro board"),
+        ("franchise", "Franchise board"),
+    )
+
     franchise = models.ForeignKey(Franchise, on_delete=models.CASCADE, related_name="updates", null=True, blank=True)
+    placement = models.CharField(max_length=20, choices=PLACEMENT_CHOICES, default="franchise")
     text = models.TextField()
     start_date = models.DateField(null=True, blank=True)
     end_date = models.DateField(null=True, blank=True)

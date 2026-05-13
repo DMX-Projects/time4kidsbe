@@ -16,6 +16,7 @@ class HomeTestimonialSerializer(serializers.ModelSerializer):
         model = HomeTestimonial
         fields = [
             "id",
+            "category",
             "text",
             "author",
             "relation",

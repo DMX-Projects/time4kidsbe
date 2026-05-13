@@ -18,6 +18,10 @@ class UpdateViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         queryset = Update.objects.select_related("franchise").all().order_by("-start_date")
 
+        placement = self.request.query_params.get("placement")
+        if placement in {"intro", "franchise"}:
+            queryset = queryset.filter(placement=placement)
+
         franchise_slug = self.request.query_params.get("franchise_slug")
         if franchise_slug:
             return queryset.filter(franchise__slug=franchise_slug, is_active=True)

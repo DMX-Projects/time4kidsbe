@@ -12,7 +12,7 @@ class UpdateSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Update
-        fields = ['id', 'franchise', 'text', 'start_date', 'end_date', 'is_active', 'created_at', 'updated_at']
+        fields = ['id', 'franchise', 'placement', 'text', 'start_date', 'end_date', 'is_active', 'created_at', 'updated_at']
         read_only_fields = ['franchise']
 
     def get_franchise(self, obj: Update):
