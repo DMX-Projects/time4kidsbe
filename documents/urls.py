@@ -3,11 +3,14 @@ from .views import (
     ParentDocumentListView,
     parent_documents_by_category,
     franchise_documents_by_category,
+    admin_franchise_documents_summary,
     FranchiseParentDocumentListCreateView,
     FranchiseParentDocumentDeleteView,
     FranchiseIndentRequestListCreateView,
     AdminIndentRequestListView,
     AdminIndentRequestUpdateView,
+    AdminFranchiseDocumentListCreateView,
+    AdminFranchiseDocumentDetailView,
 )
 
 urlpatterns = [
@@ -19,5 +22,8 @@ urlpatterns = [
     path('franchise/indents/', FranchiseIndentRequestListCreateView.as_view(), name='franchise-indent-requests'),
     path('admin/indents/', AdminIndentRequestListView.as_view(), name='admin-indent-requests'),
     path('admin/indents/<int:pk>/', AdminIndentRequestUpdateView.as_view(), name='admin-indent-request-update'),
+    path('admin/franchise-documents/summary/', admin_franchise_documents_summary, name='admin-franchise-documents-summary'),
+    path('admin/franchise-documents/', AdminFranchiseDocumentListCreateView.as_view(), name='admin-franchise-documents'),
+    path('admin/franchise-documents/<int:pk>/', AdminFranchiseDocumentDetailView.as_view(), name='admin-franchise-document-detail'),
 ]
 

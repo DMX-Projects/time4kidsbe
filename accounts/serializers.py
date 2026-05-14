@@ -1,10 +1,126 @@
+import os
+
+from django.conf import settings
 from django.contrib.auth import authenticate
+from django.contrib.auth.hashers import check_password
 from rest_framework import serializers
+from rest_framework.exceptions import AuthenticationFailed, PermissionDenied
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 from accounts.profile_access import parent_profile_for_user
 
 from .models import User, UserRole
+
+
+def _login_trace_enabled() -> bool:
+    """Set ``DJANGO_LOGIN_TRACE=1`` (or ``settings.LOGIN_DEBUG_TRACE=True``) for login diagnostics."""
+    if os.environ.get("DJANGO_LOGIN_TRACE", "").lower() in ("1", "true", "yes"):
+        return True
+    return bool(getattr(settings, "LOGIN_DEBUG_TRACE", False))
+
+
+def _authenticate_with_identifier(identifier: str, password: str):
+    """
+    Resolve login identifier to a User and verify password.
+
+    Django's ``authenticate()`` only accepts ``username=`` and ``password=`` for
+    ``ModelBackend``; the value for ``username`` must match ``User.USERNAME_FIELD``
+    (here: **email**). Never call ``authenticate(email=..., password=...)``.
+
+    Flow:
+    1. ``authenticate(username=ident, ...)`` when ``ident`` is the exact stored email.
+    2. Find by ``email__iexact``, then ``authenticate(username=user.email, ...)``.
+    3. Find by ``username__iexact`` (e.g. legacy id card in ``users.username``), then
+       ``authenticate(username=user.email, ...)`` — password is checked against
+       ``users.password`` only; ``username`` on the row is used for lookup only.
+    """
+    ident = (identifier or "").strip()
+    if not ident or not password:
+        return None
+
+    if _login_trace_enabled():
+        print(
+            "LOGIN TRACE: identifier=%r password_len=%s"
+            % (ident, len(password)),
+            flush=True,
+        )
+
+    user = authenticate(username=ident, password=password)
+    if _login_trace_enabled():
+        print(
+            "LOGIN TRACE: authenticate(username=ident, ...) ->",
+            f"User(pk={user.pk})" if user else None,
+            flush=True,
+        )
+    if user:
+        return user
+
+    by_email = User.objects.filter(email__iexact=ident).first()
+    if by_email:
+        user = authenticate(username=by_email.email, password=password)
+        if _login_trace_enabled():
+            print(
+                "LOGIN TRACE: via email__iexact -> authenticate(username=%r, ...) ->"
+                % (by_email.email,),
+                f"User(pk={user.pk})" if user else None,
+                flush=True,
+            )
+        if user:
+            return user
+
+    by_username = User.objects.filter(username__iexact=ident).first()
+    if by_username:
+        if _login_trace_enabled():
+            raw_hash = by_username.password or ""
+            print(
+                "LOGIN TRACE: FOUND USER pk=%s username=%r email=%r"
+                % (by_username.pk, by_username.username, by_username.email),
+                flush=True,
+            )
+            print(
+                "LOGIN TRACE: HASH prefix=%r"
+                % (raw_hash[:48] + ("..." if len(raw_hash) > 48 else ""),),
+                flush=True,
+            )
+            print(
+                "LOGIN TRACE: hash start pbkdf2_sha256$=%s pbkdf2_=%s"
+                % (raw_hash.startswith("pbkdf2_sha256$"), raw_hash.startswith("pbkdf2_")),
+                flush=True,
+            )
+            print(
+                "LOGIN TRACE: check_password(plain, user.password) ->",
+                check_password(password, raw_hash),
+                flush=True,
+            )
+            try:
+                from students.models import StudentProfile
+
+                sp = StudentProfile.objects.filter(Idcardno__iexact=ident).first()
+                if sp:
+                    print(
+                        "LOGIN TRACE: StudentProfile.Idcardno=%r user.username=%r"
+                        % (sp.Idcardno, by_username.username),
+                        flush=True,
+                    )
+                else:
+                    print(
+                        "LOGIN TRACE: no StudentProfile with Idcardno__iexact=%r" % (ident,),
+                        flush=True,
+                    )
+            except Exception as exc:  # pragma: no cover
+                print("LOGIN TRACE: StudentProfile lookup:", exc, flush=True)
+
+        user = authenticate(username=by_username.email, password=password)
+        if _login_trace_enabled():
+            print(
+                "LOGIN TRACE: authenticate(username=user.email, ...) ->",
+                f"User(pk={user.pk})" if user else None,
+                flush=True,
+            )
+        if user:
+            return user
+
+    return None
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -22,25 +138,12 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         identifier = attrs.get("email")  # Field name is "email" but can contain username
         password = attrs.get("password")
 
-        # Try to find user by email first, then by username
-        user = None
-        if identifier:
-            # Try authenticating with email - ModelBackend expects 'username' keyword
-            user = authenticate(username=identifier, password=password)
-
-            # If email auth fails, try to find user by username and authenticate
-            if not user:
-                try:
-                    user_obj = User.objects.filter(username=identifier).first()
-                    if user_obj:
-                        user = authenticate(username=user_obj.email, password=password)
-                except Exception:
-                    pass
+        user = _authenticate_with_identifier(identifier, password) if identifier else None
 
         if not user:
-            raise serializers.ValidationError("Invalid credentials")
+            raise AuthenticationFailed("Invalid credentials")
         if not user.is_active:
-            raise serializers.ValidationError("User account is disabled")
+            raise AuthenticationFailed("User account is disabled")
 
         # We've authenticated the user manually.
         # SimpleJWT TokenObtainPairSerializer uses self.user to generate tokens.
@@ -91,30 +194,17 @@ class ParentTokenObtainPairSerializer(TokenObtainPairSerializer):
         identifier = attrs.get("email")
         password = attrs.get("password")
 
-        # Try to find user by email first, then by username
-        user = None
-        if identifier:
-            # Try authenticating with email - ModelBackend expects 'username' keyword
-            user = authenticate(username=identifier, password=password)
-
-            # If email auth fails, try to find user by username and authenticate
-            if not user:
-                try:
-                    user_obj = User.objects.filter(username=identifier).first()
-                    if user_obj:
-                        user = authenticate(username=user_obj.email, password=password)
-                except Exception:
-                    pass
+        user = _authenticate_with_identifier(identifier, password) if identifier else None
 
         if not user:
-            raise serializers.ValidationError("Invalid credentials")
+            raise AuthenticationFailed("Invalid credentials")
 
         if not user.is_active:
-            raise serializers.ValidationError("User account is disabled")
+            raise AuthenticationFailed("User account is disabled")
 
         # Validate that user is a PARENT (legacy imports may store lowercase role)
         if user.normalized_role() != UserRole.PARENT.value:
-            raise serializers.ValidationError("This login is only for parent accounts")
+            raise PermissionDenied("This login is only for parent accounts")
 
         # We've authenticated the user manually.
         self.user = user

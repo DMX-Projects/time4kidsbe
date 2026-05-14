@@ -53,9 +53,18 @@ def normalize_home_page_data(data):
     return out
 
 
+VIRTUAL_TOUR_MAPS_URL = "https://www.google.com/maps/embed?pb=!1m0!3m2!1sen!2s!4v1456003231726!6m8!1m7!1sUEc7Ta_OzQcAAAQq3Rq0gw!2m2!1d17.40666583994208!2d78.48091207922675!3f90!4f0!5f0.4000000000000002"
+
 DEFAULT_HOME_PAGE_DATA: dict = {
     "key_navigation": [
-        {"icon": "/icon-tour.png", "alt": "Virtual Tour", "href": "/gallery", "label": "Virtual\nTour", "nav_class": "nav-link1"},
+        {
+            "icon": "/icon-tour.png",
+            "alt": "Virtual Tour",
+            "href": VIRTUAL_TOUR_MAPS_URL,
+            "label": "Virtual\nTour",
+            "nav_class": "nav-link1",
+            "external": True,
+        },
         {"icon": "/icon-gallery.png", "alt": "Photo / Video Gallery", "href": "/gallery", "label": "Photo / Video Gallery", "nav_class": "nav-link2"},
         {"icon": "/icon-nearstcenter.png", "alt": "Find your Nearest Centre", "href": "/locate-centre", "label": "Find your Nearest  Centre", "nav_class": "nav-link3"},
         {"icon": "/icon-franchise.png", "alt": "Become a Franchise", "href": "/franchise", "label": "Become a Franchise", "nav_class": "nav-link1"},
