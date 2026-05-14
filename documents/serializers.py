@@ -62,6 +62,48 @@ class FranchiseDocumentSerializer(serializers.ModelSerializer):
         return obj.title
 
 
+class AdminFranchiseDocumentSerializer(serializers.ModelSerializer):
+    """Admin CRUD: file optional on update; required on create."""
+
+    file = RelativeFileField(required=False, allow_null=True)
+    franchise_name = serializers.CharField(source="franchise.name", read_only=True, allow_null=True)
+    category_display = serializers.CharField(source="get_category_display", read_only=True)
+    display_title = serializers.SerializerMethodField()
+
+    class Meta:
+        model = FranchiseDocument
+        fields = [
+            "id",
+            "category",
+            "category_display",
+            "title",
+            "display_title",
+            "description",
+            "file",
+            "franchise",
+            "franchise_name",
+            "academic_year",
+            "is_active",
+            "order",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+    def get_display_title(self, obj: FranchiseDocument) -> str:
+        if obj.academic_year:
+            return f"{obj.title} ({obj.academic_year})"
+        return obj.title
+
+    def validate(self, attrs):
+        if self.instance is None:
+            request = self.context.get("request")
+            uploaded = getattr(request, "FILES", None).get("file") if request else None
+            if not attrs.get("file") and not uploaded:
+                raise serializers.ValidationError({"file": "Upload a file for new documents."})
+        return attrs
+
+
 class IndentRequestSerializer(serializers.ModelSerializer):
     franchise_name = serializers.CharField(source="franchise.name", read_only=True)
 

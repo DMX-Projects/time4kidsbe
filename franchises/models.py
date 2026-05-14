@@ -125,6 +125,19 @@ class Franchise(models.Model):
         blank=True,
         validators=[RegexValidator(r'^\d{10}$', 'Phone number must be exactly 10 digits.')]
     )
+
+    # Legacy MySQL franchise table columns (nullable; alongside modern Django fields).
+    fname = models.CharField(max_length=255, blank=True, null=True)
+    countryid = models.IntegerField(blank=True, null=True)
+    stateid = models.IntegerField(blank=True, null=True)
+    statename = models.CharField(max_length=255, blank=True, null=True)
+    cityid = models.IntegerField(blank=True, null=True)
+    cityname = models.CharField(max_length=255, blank=True, null=True)
+    areaid = models.IntegerField(blank=True, null=True)
+    areaname = models.CharField(max_length=255, blank=True, null=True)
+    phoneno = models.CharField(max_length=255, blank=True, null=True)
+    email = models.EmailField(blank=True, null=True)
+    url = models.URLField(blank=True, null=True, max_length=500)
     
     # Enhanced Fields
     google_map_link = models.URLField(blank=True, max_length=500)
@@ -185,6 +198,7 @@ class ParentProfile(models.Model):
         default="",
         validators=[RegexValidator(r'^\d{10}$', 'Phone number must be exactly 10 digits.')]
     )
+    Emailid = models.EmailField(blank=True, null=True, db_column="Emailid")
     address = models.TextField(blank=True, default="")
     city = models.CharField(max_length=100, blank=True, default="")
     photo_url = models.URLField(blank=True, default="", max_length=500)

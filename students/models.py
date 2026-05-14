@@ -21,6 +21,19 @@ class StudentProfile(models.Model):
     is_active = models.BooleanField(default=True)
     blood_group = models.CharField(max_length=10, blank=True, default="")
     emergency_contact = models.CharField(max_length=100, blank=True, default="")
+
+    # Legacy MySQL column names (db_column preserves exact identifiers in PostgreSQL).
+    State = models.CharField(max_length=255, blank=True, null=True, db_column="State")
+    City = models.CharField(max_length=255, blank=True, null=True, db_column="City")
+    Centre = models.CharField(max_length=255, blank=True, null=True, db_column="Centre")
+    Idcardno = models.CharField(max_length=255, blank=True, null=True, db_column="Idcardno")
+    Password = models.CharField(max_length=255, blank=True, null=True, db_column="Password")
+    batch_num = models.CharField(max_length=50, blank=True, null=True, db_column="batch_num")
+    ParentName = models.CharField(max_length=255, blank=True, null=True, db_column="ParentName")
+    Emailid = models.EmailField(blank=True, null=True, db_column="Emailid")
+    Mobileno = models.CharField(max_length=255, blank=True, null=True, db_column="Mobileno")
+    Year = models.CharField(max_length=100, blank=True, null=True, db_column="Year")
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

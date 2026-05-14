@@ -44,6 +44,18 @@ class User(AbstractBaseUser, PermissionsMixin):
     is_active = models.BooleanField(default=True)
     date_joined = models.DateTimeField(default=timezone.now)
 
+    # Legacy MySQL column names on `users` (nullable; separate from auth password column `password`).
+    code = models.CharField(max_length=255, blank=True, null=True)
+    active = models.CharField(max_length=10, blank=True, null=True)
+    last_session = models.CharField(max_length=255, blank=True, null=True)
+    blocked = models.CharField(max_length=10, blank=True, null=True)
+    tries = models.IntegerField(blank=True, null=True)
+    last_try = models.BigIntegerField(blank=True, null=True)
+    mask_id = models.IntegerField(blank=True, null=True)
+    group_id = models.IntegerField(blank=True, null=True)
+    activation_time = models.BigIntegerField(blank=True, null=True)
+    last_action = models.BigIntegerField(blank=True, null=True)
+
     objects = UserManager()
 
     USERNAME_FIELD = "email"
