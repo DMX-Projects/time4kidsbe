@@ -48,6 +48,39 @@ def parent_documents_by_category(request, category):
     return Response(serializer.data)
 
 
+def _franchise_hub_documents_queryset(franchise):
+    """Active global + centre-specific franchise resource documents."""
+    return (
+        FranchiseDocument.objects.filter(is_active=True)
+        .filter(Q(franchise=franchise) | Q(franchise__isnull=True))
+        .select_related("franchise")
+    )
+
+
+def _hub_documents_for_franchise_user(user):
+    """
+    Centre documents: global HO uploads plus centre-specific rows when the login
+    resolves to a franchise. Unlinked legacy logins still receive global documents.
+    """
+    franchise = franchise_profile_for_user(user)
+    if franchise:
+        return _franchise_hub_documents_queryset(franchise)
+    return FranchiseDocument.objects.filter(is_active=True, franchise__isnull=True).select_related(
+        "franchise"
+    )
+
+
+@api_view(["GET"])
+@permission_classes([IsFranchiseUser])
+def franchise_documents_all(request):
+    """All franchise resource hub documents for the logged-in centre (all categories)."""
+    documents = _hub_documents_for_franchise_user(request.user).order_by(
+        "category", "order", "-created_at"
+    )
+    serializer = FranchiseDocumentSerializer(documents, many=True)
+    return Response(serializer.data)
+
+
 @api_view(["GET"])
 @permission_classes([IsFranchiseUser])
 def franchise_documents_by_category(request, category: str):
@@ -55,22 +88,13 @@ def franchise_documents_by_category(request, category: str):
     Get franchise resource hub documents filtered by category.
     Returns franchise-specific documents and also global documents (franchise is null).
     """
-    franchise_profile = franchise_profile_for_user(request.user)
-    if not franchise_profile:
-        return Response({"error": "Franchise profile not found"}, status=403)
-
-    franchise = franchise_profile
-
     valid_categories = [choice[0] for choice in FranchiseDocumentCategory.choices]
     if category not in valid_categories:
         return Response({"error": "Invalid category"}, status=400)
 
-    documents = FranchiseDocument.objects.filter(
-        category=category,
-        is_active=True,
-    ).filter(
-        Q(franchise=franchise) | Q(franchise__isnull=True)
-    ).order_by("order", "-created_at")
+    documents = _hub_documents_for_franchise_user(request.user).filter(category=category).order_by(
+        "order", "-created_at"
+    )
 
     serializer = FranchiseDocumentSerializer(documents, many=True)
     return Response(serializer.data)

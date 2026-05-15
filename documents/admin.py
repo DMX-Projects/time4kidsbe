@@ -59,9 +59,9 @@ class ParentDocumentAdmin(admin.ModelAdmin):
 
 @admin.register(FranchiseDocument)
 class FranchiseDocumentAdmin(admin.ModelAdmin):
-    list_display = ("category", "display_franchise", "title", "is_active", "order", "created_at")
+    list_display = ("category", "display_franchise", "title", "source_path", "is_active", "order", "created_at")
     list_filter = ("category", "franchise", "is_active", "academic_year", "created_at")
-    search_fields = ("title", "description", "academic_year")
+    search_fields = ("title", "description", "academic_year", "source_path")
     list_editable = ("is_active", "order")
     readonly_fields = ("created_at", "updated_at")
 
@@ -69,7 +69,7 @@ class FranchiseDocumentAdmin(admin.ModelAdmin):
         (
             "Document Information",
             {
-                "fields": ("category", "title", "description", "file"),
+                "fields": ("category", "title", "description", "file", "source_path"),
             },
         ),
         (

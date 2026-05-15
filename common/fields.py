@@ -1,37 +1,28 @@
 from rest_framework import serializers
 
+def _relative_media_url(value) -> str | None:
+    """Always return /media/... so the frontend picks the public domain (not request Host)."""
+    if not value:
+        return None
+    try:
+        url = value.url
+    except (AttributeError, OSError, ValueError):
+        return None
+    if not url:
+        return None
+    if url.startswith("http://") or url.startswith("https://"):
+        from urllib.parse import urlparse
+
+        parsed = urlparse(url)
+        return parsed.path or url
+    return url
+
+
 class RelativeImageField(serializers.ImageField):
     def to_representation(self, value):
-        if not value:
-            return None
-        try:
-            url = super().to_representation(value)
-        except (OSError, ValueError, AttributeError):
-            return None
-        # If the URL is absolute (contains http/https), strip the domain
-        if url and "http" in url:
-            from django.conf import settings
-            # We can't easily guess the exact domain DRF used, but we know it usually prepends it.
-            # A safer way relies on the fact that value.url serves the relative path if configured correctly,
-            # but DRF's ImageField wraps it.
-            # However, simpler approach: return value.url directly if available.
-            try:
-                return value.url
-            except (AttributeError, OSError, ValueError):
-                pass
-        return url
+        return _relative_media_url(value)
+
 
 class RelativeFileField(serializers.FileField):
     def to_representation(self, value):
-        if not value:
-            return None
-        try:
-            url = super().to_representation(value)
-        except (OSError, ValueError, AttributeError):
-            return None
-        if url and "http" in url:
-            try:
-                return value.url
-            except (AttributeError, OSError, ValueError):
-                pass
-        return url
+        return _relative_media_url(value)

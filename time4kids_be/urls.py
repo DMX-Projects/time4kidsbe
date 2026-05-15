@@ -16,6 +16,9 @@ from accounts.views import (
 )
 from rest_framework_simplejwt.views import TokenRefreshView
 
+from franchises.views import CentersListView, CitiesListView
+from documents.pc_views import serve_pc_upload
+
 # Function to create CSRF-exempt API include
 def api_include(urlconf_module, namespace=None):
     """Include API URLs with CSRF exemption."""
@@ -39,6 +42,10 @@ urlpatterns = [
     path("api/auth/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
     path("api/auth/me", CurrentUserView.as_view()),
     path("api/auth/me/", CurrentUserView.as_view(), name="current_user"),
+    path("api/cities", CitiesListView.as_view()),
+    path("api/cities/", CitiesListView.as_view(), name="api-cities"),
+    path("api/centers", CentersListView.as_view()),
+    path("api/centers/", CentersListView.as_view(), name="api-centers"),
     path("api/accounts/", include("accounts.urls")),
     path("api/franchises/", include("franchises.urls")),
     path("api/events/", include("events.urls")),
@@ -50,6 +57,15 @@ urlpatterns = [
     path("api/students/", include("students.urls")),
     path("api/documents/", include("documents.urls")),
 ]
+
+if settings.PC_DOCUMENTS_ROOT:
+    urlpatterns += [
+        re_path(
+            r"^media/pc/(?P<relative_path>.+)$",
+            serve_pc_upload,
+            name="pc-documents",
+        ),
+    ]
 
 # Serve static and media files in development
 if settings.DEBUG:
