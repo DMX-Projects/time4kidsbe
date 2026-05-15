@@ -1,5 +1,9 @@
+from pathlib import Path
+
+from django.conf import settings
+from django.core.management import call_command
 from django.db.models import Q, Count
-from rest_framework import generics
+from rest_framework import generics, status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
@@ -254,4 +258,41 @@ class AdminFranchiseDocumentDetailView(generics.RetrieveUpdateDestroyAPIView):
         if instance.file:
             instance.file.delete(save=False)
         super().perform_destroy(instance)
+
+
+@api_view(["POST"])
+@permission_classes([IsAdminOrApproverUser])
+def admin_sync_pc_documents(request):
+    """
+    Import pc/ PDFs and public franchise images into FranchiseDocument (PostgreSQL).
+    """
+    root = getattr(settings, "PC_DOCUMENTS_ROOT", None)
+    if not root:
+        return Response(
+            {"detail": "PC_DOCUMENTS_ROOT is not configured on the server."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    root_path = Path(root)
+    if not root_path.is_dir():
+        return Response(
+            {"detail": f"PC folder not found: {root_path}"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    try:
+        call_command("import_pc_documents", root=str(root_path.resolve()), update=True)
+        call_command("import_franchise_public_assets", update=True)
+    except Exception as exc:  # noqa: BLE001
+        return Response(
+            {"detail": f"Sync failed: {exc}"},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+    total = FranchiseDocument.objects.count()
+    return Response(
+        {
+            "detail": "All centre files and franchise images synced to the database.",
+            "pc_root": str(root_path),
+            "total_documents": total,
+        },
+        status=status.HTTP_200_OK,
+    )
 

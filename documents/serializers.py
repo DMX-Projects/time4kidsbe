@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from rest_framework import serializers
 from .models import ParentDocument, FranchiseDocument, FranchiseDocumentCategory, IndentRequest
 from common.fields import RelativeFileField, RelativeImageField
@@ -104,6 +106,52 @@ class AdminFranchiseDocumentSerializer(serializers.ModelSerializer):
             if not attrs.get("file") and not uploaded:
                 raise serializers.ValidationError({"file": "Upload a file for new documents."})
         return attrs
+
+    def _incoming_uploaded_file(self):
+        request = self.context.get("request")
+        if not request:
+            return None
+        return getattr(request, "FILES", None).get("file")
+
+    def _ensure_file_in_validated(self, validated_data: dict) -> None:
+        if validated_data.get("file"):
+            return
+        uploaded = self._incoming_uploaded_file()
+        if uploaded:
+            validated_data["file"] = uploaded
+
+    def _default_source_path(self, validated_data: dict, instance=None) -> str:
+        explicit = (validated_data.get("source_path") or "").strip()
+        if explicit:
+            return explicit
+        if instance and (instance.source_path or "").strip():
+            return instance.source_path.strip()
+        file_obj = validated_data.get("file") or self._incoming_uploaded_file()
+        if file_obj is not None:
+            name = getattr(file_obj, "name", "") or ""
+            if name:
+                return Path(name).name
+        if instance and instance.file:
+            return Path(instance.file.name).name
+        return ""
+
+    def create(self, validated_data):
+        self._ensure_file_in_validated(validated_data)
+        source_path = self._default_source_path(validated_data)
+        if source_path:
+            validated_data["source_path"] = source_path
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        self._ensure_file_in_validated(validated_data)
+        merged = {
+            "source_path": validated_data.get("source_path", instance.source_path),
+            "file": validated_data.get("file", instance.file),
+        }
+        source_path = self._default_source_path({**validated_data, **merged}, instance=instance)
+        if source_path and not (validated_data.get("source_path") or "").strip():
+            validated_data["source_path"] = source_path
+        return super().update(instance, validated_data)
 
 
 class IndentRequestSerializer(serializers.ModelSerializer):

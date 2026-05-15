@@ -12,6 +12,7 @@ from .views import (
     AdminIndentRequestUpdateView,
     AdminFranchiseDocumentListCreateView,
     AdminFranchiseDocumentDetailView,
+    admin_sync_pc_documents,
 )
 
 urlpatterns = [
@@ -25,6 +26,7 @@ urlpatterns = [
     path('admin/indents/', AdminIndentRequestListView.as_view(), name='admin-indent-requests'),
     path('admin/indents/<int:pk>/', AdminIndentRequestUpdateView.as_view(), name='admin-indent-request-update'),
     path('admin/franchise-documents/summary/', admin_franchise_documents_summary, name='admin-franchise-documents-summary'),
+    path('admin/franchise-documents/sync-pc/', admin_sync_pc_documents, name='admin-franchise-documents-sync-pc'),
     path('admin/franchise-documents/', AdminFranchiseDocumentListCreateView.as_view(), name='admin-franchise-documents'),
     path('admin/franchise-documents/<int:pk>/', AdminFranchiseDocumentDetailView.as_view(), name='admin-franchise-document-detail'),
 ]

@@ -163,9 +163,11 @@ STATICFILES_DIRS = [
 MEDIA_URL = os.getenv("MEDIA_URL", "/media/")
 MEDIA_ROOT = Path(os.getenv("MEDIA_ROOT", str(BASE_DIR / "media")))
 
-# Legacy centre resource files (old server: /uploads/pc/...). Set to your local `pc` folder path.
-_pc_root = os.getenv("PC_DOCUMENTS_ROOT", "").strip()
-PC_DOCUMENTS_ROOT = Path(_pc_root).resolve() if _pc_root else None
+# Legacy centre resource files (old server: /uploads/pc/...).
+# Default: <repo-root>/pc/ — copy your Desktop `pc` folder there (see pc/README.md).
+_pc_env = os.getenv("PC_DOCUMENTS_ROOT", "").strip()
+_default_pc_root = (BASE_DIR.parent / "pc").resolve()
+PC_DOCUMENTS_ROOT = Path(_pc_env).expanduser().resolve() if _pc_env else _default_pc_root
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 AUTH_USER_MODEL = "accounts.User"
