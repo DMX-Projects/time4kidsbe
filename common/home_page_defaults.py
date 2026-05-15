@@ -22,34 +22,139 @@ def _is_legacy_combined_pp(program_name: str) -> bool:
     return False
 
 
+def _key_nav_href_key(href):
+    """Lowercase path / URL key for dedupe (matches frontend `keyNavHrefKey`)."""
+    if not href:
+        return ""
+    t = str(href).strip()
+    if re.match(r"^https?://", t, re.I):
+        try:
+            from urllib.parse import urlparse, urlunparse
+
+            u = urlparse(t)
+            path = (u.path or "").rstrip("/") or "/"
+            base = urlunparse((u.scheme.lower(), u.netloc.lower(), path, "", "", ""))
+            return base.rstrip("/") if len(base) > 1 else base
+        except Exception:
+            return t.lower()
+    p = t if t.startswith("/") else "/" + t
+    lower = p.lower()
+    if len(lower) > 1 and lower.endswith("/"):
+        return lower[:-1]
+    return lower
+
+
+def _key_nav_slot(row):
+    """One slot per quick-link tile so duplicates are dropped (matches frontend `keyNavSlot`)."""
+    if not isinstance(row, dict):
+        return "other:invalid"
+    icon = (row.get("icon") or "").strip().lower()
+    label = " ".join((row.get("label") or "").split()).lower()
+    alt = (row.get("alt") or "").strip().lower()
+    h = _key_nav_href_key(row.get("href") or "")
+
+    if icon.endswith("icon-tour.png") or re.search(r"^virtual\s*tour\b", label, re.I) or "virtual tour" in alt:
+        return "tour"
+    if icon.endswith("icon-gallery.png") or re.search(r"photo\s*/\s*video\s*gallery", label, re.I) or re.search(
+        r"photo.*video.*gallery", label, re.I
+    ):
+        return "gallery"
+    if (
+        "nearstcenter" in icon
+        or "locate-centre" in h
+        or re.search(r"find\s*your\s*nearest", label, re.I)
+        or re.search(r"nearest\s*centre", label, re.I)
+    ):
+        return "locate"
+    if "icon-franchise" in icon or h.endswith("/franchise") or re.search(r"become\s*a?\s*franchise", label, re.I):
+        return "franchise"
+    if "brochure" in icon or re.search(r"\.pdf(\b|[?#])", h, re.I) or re.search(r"download\s*brochure", label, re.I):
+        return "brochure"
+    if (
+        icon.endswith("icon-media.svg")
+        or "icon-television" in icon
+        or "tv-commercial" in h
+        or re.fullmatch(r"media", label, re.I)
+        or re.search(r"tv\s*commercial", label, re.I)
+    ):
+        return "media"
+
+    if h:
+        return f"other:{h}"
+    return f"other:icon:{icon or 'none'}:{label[:48]}"
+
+
+def _dedupe_key_nav_by_slot(rows):
+    seen = set()
+    out = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        s = _key_nav_slot(r)
+        if s in seen:
+            continue
+        seen.add(s)
+        out.append(r)
+    return out
+
+
+def normalize_key_navigation(rows, defaults):
+    """Dedupe CMS rows by slot; append defaults only for missing slots."""
+    if not isinstance(rows, list) or len(rows) == 0:
+        return copy.deepcopy(defaults)
+    out = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        out.append(
+            {
+                "icon": str(r.get("icon") or ""),
+                "alt": str(r.get("alt") or ""),
+                "href": str(r.get("href") or ""),
+                "label": str(r.get("label") or ""),
+                "nav_class": str(r.get("nav_class") or "nav-link1"),
+                "external": bool(r.get("external")),
+            }
+        )
+    merged = _dedupe_key_nav_by_slot(out)
+    seen_slots = {_key_nav_slot(x) for x in merged}
+    for d in defaults:
+        slot = _key_nav_slot(d)
+        if slot in seen_slots:
+            continue
+        merged.append(copy.deepcopy(d))
+        seen_slots.add(slot)
+    return _dedupe_key_nav_by_slot(merged)
+
+
 def normalize_home_page_data(data):
-    """Split legacy single-row PP-1+PP-2 into two programs (matches frontend merge)."""
+    """Split legacy single-row PP-1+PP-2 into two programs; dedupe key navigation (matches frontend)."""
     if not isinstance(data, dict):
         return data
     out = copy.deepcopy(data)
     pp = out.get("programs_preview")
-    if not isinstance(pp, dict):
-        return out
-    programs = pp.get("programs")
-    if not isinstance(programs, list):
-        return out
-    default_programs = DEFAULT_HOME_PAGE_DATA["programs_preview"]["programs"]
-    pp1 = next((p for p in default_programs if p.get("programName") == "PP-1"), None)
-    pp2 = next((p for p in default_programs if p.get("programName") == "PP-2"), None)
-    if not pp1 or not pp2:
-        return out
-    new_programs = []
-    for p in programs:
-        if not isinstance(p, dict):
-            new_programs.append(p)
-            continue
-        name = (p.get("programName") or "").strip()
-        if _is_legacy_combined_pp(name):
-            new_programs.append(copy.deepcopy(pp1))
-            new_programs.append(copy.deepcopy(pp2))
-        else:
-            new_programs.append(p)
-    pp["programs"] = new_programs
+    if isinstance(pp, dict):
+        programs = pp.get("programs")
+        if isinstance(programs, list):
+            default_programs = DEFAULT_HOME_PAGE_DATA["programs_preview"]["programs"]
+            pp1 = next((p for p in default_programs if p.get("programName") == "PP-1"), None)
+            pp2 = next((p for p in default_programs if p.get("programName") == "PP-2"), None)
+            if pp1 and pp2:
+                new_programs = []
+                for p in programs:
+                    if not isinstance(p, dict):
+                        new_programs.append(p)
+                        continue
+                    name = (p.get("programName") or "").strip()
+                    if _is_legacy_combined_pp(name):
+                        new_programs.append(copy.deepcopy(pp1))
+                        new_programs.append(copy.deepcopy(pp2))
+                    else:
+                        new_programs.append(p)
+                pp["programs"] = new_programs
+    kn = out.get("key_navigation")
+    if kn is not None:
+        out["key_navigation"] = normalize_key_navigation(kn, DEFAULT_HOME_PAGE_DATA["key_navigation"])
     return out
 
 
@@ -84,6 +189,16 @@ DEFAULT_HOME_PAGE_DATA: dict = {
         "Complete Curriculum Support",
         "Regular Staff Training",
         "Operational Support",
+    ],
+    "franchise_advantage_videos": [
+        {"poster": "/1.png", "src": "", "alt": "Franchise highlight 1"},
+        {"poster": "/16.png", "src": "", "alt": "Franchise highlight 2"},
+        {"poster": "/11.png", "src": "", "alt": "Franchise highlight 3"},
+    ],
+    "franchise_advantage_photos": [
+        {"src": "/4.png", "alt": "Franchise photo 1"},
+        {"src": "/17.png", "alt": "Franchise photo 2"},
+        {"src": "/18.png", "alt": "Franchise photo 3"},
     ],
     "updates_empty_message": "New updates will appear here once they are added under Admin → Updates.",
     "intro": {
@@ -515,80 +630,101 @@ FAQ_PAGE_DATA: dict = {
     "banner_images": ["/faq-banner-new-1.png", "/faq-banner-new-2.png"],
     "faqs": [
         {
-            "question": "Why send your child to T.I.M.E. Kids?",
+            "question": "Why send your child to T.I.M.E. Kids ?",
             "answer": [
-                "Your child learns to make friends and important social skills like caring and sharing.",
-                "Our pre-schools provide a learning-through-play environment.",
-                "We help children start learning important life skills early.",
-                "Children feel comfortable among peers of the same age group.",
+                "Your child learns to make friends, learns the important social skills of caring, sharing etc.",
+                "Our pre-schools' provide an environment of learning through play.",
+                "Our pre-schools are the best place for your child to start learning the important skills in life.",
+                "Your child will feel comfortable in the presence of other children of the same age group.",
             ],
         },
         {
             "question": "Do the children have an opportunity to be creative each day?",
             "answer": [
-                "Children get ample opportunities for artistic expression.",
-                "Activities include painting, clay modelling, role play, etc.",
+                "Your child gets ample opportunity for his/her artistic expression at T.I.M.E. Kids pre-schools.",
+                "Children are involved in various activities throughout the day for e.g.: painting, claymodelling, role play, etc.",
             ],
         },
         {
             "question": "How does T.I.M.E. Kids pre-schools helps children acquire different skills?",
             "answer": [
-                "Our curriculum involves a blend of structural learning and free play.",
-                "We focus on cognitive, physical, emotional, and social development through activities like puzzles, storytelling, group games, and interactive learning sessions.",
+                "At T.I.M.E. Kids pre-schools, we plan and provide child centered fun-filled activities according to the different levels of development, interest and need. They are planned and sequenced in ways to foster children's motor, cognitive, language and socio-emotional development. At our pre-schools there is a balance in the daily schedule of small and large activities, group as well as individual activities, indoor and outdoor activities, physical and mental activities. Children soon learn to accept and respond to instructions given by the teachers.",
             ],
         },
         {
             "question": "Isn't it too early for a child of one-and-a-half year to be attending play school?",
             "answer": [
-                "The first six years are critical for a child's brain development.",
-                "Our program for this age group acts as a bridge between home and school, providing a secure and stimulating environment that encourages exploration and social interaction.",
+                "Studies have proved that the first six years of an individual's life are critical since development/growth takes place at its most rapid during in this period. Our Play schools provides the necessary environment for the overall development of the child. Children get the opportunity to pick up good language, for self expression, experimentation and problem solving.",
             ],
         },
         {
             "question": "Are basic maths, language and science concepts included in each day's program?",
             "answer": [
-                "Yes, we introduce fundamental concepts of numeracy, language, and environmental science through age-appropriate, play-based activities that make learning fun and engaging.",
+                "To understand better the world around them, Children's need to know maths and science concepts. They imbibe these at Play schools through activities and play.",
             ],
         },
         {
             "question": "What is the importance of experienced educationists?",
             "answer": [
-                "Experienced educationists ensure that the curriculum is developmentally appropriate, safe, and effective.",
-                "They understand child psychology and can tailor learning experiences to meet the unique needs of every child.",
+                "Experienced educationists are essential because they understand the needs of every age group and are highly competent in their area of work.Teachers act mainly as facilitators and help children learn and apply concepts, Also they have a hands-on approach to teaching abstract concepts, solving problems and counselling children.",
             ],
         },
         {
             "question": "Are manners and etiquette also important as studies?",
             "answer": [
-                "Absolutely. We believe in holistic development.",
-                "Along with academics, we emphasize value education, teaching children essential social manners, table etiquette, and respect for others.",
+                "Etiquette and manners are important in today's world. They are developed in children as part of the curriculum at Play Schools.",
             ],
         },
         {
             "question": "Are admissions to the programs open through out the year?",
             "answer": [
-                "Yes, admissions are generally open throughout the year, subject to the availability of seats in the respective program.",
+                "Admissions are open through out the year (space permitting) but we recommend that children be enrolled at the start of the academic session (June) or at the start of the 2nd term (October)",
             ],
         },
         {
             "question": "What is the procedure for enrolment to T.I.M.E. Kids pre-schools?",
             "answer": [
-                "Parents can visit the nearest T.I.M.E. Kids centre to collect the admission kit.",
-                "The process involves filling out an application form and interacting with the centre head. You can also enquire online through our website.",
+                "Parents are welcome at any pre-school centers. We have an online form which can be downloaded and filled in. We require a copy of proof of date of birth, marks transcript (if the child has attended any school) and 2 recent passport size photographs of the child.",
             ],
         },
         {
-            "question": "Why should we enrol in T.I.M.E. Kids?",
+            "question": "Why should we enrol in T.I.M.E. Kids ?",
             "answer": [
-                "T.I.M.E. Kids offers a proven curriculum, safe infrastructure, and trained facilitators.",
-                "We focus on the all-round development of your child in a nurturing environment, backed by the trusted T.I.M.E. brand.",
+                "We provide:",
+                "1.Exceptional Infrastructure",
+                "2.Dedicated Faculty",
+                "3.Safe, Secure and Clean environment",
+                "4.Activity based curriculum",
+                "5.Creative Teaching Philosophy",
+                "6.Parent Involvement",
             ],
         },
         {
             "question": "Does T.I.M.E. Kids pre-schools offer transportation facilities?",
             "answer": [
-                "Most of our centres offer safe and reliable transportation facilities with female attendants.",
-                "Please check with your specific centre for route availability.",
+                "Transport facilities are center specific and details can be had from the centre head at the time of admission.",
+            ],
+        },
+        {
+            "question": "I have a transferable job, Can I get my child transferred to another T.I.M.E. Kids pre-school?",
+            "answer": [
+                "Your child can be transferred to any of our centers for a nominal transfer fee.",
+            ],
+        },
+        {
+            "question": "Where can I find information on the fee structure?",
+            "answer": [
+                "Tuition fee is specific to each center. The Center head at our play school will provide all the information at the time of enrolment.",
+            ],
+        },
+        {
+            "question": "What are the programs that T.I.M.E. Kids pre-schools offers?",
+            "answer": [
+                "Our programs include:",
+                "1. Playgroup - 1.5-2.5 years",
+                "2. Nursery - 2.5-3.5 years",
+                "3. Pre Primary-1 - 3.5-4.5 years",
+                "4. Pre Primary-2 - 4.5-5.5 years",
             ],
         },
     ],
