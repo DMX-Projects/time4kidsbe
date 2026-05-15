@@ -1,8 +1,9 @@
 from django.db.models import Count, Q
 from rest_framework import generics, permissions, viewsets
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from accounts.permissions import IsAdminUser, IsFranchiseUser
 from accounts.profile_access import franchise_profile_for_user
@@ -17,6 +18,8 @@ from .serializers import (
     PublicFranchiseSerializer,
     FranchiseHeroSlideSerializer,
     FranchiseGalleryItemSerializer,
+    CityOptionSerializer,
+    CentreOptionSerializer,
 )
 
 
@@ -302,3 +305,55 @@ class FranchiseGalleryItemViewSet(viewsets.ModelViewSet):
         if not franchise:
             raise PermissionDenied("You must be a franchise user to create a gallery item.")
         serializer.save(franchise=franchise)
+
+
+def _distinct_franchise_states():
+    """Non-empty distinct ``state`` values from active franchise rows."""
+    return (
+        Franchise.objects.filter(is_active=True)
+        .exclude(Q(state__isnull=True) | Q(state__exact=""))
+        .values_list("state", flat=True)
+        .distinct()
+        .order_by("state")
+    )
+
+
+class CitiesListView(APIView):
+    """
+    GET /api/cities/
+
+    Returns distinct ``franchise.state`` values for the first form dropdown.
+    """
+
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, *args, **kwargs):
+        raw = _distinct_franchise_states()
+        names = sorted({str(s).strip() for s in raw if s and str(s).strip()}, key=str.casefold)
+        results = CityOptionSerializer([{"name": n} for n in names], many=True).data
+        return Response({"count": len(results), "results": results})
+
+
+class CentersListView(APIView):
+    """
+    GET /api/centers/?city=Hyderabad
+
+    Query param ``city`` filters ``franchise.state`` (selected value from cities list).
+    """
+
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, *args, **kwargs):
+        city = (request.query_params.get("city") or "").strip()
+        if not city:
+            raise ValidationError({"city": "Query parameter 'city' is required."})
+        if len(city) > 255:
+            raise ValidationError({"city": "Value is too long."})
+
+        queryset = (
+            Franchise.objects.filter(is_active=True, state__iexact=city)
+            .exclude(Q(name__isnull=True) | Q(name__exact=""))
+            .order_by("name")
+        )
+        results = CentreOptionSerializer(queryset, many=True).data
+        return Response({"count": len(results), "city": city, "results": results})

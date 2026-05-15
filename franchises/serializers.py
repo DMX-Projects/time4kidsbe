@@ -391,4 +391,17 @@ class FranchiseHeroSlideSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
 
+class CityOptionSerializer(serializers.Serializer):
+    """Distinct ``franchise.state`` value for the city dropdown."""
+
+    name = serializers.CharField()
+
+
+class CentreOptionSerializer(serializers.ModelSerializer):
+    """Centre row from ``franchise`` (``name`` + slug for enquiry submission)."""
+
+    class Meta:
+        model = Franchise
+        fields = ["id", "name", "slug"]
+
 

@@ -101,7 +101,7 @@ DEFAULT_HOME_PAGE_DATA: dict = {
         "features": [
             {"image": "/feature-safe-infrastructure.png", "title": "Safe Infrastructure", "desc": "Secure premises for complete peace of mind.", "color": "#FEE2E2", "accent": "#EF4444"},
             {"image": "/feature-trained-teachers.png", "title": "Trained Teachers", "desc": "Experienced educators nurturing your child.", "color": "#E0F2FE", "accent": "#0EA5E9"},
-            {"image": "/4.png", "title": "NEP 2020 Curriculum", "desc": "Modern curriculum for holistic growth.", "color": "#FFEDD5", "accent": "#F97316"},
+            {"image": "/nep-2020-curriculum.png", "title": "NEP 2020 Curriculum", "desc": "Modern curriculum for holistic growth.", "color": "#FFEDD5", "accent": "#F97316"},
             {"image": "/17.png", "title": "17 Years Legacy", "desc": "Educational expertise since 2005.", "color": "#DCFCE7", "accent": "#22C55E"},
             {"image": "/18.png", "title": "Caring Environment", "desc": "A second home for your little one.", "color": "#FDF2F8", "accent": "#EC4899"},
             {"image": "/12.png", "title": "Fun Learning", "desc": "Hands-on activities and play.", "color": "#F5F3FF", "accent": "#8B5CF6"},
@@ -241,23 +241,20 @@ ADMISSION_PAGE_DATA: dict = {
     "happy_parents_videos": [
         {
             "title": "Annual Day Fun",
-            "author": "T.I.M.E. Kids Kilpauk",
-            "location": "Chennai",
-            "video_url": "/chaninai kilpauk-AnnualDay-Video-2018-19.mp4",
+            "author": "T.I.M.E. Kids",
+            "video_url": "https://iframe.mediadelivery.net/embed/117208/05fa5317-8993-4f3e-b24b-a9b7f61175ef?autoplay=true",
             "thumbnail_url": "/feature-annual-day-celebrations.png",
         },
         {
             "title": "School Activities",
-            "author": "T.I.M.E. Kids Chennai",
-            "location": "Chennai",
-            "video_url": "/chennai2.mp4",
+            "author": "T.I.M.E. Kids",
+            "video_url": "https://iframe.mediadelivery.net/embed/117208/76ca3eeb-db55-4472-8a3d-dd9bc1ac7f62?autoplay=true",
             "thumbnail_url": "/feature-safe-infrastructure.png",
         },
         {
             "title": "Happy Moments",
-            "author": "T.I.M.E. Kids Trichy",
-            "location": "Trichy",
-            "video_url": "/trichy-rajacolony.mp4",
+            "author": "Parents Testimonials",
+            "video_url": "https://iframe.mediadelivery.net/embed/117208/61fb5949-de73-42f7-8c27-f4918ff9b9ff?autoplay=true",
             "thumbnail_url": "/5.jpeg",
         },
     ],

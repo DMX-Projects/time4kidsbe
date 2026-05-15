@@ -103,8 +103,10 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "time4kids_be.wsgi.application"
 
-# Database Configuration
-# Default: PostgreSQL for local and development. Set DB_ENGINE=sqlite3 to use file-based SQLite.
+# Database Configuration (PostgreSQL)
+# Set DB_HOST, DB_NAME, DB_USER, DB_PASSWORD, DB_PORT in `.env` (or `.env.local`).
+# Example live: DB_HOST=103.65.21.176  DB_NAME=time4kids  DB_PASSWORD=...
+# Optional: DB_ENGINE=sqlite3 uses a local file DB instead.
 DB_ENGINE = os.getenv("DB_ENGINE", "postgresql").lower()
 
 if DB_ENGINE == "postgresql":
@@ -160,6 +162,10 @@ STATICFILES_DIRS = [
 # Media Files Configuration (Local Storage)
 MEDIA_URL = os.getenv("MEDIA_URL", "/media/")
 MEDIA_ROOT = Path(os.getenv("MEDIA_ROOT", str(BASE_DIR / "media")))
+
+# Legacy centre resource files (old server: /uploads/pc/...). Set to your local `pc` folder path.
+_pc_root = os.getenv("PC_DOCUMENTS_ROOT", "").strip()
+PC_DOCUMENTS_ROOT = Path(_pc_root).resolve() if _pc_root else None
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 AUTH_USER_MODEL = "accounts.User"

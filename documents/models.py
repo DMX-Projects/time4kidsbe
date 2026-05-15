@@ -90,6 +90,18 @@ class FranchiseDocumentCategory(models.TextChoices):
     STUDENTS_KIT = "STUDENTS_KIT", "Students Kit"
     FRANCHISE_REFERRAL_INCENTIVES = "FRANCHISE_REFERRAL_INCENTIVES", "Franchise Referral Incentives"
     ROYALTY_PAYMENTS = "ROYALTY_PAYMENTS", "Royalty Payments"
+    SOCIAL_MEDIA_SUPPORT = "SOCIAL_MEDIA_SUPPORT", "Social Media Uploads & Support Files"
+    WELCOME_LETTERS = "WELCOME_LETTERS", "Welcome Letters"
+    SUMMER_CAMP = "SUMMER_CAMP", "Summer Camp"
+    HOLIDAY_LISTS = "HOLIDAY_LISTS", "Holiday Lists"
+    WATCH_HEAR_LEARN = "WATCH_HEAR_LEARN", "Watch • Hear • Learn"
+    ADMISSION_COUNSELLING = "ADMISSION_COUNSELLING", "Admission Counselling"
+    ARTWORKS_MARKETING = "ARTWORKS_MARKETING", "Artworks & Marketing"
+    CONCEPT_ROOM_DISPLAYS = "CONCEPT_ROOM_DISPLAYS", "Concept Room Pictures & Displays"
+    REPORT_CARD_COMMENTS = "REPORT_CARD_COMMENTS", "Report Card Comments"
+    PARENT_ORIENTATION = "PARENT_ORIENTATION", "Parents Orientation"
+    COUNSELLING_TOOLS = "COUNSELLING_TOOLS", "Counselling Tools & Report Cards"
+    PARENTING_TIPS = "PARENTING_TIPS", "Parenting Tips & Articles"
 
 
 class FranchiseDocument(models.Model):
@@ -111,6 +123,13 @@ class FranchiseDocument(models.Model):
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True)
     file = models.FileField(upload_to="franchise_documents/", help_text="Upload document file (PDF/DOC/etc).")
+    source_path = models.CharField(
+        max_length=512,
+        blank=True,
+        null=True,
+        unique=True,
+        help_text="Legacy relative path under pc/ (e.g. holidayslist-2026-27/AP Holiday List.pdf) for Centre Page links.",
+    )
 
     academic_year = models.CharField(max_length=20, blank=True, help_text="Optional academic year, if applicable.")
 
