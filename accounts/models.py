@@ -64,6 +64,43 @@ class User(AbstractBaseUser, PermissionsMixin):
     class Meta:
         db_table = "users"
 
+    def check_password(self, raw_password):
+        """
+        Plaintext / ``plain$...`` values are not valid Django "encoded" strings when
+        there is no ``$`` (bare password): ``identify_hasher`` treats the whole string
+        as an algorithm name and ``check_password`` never runs our hasher. Handle
+        those rows here, then delegate for normal hashed passwords.
+        """
+        from users.hashers import PlaintextPasswordHasher
+
+        def setter(pw: str) -> None:
+            self.set_password(pw)
+            self._password = None
+            self.save(update_fields=["password"])
+
+        encoded = self.password
+        hasher = PlaintextPasswordHasher()
+        if encoded is not None and hasher.identify(encoded):
+            ok = hasher.verify(raw_password or "", encoded)
+            if ok and hasher.must_update(encoded):
+                setter(raw_password or "")
+            return ok
+        return super().check_password(raw_password)
+
+    async def acheck_password(self, raw_password):
+        from users.hashers import PlaintextPasswordHasher
+
+        encoded = self.password
+        hasher = PlaintextPasswordHasher()
+        if encoded is not None and hasher.identify(encoded):
+            ok = hasher.verify(raw_password or "", encoded)
+            if ok and hasher.must_update(encoded):
+                self.set_password(raw_password or "")
+                self._password = None
+                await self.asave(update_fields=["password"])
+            return ok
+        return await super().acheck_password(raw_password)
+
     def __str__(self) -> str:
         identifier = self.username or self.email
         return f"{identifier} ({self.role})"

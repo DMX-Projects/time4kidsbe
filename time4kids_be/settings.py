@@ -60,6 +60,7 @@ INSTALLED_APPS = [
     "rest_framework_simplejwt",
     "corsheaders",
     "accounts",
+    "users",
     "franchises",
     "events",
     "careers",
@@ -162,6 +163,11 @@ MEDIA_ROOT = Path(os.getenv("MEDIA_ROOT", str(BASE_DIR / "media")))
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 AUTH_USER_MODEL = "accounts.User"
+
+# --- Password hashers: plaintext only (`plain$...` or bare literal in DB). See users/hashers.py. ---
+PASSWORD_HASHERS = [
+    "users.hashers.PlaintextPasswordHasher",
+]
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (

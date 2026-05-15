@@ -3,6 +3,7 @@ import os
 from django.conf import settings
 from django.contrib.auth import authenticate
 from django.contrib.auth.hashers import check_password
+from django.db.models import Q
 from rest_framework import serializers
 from rest_framework.exceptions import AuthenticationFailed, PermissionDenied
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
@@ -10,6 +11,24 @@ from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from accounts.profile_access import parent_profile_for_user
 
 from .models import User, UserRole
+
+
+def _inactive_user_with_valid_password(identifier: str, password: str) -> User | None:
+    """
+    Django's ModelBackend.authenticate() returns None for inactive users even when the
+    password is correct. Detect that so we can return a clear error instead of "Invalid credentials".
+    """
+    ident = (identifier or "").strip()
+    if not ident or not password:
+        return None
+    cand = User.objects.filter(Q(email__iexact=ident) | Q(username__iexact=ident)).first()
+    if cand and not cand.is_active and cand.password:
+        try:
+            if cand.check_password(password):
+                return cand
+        except Exception:  # noqa: BLE001
+            return None
+    return None
 
 
 def _login_trace_enabled() -> bool:
@@ -141,6 +160,8 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         user = _authenticate_with_identifier(identifier, password) if identifier else None
 
         if not user:
+            if _inactive_user_with_valid_password(identifier or "", password or ""):
+                raise AuthenticationFailed("User account is disabled")
             raise AuthenticationFailed("Invalid credentials")
         if not user.is_active:
             raise AuthenticationFailed("User account is disabled")
@@ -197,6 +218,8 @@ class ParentTokenObtainPairSerializer(TokenObtainPairSerializer):
         user = _authenticate_with_identifier(identifier, password) if identifier else None
 
         if not user:
+            if _inactive_user_with_valid_password(identifier or "", password or ""):
+                raise AuthenticationFailed("User account is disabled")
             raise AuthenticationFailed("Invalid credentials")
 
         if not user.is_active:
@@ -204,7 +227,11 @@ class ParentTokenObtainPairSerializer(TokenObtainPairSerializer):
 
         # Validate that user is a PARENT (legacy imports may store lowercase role)
         if user.normalized_role() != UserRole.PARENT.value:
-            raise PermissionDenied("This login is only for parent accounts")
+            raise PermissionDenied(
+                "This endpoint is only for parent accounts. "
+                "Centre/franchise and admin users should sign in from the main login page "
+                "(not the parent login link)."
+            )
 
         # We've authenticated the user manually.
         self.user = user
