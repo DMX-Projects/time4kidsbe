@@ -8,6 +8,8 @@ from pathlib import Path
 
 from django.conf import settings
 from django.http import FileResponse, Http404
+
+from documents.download_names import safe_disposition_filename
 from django.views.decorators.http import require_http_methods
 
 
@@ -55,9 +57,11 @@ def serve_pc_upload(request, relative_path: str):
     root = _pc_root()
     path = _resolve_pc_file(root, relative_path)
     content_type, _encoding = mimetypes.guess_type(str(path))
+    fallback = path.name
+    filename = safe_disposition_filename(request.GET.get("name"), fallback)
     return FileResponse(
         path.open("rb"),
         as_attachment=False,
-        filename=path.name,
+        filename=filename,
         content_type=content_type or "application/octet-stream",
     )
