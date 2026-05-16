@@ -161,11 +161,16 @@ class PageContentView(APIView):
 
     def get(self, request, slug):
         from .models import PageContent
+        from .home_page_defaults import normalize_admission_page_data
+
         obj, _ = PageContent.objects.get_or_create(
             slug=slug,
             defaults={"data": copy.deepcopy(self.get_default_data(slug))},
         )
-        return Response(obj.data)
+        data = obj.data
+        if slug == "admission":
+            data = normalize_admission_page_data(data)
+        return Response(data)
 
     def put(self, request, slug):
         from .models import PageContent

@@ -57,6 +57,8 @@ VIRTUAL_TOUR_MAPS_URL = "https://www.google.com/maps/embed?pb=!1m0!3m2!1sen!2s!4
 
 DEFAULT_HOME_PAGE_DATA: dict = {
     "key_navigation": [
+        {"icon": "/icon-nearstcenter.png", "alt": "Find your Nearest Centre", "href": "/locate-centre", "label": "Find your Nearest  Centre", "nav_class": "nav-link3"},
+        {"icon": "/icon-franchise.png", "alt": "Become a Franchise", "href": "/franchise", "label": "Become a Franchise", "nav_class": "nav-link1"},
         {
             "icon": "/icon-tour.png",
             "alt": "Virtual Tour",
@@ -66,8 +68,6 @@ DEFAULT_HOME_PAGE_DATA: dict = {
             "external": True,
         },
         {"icon": "/icon-gallery.png", "alt": "Photo / Video Gallery", "href": "/gallery", "label": "Photo / Video Gallery", "nav_class": "nav-link2"},
-        {"icon": "/icon-nearstcenter.png", "alt": "Find your Nearest Centre", "href": "/locate-centre", "label": "Find your Nearest  Centre", "nav_class": "nav-link3"},
-        {"icon": "/icon-franchise.png", "alt": "Become a Franchise", "href": "/franchise", "label": "Become a Franchise", "nav_class": "nav-link1"},
         {
             "icon": "/icon-brochure.png",
             "alt": "Download Brochure",
@@ -95,7 +95,7 @@ DEFAULT_HOME_PAGE_DATA: dict = {
         "title": "Welcome to T.I.M.E. Kids",
         "subtitle": "A chain of pre-schools launched by T.I.M.E., the national leader in entrance exam training.",
         "paragraphs": [
-            "T.I.M.E. Kids pre-schools is a chain of pre-schools launched by T.I.M.E., the national leader in entrance exam training. After its hugely successful beginning in Hyderabad, T.I.M.E. Kids with 350+ pre-schools is now poised for major expansion across the country.",
+            "T.I.M.E. Kids pre-schools is a chain of pre-schools launched by T.I.M.E., the national leader in entrance exam training. After its hugely successful beginning in Hyderabad, T.I.M.E. Kids with 250+ pre-schools in 60 cities across India is now poised for major expansion across the country.",
             "The programme at T.I.M.E. Kids pre-schools aims at making the transition from home to school easy, by providing the warm, safe and caring and learning environment that young children have at home. Our play schools offer wholesome, fun-filled and memorable childhood education to our children.",
             "We are backed by our educational expertise of over 27 years, well trained care providers and a balanced educational programme. The programme at T.I.M.E. Kids pre-schools is based on the principles of age-appropriate child development.",
         ],
@@ -117,7 +117,7 @@ DEFAULT_HOME_PAGE_DATA: dict = {
             {
                 "image": "/day care.png",
                 "programName": "Play Group",
-                "ageGroup": "2 - 3 years",
+                "ageGroup": "Age group : 2-3 years",
                 "description": "Introduction to social interaction and basic motor skills.",
                 "color": "#ef5f5f",
                 "yOffset": "-20px",
@@ -125,7 +125,7 @@ DEFAULT_HOME_PAGE_DATA: dict = {
             {
                 "image": "/images/nursery_girl.png",
                 "programName": "Nursery",
-                "ageGroup": "3 - 4 years",
+                "ageGroup": "Age group : 3-4 years",
                 "description": "Building foundation for language, numbers, and expression.",
                 "color": "#fbd267",
                 "yOffset": "40px",
@@ -134,7 +134,7 @@ DEFAULT_HOME_PAGE_DATA: dict = {
             {
                 "image": "/1.png",
                 "programName": "PP-1",
-                "ageGroup": "4 - 5 years",
+                "ageGroup": "Age group : 4-5 years",
                 "description": (
                     "Expanding from school to the world around — curious, interactive, "
                     "and building strong foundations."
@@ -145,7 +145,7 @@ DEFAULT_HOME_PAGE_DATA: dict = {
             {
                 "image": "/11.png",
                 "programName": "PP-2",
-                "ageGroup": "5 - 6 years",
+                "ageGroup": "Age group : 5-6 years",
                 "description": (
                     "Confident learners ready for formal schooling — communication, "
                     "independence, and core skills."
@@ -156,7 +156,7 @@ DEFAULT_HOME_PAGE_DATA: dict = {
             {
                 "image": "/images/landing-banner.jpg",
                 "programName": "Summer Programs",
-                "ageGroup": "2 - 10 years",
+                "ageGroup": "Age group : 2-10 years",
                 "description": "Extended care with engaging activities throughout the day.",
                 "color": "#ff9f43",
                 "yOffset": "30px",
@@ -175,6 +175,43 @@ DEFAULT_HOME_PAGE_DATA: dict = {
         ],
     },
 }
+
+
+KIDS_TEACHER_RATIO_FAQ = {
+    "question": "What is the Kids-teacher ratio?",
+    "answer": "We maintain a low Kids-teacher ratio of 1:20 to ensure personalized attention for every child.",
+}
+
+
+def _is_kids_teacher_ratio_faq(question: str) -> bool:
+    if not question:
+        return False
+    q = str(question)
+    return bool(re.search(r"teacher\s*ratio", q, re.IGNORECASE)) and bool(
+        re.search(r"(student|kids)", q, re.IGNORECASE)
+    )
+
+
+def normalize_admission_faq(faq: dict) -> dict:
+    if not isinstance(faq, dict):
+        return faq
+    question = str(faq.get("question") or "")
+    answer = str(faq.get("answer") or "")
+    if _is_kids_teacher_ratio_faq(question):
+        return copy.deepcopy(KIDS_TEACHER_RATIO_FAQ)
+    if re.search(r"teacher\s*ratio", question, re.IGNORECASE) and re.search(r"1\s*:\s*10", answer):
+        return copy.deepcopy(KIDS_TEACHER_RATIO_FAQ)
+    return {"question": question, "answer": answer}
+
+
+def normalize_admission_page_data(data):
+    if not isinstance(data, dict):
+        return data
+    out = copy.deepcopy(data)
+    faqs = out.get("faqs")
+    if isinstance(faqs, list):
+        out["faqs"] = [normalize_admission_faq(f) for f in faqs]
+    return out
 
 
 ADMISSION_PAGE_DATA: dict = {
@@ -226,10 +263,7 @@ ADMISSION_PAGE_DATA: dict = {
             "question": "Is there a trial class available?",
             "answer": "Yes, we offer trial classes so your child can experience our learning environment. Contact your nearest centre to schedule a trial class.",
         },
-        {
-            "question": "What is the student-teacher ratio?",
-            "answer": "We maintain a low student-teacher ratio of 1:10 to ensure personalized attention for every child.",
-        },
+        copy.deepcopy(KIDS_TEACHER_RATIO_FAQ),
         {
             "question": "Are meals provided?",
             "answer": "Nutritious snacks and meals are provided for children enrolled in full-day programs and day care. We follow strict hygiene standards.",
@@ -472,7 +506,7 @@ PROGRAMS_PAGE_DATA: dict = {
         {
             "image": "/1.png",
             "name": "Play Group",
-            "ageGroup": "Age Group: 2-3 Years",
+            "ageGroup": "Age group : 2-3 years",
             "duration": "2-3 hours",
             "description": PROGRAM_DESCRIPTIONS["play_group"],
             "features": ["Smooth Transition Beyond Home", "Sensory & Guided Play", "Music and Storytelling", "Social and Motor Skills"],
@@ -480,7 +514,7 @@ PROGRAMS_PAGE_DATA: dict = {
         {
             "image": "/2 (1).png",
             "name": "Nursery",
-            "ageGroup": "Age Group: 3-4 Years",
+            "ageGroup": "Age group : 3-4 years",
             "duration": "3-4 hours",
             "description": PROGRAM_DESCRIPTIONS["nursery"],
             "features": ["Language and Phonics", "Numbers and Pre-Writing", "Creative Expression", "Confidence and Independence"],
@@ -488,15 +522,15 @@ PROGRAMS_PAGE_DATA: dict = {
         {
             "image": "/2.png",
             "name": "PP-1 / Junior KG / LKG",
-            "ageGroup": "Age Group: 4-5 Years",
-            "duration": "4 hours",
+            "ageGroup": "Age group : 4-5 years",
+            "duration": "4-5 hours",
             "description": PROGRAM_DESCRIPTIONS["pp1"],
             "features": ["Pre-Reading and Phonics", "Number Concepts", "Logical Thinking", "Projects and Role Play"],
         },
         {
             "image": "/16.png",
             "name": "PP-2 / Senior KG / UKG",
-            "ageGroup": "Age Group: 5-6 Years",
+            "ageGroup": "Age group : 5-6 years",
             "duration": "4-5 hours",
             "description": PROGRAM_DESCRIPTIONS["pp2"],
             "features": ["Reading and Writing Readiness", "Vocabulary and Maths", "Reasoning and Creativity", "Primary School Confidence"],
@@ -616,7 +650,7 @@ ABOUT_PAGE_DATA: dict = {
                 "icon": "Building2",
                 "icon_gradient": "from-orange-400 to-orange-600",
                 "plane_position": "right",
-                "text": "T.I.M.E. Kids pre-schools is a chain of pre-schools launched by T.I.M.E., the national leader in entrance exam training. After its hugely successful beginning in Hyderabad, T.I.M.E. Kids with 250+ pre-schools is now poised for major expansion across the country.",
+                "text": "T.I.M.E. Kids pre-schools is a chain of pre-schools launched by T.I.M.E., the national leader in entrance exam training. After its hugely successful beginning in Hyderabad, T.I.M.E. Kids with 250+ pre-schools in 60 cities across India is now poised for major expansion across the country.",
             },
             {
                 "icon": "Home",
