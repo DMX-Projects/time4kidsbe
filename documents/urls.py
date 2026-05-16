@@ -2,6 +2,7 @@ from django.urls import path
 from .views import (
     ParentDocumentListView,
     parent_documents_by_category,
+    franchise_document_file,
     franchise_documents_all,
     franchise_documents_by_category,
     admin_franchise_documents_summary,
@@ -19,6 +20,7 @@ urlpatterns = [
     path('parent/documents/', ParentDocumentListView.as_view(), name='parent-documents'),
     path('parent/documents/category/<str:category>/', parent_documents_by_category, name='parent-documents-category'),
     path('franchise/documents/', franchise_documents_all, name='franchise-documents-all'),
+    path('franchise/documents/<int:pk>/file/', franchise_document_file, name='franchise-document-file'),
     path('franchise/documents/category/<str:category>/', franchise_documents_by_category, name='franchise-documents-category'),
     path('franchise/parent-documents/', FranchiseParentDocumentListCreateView.as_view(), name='franchise-parent-documents'),
     path('franchise/parent-documents/<int:pk>/', FranchiseParentDocumentDeleteView.as_view(), name='franchise-parent-documents-delete'),

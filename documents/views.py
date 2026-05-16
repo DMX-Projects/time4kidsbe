@@ -1,8 +1,11 @@
 from pathlib import Path
+import mimetypes
 
 from django.conf import settings
 from django.core.management import call_command
 from django.db.models import Q, Count
+from django.http import FileResponse, Http404
+from django.shortcuts import get_object_or_404
 from rest_framework import generics, status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
@@ -72,6 +75,34 @@ def _hub_documents_for_franchise_user(user):
     return FranchiseDocument.objects.filter(is_active=True, franchise__isnull=True).select_related(
         "franchise"
     )
+
+
+@api_view(["GET"])
+@permission_classes([IsFranchiseUser])
+def franchise_document_file(request, pk: int):
+    """
+    Stream an active hub document file with JWT auth (avoids relying on public /media/… on the marketing domain).
+    """
+    doc = get_object_or_404(FranchiseDocument, pk=pk, is_active=True)
+    if not _hub_documents_for_franchise_user(request.user).filter(pk=pk).exists():
+        raise PermissionDenied("You do not have access to this document.")
+    if not doc.file:
+        raise Http404("No file on this record.")
+    try:
+        file_handle = doc.file.open("rb")
+    except FileNotFoundError:
+        raise Http404("File missing on server.") from None
+    name = getattr(doc.file, "name", "") or ""
+    content_type, _encoding = mimetypes.guess_type(name)
+    if not content_type:
+        content_type = "application/octet-stream"
+    resp = FileResponse(
+        file_handle,
+        as_attachment=False,
+        content_type=content_type,
+        filename=Path(name).name or "document",
+    )
+    return resp
 
 
 @api_view(["GET"])
