@@ -122,7 +122,16 @@ class FranchiseDocument(models.Model):
     category = models.CharField(max_length=50, choices=FranchiseDocumentCategory.choices)
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True)
-    file = models.FileField(upload_to="franchise_documents/", help_text="Upload document file (PDF/DOC/etc).")
+    file = models.FileField(
+        upload_to="franchise_documents/",
+        blank=True,
+        help_text="Upload document file (PDF/DOC/etc). Optional when embed_url is set.",
+    )
+    embed_url = models.URLField(
+        max_length=1024,
+        blank=True,
+        help_text="YouTube, MediaDelivery, or other iframe embed URL (alternative to file upload).",
+    )
     source_path = models.CharField(
         max_length=512,
         blank=True,

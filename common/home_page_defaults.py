@@ -85,7 +85,12 @@ DEFAULT_HOME_PAGE_DATA: dict = {
         "Regular Staff Training",
         "Operational Support",
     ],
-    "updates_empty_message": "New updates will appear here once they are added under Admin → Updates.",
+    "news_ticker_items": [
+        {
+            "text": "Our New centres opened for Academic year 2026-27 (Bengaluru – Dommasandra, Horamavu New, JP Nagar 9th Phase, Kamakshipalya) (Bhadrak – Motel Chhak) (Bhubaneswar – Patrapada) (Chennai – Chitlapakkam, Kovur, Mugalivakkam New, Porur, Pozhichalur, Tondiarpet New, West Mambalam) (Cuttack – CDA) (Ernakulam – Irumpanam) (Guntakal – Alur Road) (Guntur – Krishna Nagar) (Hyderabad – Ameenpur, Goshamahal, Kuntloor, Medchal, Presidency Avenue – Alwal, RR Colony – Ameenpur, Sri Ram Nagar - Jeedimetla) (Kolkata – Kestopur) (Kollam – Paravur) (Kozhikode – Pantheerankav) (Pathanamthitta – Changanassery) (Patna – Gola Road New, Khagaul Road, Priyadarshi) (Thrissur – Chiyyaram, Nellikunnu) (Tiruvannamalai – Arani) (Trichy – Pon Nagar) (Trivandrum – Kalathukal, Attingal, Vettu Road)",
+        },
+    ],
+    "updates_empty_message": "Add scrolling news lines under Admin → Home page content → Latest news ticker.",
     "intro": {
         "title": "Welcome to T.I.M.E. Kids",
         "subtitle": "A chain of pre-schools launched by T.I.M.E., the national leader in entrance exam training.",

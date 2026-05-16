@@ -42,6 +42,8 @@ CORS_ALLOW_METHODS = [
     'POST',
     'PUT',
 ]
+# Let the franchise dashboard read Content-Disposition for download filenames.
+CORS_EXPOSE_HEADERS = ["Content-Disposition"]
 
 if not CORS_ALLOW_ALL_ORIGINS:
     CORS_ALLOWED_ORIGINS = [

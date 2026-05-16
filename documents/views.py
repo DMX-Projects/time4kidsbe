@@ -7,12 +7,14 @@ from django.db.models import Q, Count
 from django.http import FileResponse, Http404
 from django.shortcuts import get_object_or_404
 from rest_framework import generics, status
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, authentication_classes
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.exceptions import PermissionDenied
 from accounts.permissions import IsFranchiseUser, IsParentUser, IsAdminOrApproverUser
 from accounts.profile_access import franchise_profile_for_user
+from .auth import QueryJWTAuthentication
+from .download_names import franchise_document_download_filename, safe_disposition_filename
 from .models import ParentDocument, DocumentCategory, FranchiseDocument, FranchiseDocumentCategory, IndentRequest
 from .serializers import (
     ParentDocumentSerializer,
@@ -78,6 +80,7 @@ def _hub_documents_for_franchise_user(user):
 
 
 @api_view(["GET"])
+@authentication_classes([QueryJWTAuthentication])
 @permission_classes([IsFranchiseUser])
 def franchise_document_file(request, pk: int):
     """
@@ -92,15 +95,17 @@ def franchise_document_file(request, pk: int):
         file_handle = doc.file.open("rb")
     except FileNotFoundError:
         raise Http404("File missing on server.") from None
-    name = getattr(doc.file, "name", "") or ""
-    content_type, _encoding = mimetypes.guess_type(name)
+    stored_name = getattr(doc.file, "name", "") or ""
+    content_type, _encoding = mimetypes.guess_type(stored_name)
     if not content_type:
         content_type = "application/octet-stream"
+    fallback = franchise_document_download_filename(doc)
+    filename = safe_disposition_filename(request.GET.get("name"), fallback)
     resp = FileResponse(
         file_handle,
         as_attachment=False,
         content_type=content_type,
-        filename=Path(name).name or "document",
+        filename=filename,
     )
     return resp
 
@@ -147,6 +152,8 @@ def admin_franchise_documents_summary(request):
             total=Count("id"),
             active=Count("id", filter=Q(is_active=True)),
             with_file=Count("id", filter=~Q(file="")),
+            with_embed=Count("id", filter=~Q(embed_url="")),
+            with_content=Count("id", filter=Q(file__gt="") | ~Q(embed_url="")),
             global_count=Count("id", filter=Q(franchise__isnull=True)),
             centre_specific_count=Count("id", filter=Q(franchise__isnull=False)),
         )
@@ -158,6 +165,8 @@ def admin_franchise_documents_summary(request):
         total = int(r["total"]) if r else 0
         active = int(r["active"]) if r else 0
         with_file = int(r["with_file"]) if r else 0
+        with_embed = int(r.get("with_embed", 0)) if r else 0
+        with_content = int(r.get("with_content", 0)) if r else 0
         global_count = int(r["global_count"]) if r else 0
         centre_specific_count = int(r["centre_specific_count"]) if r else 0
         out.append(
@@ -168,7 +177,8 @@ def admin_franchise_documents_summary(request):
                 "active": active,
                 "inactive": total - active,
                 "with_file": with_file,
-                "missing_file": total - with_file,
+                "with_embed": with_embed,
+                "missing_file": total - with_content,
                 "global_count": global_count,
                 "centre_specific_count": centre_specific_count,
             }

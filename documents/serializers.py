@@ -48,6 +48,7 @@ class FranchiseDocumentSerializer(serializers.ModelSerializer):
             "display_title",
             "description",
             "file",
+            "embed_url",
             "source_path",
             "franchise",
             "franchise_name",
@@ -83,6 +84,7 @@ class AdminFranchiseDocumentSerializer(serializers.ModelSerializer):
             "display_title",
             "description",
             "file",
+            "embed_url",
             "source_path",
             "franchise",
             "franchise_name",
@@ -100,11 +102,22 @@ class AdminFranchiseDocumentSerializer(serializers.ModelSerializer):
         return obj.title
 
     def validate(self, attrs):
+        request = self.context.get("request")
+        uploaded = getattr(request, "FILES", None).get("file") if request else None
+        has_file = bool(attrs.get("file") or uploaded)
+        has_embed = bool((attrs.get("embed_url") or "").strip())
         if self.instance is None:
-            request = self.context.get("request")
-            uploaded = getattr(request, "FILES", None).get("file") if request else None
-            if not attrs.get("file") and not uploaded:
-                raise serializers.ValidationError({"file": "Upload a file for new documents."})
+            if not has_file and not has_embed:
+                raise serializers.ValidationError(
+                    {"detail": "Upload a file or provide an embed/video link."}
+                )
+        else:
+            merged_file = has_file or bool(self.instance.file)
+            merged_embed = has_embed or bool((self.instance.embed_url or "").strip())
+            if not merged_file and not merged_embed:
+                raise serializers.ValidationError(
+                    {"detail": "Document must have a file or an embed link."}
+                )
         return attrs
 
     def _incoming_uploaded_file(self):

@@ -144,6 +144,7 @@ class PageContentView(APIView):
 
     def get_default_data(self, slug):
         from .home_page_defaults import ADMISSION_PAGE_DATA, FRANCHISE_PAGE_DATA, PROGRAMS_PAGE_DATA, FAQ_PAGE_DATA, ABOUT_PAGE_DATA
+        from .footer_defaults import FOOTER_PAGE_DATA
         if slug == "admission":
             return ADMISSION_PAGE_DATA
         if slug == "franchise-opportunity":
@@ -154,6 +155,8 @@ class PageContentView(APIView):
             return FAQ_PAGE_DATA
         if slug == "about":
             return ABOUT_PAGE_DATA
+        if slug == "footer":
+            return FOOTER_PAGE_DATA
         return {}
 
     def get(self, request, slug):
