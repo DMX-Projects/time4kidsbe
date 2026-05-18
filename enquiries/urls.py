@@ -10,9 +10,11 @@ from .views import (
     FranchiseEnquiryUpdateView,
     FranchiseLeadAdminUpdateView,
     FranchiseLeadPartnerUpdateView,
+    LandingEnquirySubmitView,
 )
 
 urlpatterns = [
+    path("landing-submit/", LandingEnquirySubmitView.as_view(), name="landing-enquiry-submit"),
     path("submit/", EnquiryCreateView.as_view(), name="enquiry-create"),
     path("franchise-submit/", FranchiseEnquiryCreateView.as_view(), name="franchise-enquiry-create"),
     path("admin/", AdminEnquiryListView.as_view(), name="enquiry-admin-list"),

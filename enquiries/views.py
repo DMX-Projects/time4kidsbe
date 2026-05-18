@@ -8,6 +8,7 @@ from rest_framework.views import APIView
 from accounts.permissions import IsAdminUser, IsFranchiseUser
 from accounts.profile_access import franchise_profile_for_user
 
+from .landing_submit import handle_landing_enquiry_post
 from .models import Enquiry, FranchiseEnquiry
 from .serializers import (
     EnquirySerializer,
@@ -34,6 +35,16 @@ def _merge_enquiry_rows(
     if enquiry_type_filter in ("ADMISSION", "CONTACT"):
         return [p for p in payload if p.get("enquiry_type") == enquiry_type_filter]
     return payload
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class LandingEnquirySubmitView(APIView):
+    """HTML form POST from legacy landing pages → ``kids_enquiry`` + redirect."""
+
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        return handle_landing_enquiry_post(request.POST)
 
 
 @method_decorator(csrf_exempt, name="dispatch")

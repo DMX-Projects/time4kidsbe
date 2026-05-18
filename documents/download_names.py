@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from documents.models import FranchiseDocument
+from documents.models import FranchiseDocument, ParentDocument
 
 _UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
@@ -99,3 +99,19 @@ def franchise_document_download_filename(doc: FranchiseDocument) -> str:
     if ext and not safe.lower().endswith(ext.lower()):
         safe = f"{safe}{ext}"
     return safe
+
+
+def parent_document_download_filename(doc: ParentDocument) -> str:
+    """Safe filename for parent-facing uploads (title + storage extension, not UUID stem)."""
+    stored_name = Path(doc.file.name).name if doc.file else ""
+    ext = Path(stored_name).suffix if stored_name else ""
+    raw_title = (doc.title or "").strip()
+    if raw_title:
+        title = _sanitize_filename(raw_title)
+    elif stored_name:
+        title = _humanize_segment(Path(stored_name).stem)
+    else:
+        title = "document"
+    if ext and not title.lower().endswith(ext.lower()):
+        title = f"{title}{ext}"
+    return title
