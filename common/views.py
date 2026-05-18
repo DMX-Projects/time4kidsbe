@@ -1,5 +1,11 @@
 import copy
+import mimetypes
+import os
 
+from django.conf import settings
+from django.http import FileResponse, Http404
+from django.views.decorators.cache import cache_control
+from django.views.decorators.http import require_GET
 from rest_framework import viewsets
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
@@ -190,3 +196,31 @@ class PageContentView(APIView):
         obj.data = body
         obj.save(update_fields=["data", "updated_at"])
         return Response(obj.data)
+
+
+@require_GET
+@cache_control(public=True, max_age=86400)
+def cms_public_media_file(request, relative_path: str):
+    """
+    Public CMS uploads (hero slider, homepage blobs, gallery files) via /api/cms-files/…
+    Use when nginx does not expose /media/ on the marketing domain.
+    """
+    rel = (relative_path or "").strip().lstrip("/")
+    if not rel or ".." in rel.split("/"):
+        raise Http404("Invalid path")
+
+    media_root = os.path.realpath(str(settings.MEDIA_ROOT))
+    full = os.path.realpath(os.path.join(media_root, rel))
+    if full != media_root and not full.startswith(media_root + os.sep):
+        raise Http404("Invalid path")
+    if not os.path.isfile(full):
+        raise Http404("File not found")
+
+    content_type, _encoding = mimetypes.guess_type(full)
+    if not content_type:
+        content_type = "application/octet-stream"
+    try:
+        handle = open(full, "rb")
+    except OSError:
+        raise Http404("File not readable") from None
+    return FileResponse(handle, content_type=content_type, filename=os.path.basename(full))
