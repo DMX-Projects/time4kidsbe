@@ -1,12 +1,80 @@
+import mimetypes
+import re
+from pathlib import Path
+
+from django.http import FileResponse, Http404
 from django.shortcuts import get_object_or_404
 from rest_framework import generics, permissions, viewsets
+from rest_framework.decorators import api_view, authentication_classes, permission_classes
 from rest_framework.exceptions import PermissionDenied
+from rest_framework.permissions import IsAuthenticated
 
+from accounts.models import UserRole
 from accounts.permissions import IsAdminUser, IsFranchiseUser, IsParentUser
 from accounts.profile_access import franchise_profile_for_user, parent_profile_for_user
+from documents.auth import QueryJWTAuthentication
+from documents.download_names import safe_disposition_filename
 from franchises.models import Franchise
 from .models import Event, EventMedia
 from .serializers import EventMediaSerializer, EventSerializer
+
+
+def _norm_user_role(user) -> str:
+    return str(getattr(user, "role", "") or "").strip().upper()
+
+
+def _event_media_fallback_filename(media: EventMedia) -> str:
+    stored = Path(media.file.name).name if media.file else ""
+    ext = Path(stored).suffix if stored else ""
+    base = (media.caption or "").strip() or (Path(stored).stem if stored else "media")
+    safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "_", base)
+    safe = re.sub(r"\s+", " ", safe).strip().strip(".") or "media"
+    if ext and not safe.lower().endswith(ext.lower()):
+        safe = f"{safe}{ext}"
+    return safe
+
+
+def _user_can_stream_event_media(user, media: EventMedia) -> bool:
+    event = media.event
+    role = _norm_user_role(user)
+    if role == UserRole.PARENT.value:
+        profile = parent_profile_for_user(user)
+        return profile is not None and event.franchise_id == profile.franchise_id
+    if role == UserRole.FRANCHISE.value:
+        franchise = franchise_profile_for_user(user)
+        return franchise is not None and event.franchise_id == franchise.id
+    return False
+
+
+@api_view(["GET"])
+@authentication_classes([QueryJWTAuthentication])
+@permission_classes([IsAuthenticated])
+def event_media_file(request, pk: int):
+    """
+    Stream event media (photo/video) with JWT in header or ?access= so dashboards
+    do not rely on public /media/… on the marketing domain.
+    """
+    media = get_object_or_404(EventMedia.objects.select_related("event"), pk=pk)
+    if not _user_can_stream_event_media(request.user, media):
+        raise PermissionDenied("You do not have access to this media.")
+    if not media.file:
+        raise Http404("No file on this record.")
+    try:
+        file_handle = media.file.open("rb")
+    except FileNotFoundError:
+        raise Http404("File missing on server.") from None
+    stored_name = getattr(media.file, "name", "") or ""
+    content_type, _encoding = mimetypes.guess_type(stored_name)
+    if not content_type:
+        content_type = "application/octet-stream"
+    fallback = _event_media_fallback_filename(media)
+    filename = safe_disposition_filename(request.GET.get("name"), fallback)
+    return FileResponse(
+        file_handle,
+        as_attachment=False,
+        content_type=content_type,
+        filename=filename,
+    )
 
 
 class AdminEventViewSet(viewsets.ModelViewSet):

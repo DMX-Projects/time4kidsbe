@@ -32,6 +32,72 @@ class ParentDocumentSerializer(serializers.ModelSerializer):
         return obj.title
 
 
+class FranchiseCentreDocumentCreateSerializer(serializers.ModelSerializer):
+    """Franchise centre: upload files to their own resource hub (not global HO rows)."""
+
+    file = RelativeFileField()
+    category_display = serializers.CharField(source="get_category_display", read_only=True)
+    franchise_name = serializers.CharField(source="franchise.name", read_only=True, allow_null=True)
+    display_title = serializers.SerializerMethodField()
+
+    class Meta:
+        model = FranchiseDocument
+        fields = [
+            "id",
+            "category",
+            "category_display",
+            "title",
+            "description",
+            "file",
+            "display_title",
+            "franchise_name",
+            "academic_year",
+            "is_active",
+            "order",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "id",
+            "category_display",
+            "display_title",
+            "franchise_name",
+            "is_active",
+            "created_at",
+            "updated_at",
+        ]
+
+    def get_display_title(self, obj: FranchiseDocument) -> str:
+        if obj.academic_year:
+            return f"{obj.title} ({obj.academic_year})"
+        return obj.title
+
+    def validate_category(self, value: str) -> str:
+        valid = {c[0] for c in FranchiseDocumentCategory.choices}
+        if value not in valid:
+            raise serializers.ValidationError("Invalid category.")
+        return value
+
+    def validate(self, attrs):
+        request = self.context.get("request")
+        uploaded = getattr(request, "FILES", None).get("file") if request else None
+        if not attrs.get("file") and not uploaded:
+            raise serializers.ValidationError({"file": "Choose a file to upload."})
+        return attrs
+
+    def create(self, validated_data):
+        request = self.context.get("request")
+        uploaded = getattr(request, "FILES", None).get("file") if request else None
+        if uploaded and not validated_data.get("file"):
+            validated_data["file"] = uploaded
+        file_obj = validated_data.get("file")
+        if file_obj is not None:
+            name = getattr(file_obj, "name", "") or ""
+            if name and not (validated_data.get("source_path") or "").strip():
+                validated_data["source_path"] = Path(name).name
+        return super().create(validated_data)
+
+
 class FranchiseDocumentSerializer(serializers.ModelSerializer):
     file = RelativeFileField()
     franchise_name = serializers.CharField(source="franchise.name", read_only=True, allow_null=True)

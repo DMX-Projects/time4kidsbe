@@ -11,14 +11,21 @@ from rest_framework.decorators import api_view, permission_classes, authenticati
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.exceptions import PermissionDenied
+from rest_framework.permissions import IsAuthenticated
+from accounts.models import UserRole
 from accounts.permissions import IsFranchiseUser, IsParentUser, IsAdminOrApproverUser
 from accounts.profile_access import franchise_profile_for_user
 from .auth import QueryJWTAuthentication
-from .download_names import franchise_document_download_filename, safe_disposition_filename
+from .download_names import (
+    franchise_document_download_filename,
+    parent_document_download_filename,
+    safe_disposition_filename,
+)
 from .models import ParentDocument, DocumentCategory, FranchiseDocument, FranchiseDocumentCategory, IndentRequest
 from .serializers import (
     ParentDocumentSerializer,
     FranchiseDocumentSerializer,
+    FranchiseCentreDocumentCreateSerializer,
     AdminFranchiseDocumentSerializer,
     IndentRequestSerializer,
 )
@@ -55,6 +62,52 @@ def parent_documents_by_category(request, category):
 
     serializer = ParentDocumentSerializer(documents, many=True)
     return Response(serializer.data)
+
+
+def _norm_user_role(user) -> str:
+    return str(getattr(user, "role", "") or "").strip().upper()
+
+
+def _user_can_stream_parent_document(user, doc: ParentDocument) -> bool:
+    """Parents: active docs only (matches list APIs). Franchise: own centre rows only."""
+    role = _norm_user_role(user)
+    if role == UserRole.PARENT.value:
+        return bool(doc.is_active)
+    if role == UserRole.FRANCHISE.value:
+        franchise = franchise_profile_for_user(user)
+        return franchise is not None and doc.franchise_id == franchise.id
+    return False
+
+
+@api_view(["GET"])
+@authentication_classes([QueryJWTAuthentication])
+@permission_classes([IsAuthenticated])
+def parent_document_file(request, pk: int):
+    """
+    Stream a parent document file with JWT auth (header or ?access=), so browsers do not rely
+    on public /media/… on the marketing domain.
+    """
+    doc = get_object_or_404(ParentDocument, pk=pk)
+    if not _user_can_stream_parent_document(request.user, doc):
+        raise PermissionDenied("You do not have access to this document.")
+    if not doc.file:
+        raise Http404("No file on this record.")
+    try:
+        file_handle = doc.file.open("rb")
+    except FileNotFoundError:
+        raise Http404("File missing on server.") from None
+    stored_name = getattr(doc.file, "name", "") or ""
+    content_type, _encoding = mimetypes.guess_type(stored_name)
+    if not content_type:
+        content_type = "application/octet-stream"
+    fallback = parent_document_download_filename(doc)
+    filename = safe_disposition_filename(request.GET.get("name"), fallback)
+    return FileResponse(
+        file_handle,
+        as_attachment=False,
+        content_type=content_type,
+        filename=filename,
+    )
 
 
 def _franchise_hub_documents_queryset(franchise):
@@ -205,6 +258,52 @@ class FranchiseParentDocumentListCreateView(generics.ListCreateAPIView):
             raise PermissionDenied("Franchise profile not found")
         # Always publish uploads as active so parents can see them immediately.
         serializer.save(franchise=franchise_profile, is_active=True)
+
+
+class FranchiseCentreDocumentListCreateView(generics.ListCreateAPIView):
+    """Franchise uploads centre-specific resource hub files (local folder / file picker)."""
+
+    serializer_class = FranchiseCentreDocumentCreateSerializer
+    permission_classes = [IsFranchiseUser]
+    pagination_class = None
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def get_queryset(self):
+        franchise_profile = franchise_profile_for_user(self.request.user)
+        if not franchise_profile:
+            return FranchiseDocument.objects.none()
+        return FranchiseDocument.objects.filter(franchise=franchise_profile).order_by(
+            "category", "order", "-created_at"
+        )
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx["request"] = self.request
+        return ctx
+
+    def perform_create(self, serializer):
+        franchise_profile = franchise_profile_for_user(self.request.user)
+        if not franchise_profile:
+            raise PermissionDenied("Franchise profile not found")
+        serializer.save(franchise=franchise_profile, is_active=True)
+
+
+class FranchiseCentreDocumentDetailView(generics.RetrieveDestroyAPIView):
+    """Franchise can delete only their own centre hub uploads (not HO global files)."""
+
+    serializer_class = FranchiseDocumentSerializer
+    permission_classes = [IsFranchiseUser]
+
+    def get_queryset(self):
+        franchise_profile = franchise_profile_for_user(self.request.user)
+        if not franchise_profile:
+            return FranchiseDocument.objects.none()
+        return FranchiseDocument.objects.filter(franchise=franchise_profile)
+
+    def perform_destroy(self, instance):
+        if instance.file:
+            instance.file.delete(save=False)
+        super().perform_destroy(instance)
 
 
 class FranchiseParentDocumentDeleteView(generics.DestroyAPIView):

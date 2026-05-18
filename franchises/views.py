@@ -1,4 +1,4 @@
-from django.db.models import Count, Q
+from django.db.models import Q
 from rest_framework import generics, permissions, viewsets
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.exceptions import PermissionDenied, ValidationError
@@ -7,6 +7,7 @@ from rest_framework.views import APIView
 
 from accounts.permissions import IsAdminUser, IsFranchiseUser
 from accounts.profile_access import franchise_profile_for_user
+from .franchise_geo import cities_from_franchises, state_choices_from_franchises, state_filter_q
 from .models import Franchise, ParentProfile, FranchiseLocation, FranchiseHeroSlide, FranchiseGalleryItem
 from .serializers import (
     FranchiseCreateSerializer,
@@ -26,12 +27,8 @@ from .serializers import (
 @api_view(['GET'])
 @permission_classes([permissions.AllowAny])
 def state_choices_view(request):
-    """Return list of Indian states with codes and names."""
-    states = [
-        {'code': code, 'name': name}
-        for code, name in FranchiseLocation.STATE_CHOICES
-    ]
-    return Response(states)
+    """Return states that have at least one active centre (from ``franchise`` table)."""
+    return Response(state_choices_from_franchises())
 
 
 class FranchiseLocationViewSet(viewsets.ReadOnlyModelViewSet):
@@ -140,23 +137,15 @@ class PublicFranchiseListView(generics.ListAPIView):
             "admin", "user"
         )
         
-        # Filter by state
+        # Filter by state (code or full name as stored on franchise rows)
         state = self.request.query_params.get('state', None)
         if state:
-            # Handle both code (e.g., "AP") and full name matches
-            state_dict = dict(FranchiseLocation.STATE_CHOICES)
-            state_full_name = state_dict.get(state.upper(), state)
-            
-            queryset = queryset.filter(
-                Q(state__iexact=state) | 
-                Q(state__icontains=state_full_name) |
-                Q(state__icontains=state)
-            )
+            queryset = queryset.filter(state_filter_q(state))
         
-        # Filter by city
+        # Filter by city (case-insensitive; matches locate-centre dropdown values)
         city = self.request.query_params.get('city', None)
         if city:
-            queryset = queryset.filter(city__iexact=city)
+            queryset = queryset.filter(city__iexact=city.strip())
         
         # Search across name, city, and address with weighted relevance
         search = self.request.query_params.get('search', None)
@@ -199,40 +188,15 @@ class PublicStatsView(generics.GenericAPIView):
 
 
 class PublicLocationListView(generics.GenericAPIView):
-    """Return all active locations with their franchise counts."""
+    """Distinct cities + centre counts from the ``franchise`` table (not ``franchise_location``)."""
     permission_classes = [permissions.AllowAny]
-    # DRF's browsable API renderer calls `get_queryset()` even if we override `get()`.
-    # Provide a queryset to avoid AssertionError in DEBUG mode.
-    queryset = FranchiseLocation.objects.filter(is_active=True)
+    queryset = Franchise.objects.filter(is_active=True)
 
     def get_queryset(self):
-        return self.queryset.order_by("display_order", "city_name")
+        return self.queryset
 
     def get(self, request, *args, **kwargs):
-        # Get all active locations
-        active_locations = self.get_queryset()
-        
-        # Get franchise counts per city (case-insensitive grouping would be better but city is CharField)
-        # We'll do a simple count for now.
-        franchise_counts = Franchise.objects.filter(is_active=True).values('city').annotate(count=Count('id'))
-        count_map = {item['city'].lower(): item['count'] for item in franchise_counts}
-        
-        locations = []
-        for loc in active_locations:
-            locations.append({
-                'id': loc.id,
-                'city_name': loc.city_name,
-                'city': loc.city_name, # Alias for frontend compatibility
-                'state': loc.state,
-                'state_display': loc.get_state_display(),
-                'landmark_name': loc.landmark_name or 'City Center',
-                'landmark_type': loc.landmark_type,
-                'is_active': loc.is_active,
-                'display_order': loc.display_order,
-                'franchise_count': count_map.get(loc.city_name.lower(), 0)
-            })
-        
-        return Response(locations)
+        return Response(cities_from_franchises())
 
 
 class FranchiseHeroSlideViewSet(viewsets.ModelViewSet):
