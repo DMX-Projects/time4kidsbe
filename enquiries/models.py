@@ -69,3 +69,31 @@ class FranchiseEnquiry(models.Model):
 
     def __str__(self) -> str:
         return f"Franchise lead from {self.name}"
+
+
+class KidsEnquiry(models.Model):
+    """Legacy landing-page admission leads (``public.kids_enquiry``)."""
+
+    name = models.TextField()
+    mobile = models.TextField(blank=True, null=True)
+    mobileno = models.TextField()
+    email = models.TextField(blank=True, null=True)
+    state = models.TextField(blank=True, null=True)
+    city = models.TextField(blank=True, null=True)
+    location = models.TextField(blank=True, null=True)
+    enquiry_type = models.TextField()
+    created_date = models.DateTimeField(auto_now_add=True)
+    source = models.TextField(blank=True, null=True)
+    centre_name = models.TextField(blank=True, null=True)
+    centre_phone = models.TextField(blank=True, null=True)
+    centre_email = models.TextField(blank=True, null=True)
+    email_status = models.TextField(blank=True, null=True)
+    whatsapp_status = models.TextField(blank=True, null=True)
+    raw_payload = models.JSONField(default=dict)
+
+    class Meta:
+        db_table = "kids_enquiry"
+        ordering = ["-created_date"]
+
+    def __str__(self) -> str:
+        return f"{self.name} ({self.enquiry_type})"

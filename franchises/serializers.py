@@ -392,7 +392,7 @@ class FranchiseHeroSlideSerializer(serializers.ModelSerializer):
 
 
 class CityOptionSerializer(serializers.Serializer):
-    """Distinct ``franchise.state`` value for the city dropdown."""
+    """Distinct ``franchise.city`` value for the city dropdown."""
 
     name = serializers.CharField()
 

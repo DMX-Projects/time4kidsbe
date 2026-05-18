@@ -216,6 +216,13 @@ SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY", "")
 MAIL_FROM_ADDRESS = os.getenv("MAIL_FROM_ADDRESS", "info@time4education.com")
 MAIL_TO_ADDRESS = os.getenv("MAIL_TO_ADDRESS", "mdsahilkhan634@gmail.com")
 
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        "LOCATION": "time4kids-default-cache",
+    }
+}
+
 # Public URL of the Next.js site (for links in parent announcement emails)
 PUBLIC_SITE_URL = os.getenv("PUBLIC_SITE_URL", "http://localhost:3000").rstrip("/")
 
