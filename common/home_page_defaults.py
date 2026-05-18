@@ -3,6 +3,41 @@
 import copy
 import re
 
+NEWS_TICKER_MAX_WORDS = 1000
+
+
+def _count_words(text: str) -> int:
+    t = (text or "").strip()
+    if not t:
+        return 0
+    return len(t.split())
+
+
+def _truncate_to_word_limit(text: str, max_words: int = NEWS_TICKER_MAX_WORDS) -> str:
+    t = (text or "").strip()
+    if not t:
+        return ""
+    words = t.split()
+    if len(words) <= max_words:
+        return t
+    return " ".join(words[:max_words])
+
+
+def _normalize_news_ticker_items(data: dict) -> None:
+    """Enforce per-line word cap for home page Latest News & Updates ticker."""
+    raw_items = data.get("news_ticker_items")
+    if not isinstance(raw_items, list):
+        return
+    cleaned = []
+    for row in raw_items:
+        if not isinstance(row, dict):
+            continue
+        text = _truncate_to_word_limit(str(row.get("text") or ""))
+        if text:
+            cleaned.append({"text": text})
+    if cleaned:
+        data["news_ticker_items"] = cleaned
+
 
 def _is_legacy_combined_pp(program_name: str) -> bool:
     if not program_name or not str(program_name).strip():
@@ -50,6 +85,7 @@ def normalize_home_page_data(data):
         else:
             new_programs.append(p)
     pp["programs"] = new_programs
+    _normalize_news_ticker_items(out)
     return out
 
 
@@ -412,9 +448,13 @@ FRANCHISE_PAGE_DATA: dict = {
         ],
     },
     "testimonials": [
-        {"title": "Best business decision", "author": "Franchise Partner", "location": "Bangalore", "video_url": "", "thumbnail_url": ""},
-        {"title": "Complete support from day one", "author": "Franchise Partner", "location": "Chennai", "video_url": "", "thumbnail_url": ""},
-        {"title": "Rewarding and fulfilling", "author": "Franchise Partner", "location": "Pune", "video_url": "", "thumbnail_url": ""},
+        {
+            "title": "What our Franchise has to say about T.I.M.E. Kids",
+            "author": "T.I.M.E. Kids",
+            "location": "",
+            "video_url": "",
+            "thumbnail_url": "/feature-annual-day-celebrations.png",
+        },
     ],
     "main_branch": {
         "heading_prefix": "Visit Our",

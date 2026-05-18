@@ -131,6 +131,7 @@ class PublicFranchiseListView(generics.ListAPIView):
     """Public view for listing all active franchises with optional filtering."""
     serializer_class = PublicFranchiseSerializer
     permission_classes = [permissions.AllowAny]
+    pagination_class = None  # Locate a Centre / maps need the full filtered set
 
     def get_queryset(self):
         queryset = Franchise.objects.filter(is_active=True).select_related(

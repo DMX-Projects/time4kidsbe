@@ -1,21 +1,65 @@
 from django.db.models import Q
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
-from rest_framework import generics, permissions
+from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from accounts.authentication import LenientJWTAuthentication
 from accounts.permissions import IsAdminUser, IsFranchiseUser
+from .permissions import can_view_landing_leads
 from accounts.profile_access import franchise_profile_for_user
 
 from .landing_submit import handle_landing_enquiry_post
-from .models import Enquiry, FranchiseEnquiry
+from .models import Enquiry, FranchiseEnquiry, KidsEnquiry
 from .serializers import (
     EnquirySerializer,
     FranchiseEnquiryCreateSerializer,
     FranchiseEnquiryReadSerializer,
     FranchiseEnquiryStatusSerializer,
+    KidsEnquirySerializer,
 )
+
+
+def _slugify_city(value: str) -> str:
+    return (
+        value.strip()
+        .lower()
+        .replace(" ", "-")
+        .replace("_", "-")
+    )
+
+
+def _resolve_kids_enquiry_city(city_param: str) -> str | None:
+    """Map URL slug (e.g. ``new-delhi``) to a stored ``kids_enquiry.city`` value."""
+    raw = (city_param or "").strip()
+    if not raw or raw.lower() == "all":
+        return None
+
+    label = raw.replace("-", " ").replace("_", " ").strip()
+    if KidsEnquiry.objects.filter(city__iexact=label).exists():
+        return label
+
+    slug = _slugify_city(raw)
+    for stored in (
+        KidsEnquiry.objects.exclude(city__isnull=True)
+        .exclude(city="")
+        .values_list("city", flat=True)
+        .distinct()
+    ):
+        if _slugify_city(stored) == slug:
+            return stored
+    return label
+
+
+def _distinct_kids_enquiry_cities() -> list[str]:
+    cities = (
+        KidsEnquiry.objects.exclude(city__isnull=True)
+        .exclude(city="")
+        .values_list("city", flat=True)
+        .distinct()
+    )
+    return sorted({c.strip() for c in cities if c and c.strip()}, key=str.casefold)
 
 
 def _merge_enquiry_rows(
@@ -202,3 +246,39 @@ class FranchiseLeadPartnerUpdateView(generics.UpdateAPIView):
         if not franchise:
             return FranchiseEnquiry.objects.none()
         return FranchiseEnquiry.objects.filter(franchise=franchise).select_related("franchise")
+
+
+class LandingKidsEnquiryListView(APIView):
+    """Landing-page leads from ``kids_enquiry`` (admin report)."""
+
+    authentication_classes = [LenientJWTAuthentication]
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, *args, **kwargs):
+        if not can_view_landing_leads(request):
+            return Response(
+                {
+                    "detail": (
+                        "Invalid or missing report key. "
+                        "Use ?key=… or sign in as admin with Authorization: Bearer …"
+                    )
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        city_param = request.query_params.get("city", "").strip()
+        resolved_city = _resolve_kids_enquiry_city(city_param) if city_param else None
+
+        qs = KidsEnquiry.objects.all().order_by("-created_date")
+        if resolved_city:
+            qs = qs.filter(city__iexact=resolved_city)
+
+        data = KidsEnquirySerializer(qs, many=True).data
+        return Response(
+            {
+                "count": len(data),
+                "city": resolved_city,
+                "cities": _distinct_kids_enquiry_cities(),
+                "results": data,
+            }
+        )

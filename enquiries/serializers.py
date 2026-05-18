@@ -4,7 +4,7 @@ from franchises.models import Franchise
 
 from franchises.models import Franchise
 
-from .models import Enquiry, FranchiseEnquiry, FranchiseEnquiry
+from .models import Enquiry, FranchiseEnquiry, KidsEnquiry
 
 
 class EnquirySerializer(serializers.ModelSerializer):
@@ -161,3 +161,26 @@ class FranchiseEnquiryStatusSerializer(serializers.ModelSerializer):
     class Meta:
         model = FranchiseEnquiry
         fields = ["status"]
+
+
+class KidsEnquirySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = KidsEnquiry
+        fields = [
+            "id",
+            "name",
+            "mobileno",
+            "mobile",
+            "email",
+            "state",
+            "city",
+            "location",
+            "enquiry_type",
+            "source",
+            "centre_name",
+            "centre_phone",
+            "centre_email",
+            "email_status",
+            "created_date",
+        ]
+        read_only_fields = fields
