@@ -170,6 +170,12 @@ class PageContentView(APIView):
         data = obj.data
         if slug == "admission":
             data = normalize_admission_page_data(data)
+        if slug == "franchise-opportunity" and isinstance(data, dict):
+            testimonials = data.get("testimonials")
+            if isinstance(testimonials, list):
+                for item in testimonials:
+                    if isinstance(item, dict):
+                        item["location"] = ""
         return Response(data)
 
     def put(self, request, slug):

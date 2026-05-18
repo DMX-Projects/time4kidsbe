@@ -43,9 +43,12 @@ class MediaItemViewSet(viewsets.ModelViewSet):
             category = self.request.query_params.get("category")
             if category:
                 qs = qs.filter(category=category)
-            # Public list: only items in active sections (or legacy items without section)
+            # Public list: only items under an active gallery heading (Photo/Video Gallery CMS).
             if not self.request.user or not self.request.user.is_authenticated:
-                qs = qs.filter(Q(section__isnull=True) | Q(section__is_active=True))
+                qs = qs.exclude(category="Banner").filter(
+                    section__isnull=False,
+                    section__is_active=True,
+                )
         return qs
 
     def perform_destroy(self, instance):
