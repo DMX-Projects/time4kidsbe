@@ -109,7 +109,7 @@ class HomePageContentView(APIView):
             pk=1,
             defaults={"data": copy.deepcopy(DEFAULT_HOME_PAGE_DATA)},
         )
-        obj.data = body
+        obj.data = normalize_home_page_data(copy.deepcopy(body))
         obj.save(update_fields=["data", "updated_at"])
         try:
             return Response(normalize_home_page_data(obj.data))

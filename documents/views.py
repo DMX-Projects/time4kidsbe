@@ -261,10 +261,10 @@ class FranchiseParentDocumentListCreateView(generics.ListCreateAPIView):
 
 
 class FranchiseCentreDocumentListCreateView(generics.ListCreateAPIView):
-    """Franchise uploads centre-specific resource hub files (local folder / file picker)."""
+    """Legacy franchise centre hub bulk upload — restricted to admin (use admin/franchise-documents/)."""
 
     serializer_class = FranchiseCentreDocumentCreateSerializer
-    permission_classes = [IsFranchiseUser]
+    permission_classes = [IsAdminOrApproverUser]
     pagination_class = None
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
@@ -289,16 +289,11 @@ class FranchiseCentreDocumentListCreateView(generics.ListCreateAPIView):
 
 
 class FranchiseCentreDocumentDetailView(generics.RetrieveDestroyAPIView):
-    """Franchise can delete only their own centre hub uploads (not HO global files)."""
+    """Admin-only delete for legacy centre hub upload rows."""
 
     serializer_class = FranchiseDocumentSerializer
-    permission_classes = [IsFranchiseUser]
-
-    def get_queryset(self):
-        franchise_profile = franchise_profile_for_user(self.request.user)
-        if not franchise_profile:
-            return FranchiseDocument.objects.none()
-        return FranchiseDocument.objects.filter(franchise=franchise_profile)
+    permission_classes = [IsAdminOrApproverUser]
+    queryset = FranchiseDocument.objects.all()
 
     def perform_destroy(self, instance):
         if instance.file:

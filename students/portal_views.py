@@ -621,6 +621,23 @@ class FranchiseAttendanceListCreateView(generics.ListCreateAPIView):
     serializer_class = AttendanceRecordSerializer
     pagination_class = None
 
+    def create(self, request, *args, **kwargs):
+        """Create or update attendance for student+date (franchise save is idempotent)."""
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        student = serializer.validated_data["student"]
+        date = serializer.validated_data["date"]
+        record, _created = AttendanceRecord.objects.update_or_create(
+            student=student,
+            date=date,
+            defaults={
+                "status": serializer.validated_data["status"],
+                "note": serializer.validated_data.get("note") or "",
+            },
+        )
+        out = AttendanceRecordSerializer(record, context=self.get_serializer_context())
+        return Response(out.data, status=status.HTTP_200_OK)
+
     def get_queryset(self):
         f = franchise_profile_for_user(self.request.user)
         if not f:
