@@ -18,6 +18,9 @@ ENVIRONMENT = os.getenv("DJANGO_ENVIRONMENT", "development").lower()
 # Security Settings
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "change-me-in-prod")
 DEBUG = os.getenv("DJANGO_DEBUG", "True" if ENVIRONMENT == "development" else "False").lower() == "true"
+
+# Shared secret for /leads/ report pages (query ?key= or X-Landing-Leads-Key header)
+LANDING_LEADS_REPORT_KEY = os.getenv("LANDING_LEADS_REPORT_KEY", "").strip()
 ALLOWED_HOSTS = [host.strip() for host in os.getenv("DJANGO_ALLOWED_HOSTS", "*").split(",") if host.strip()]
 
 # CORS Configuration
@@ -33,6 +36,7 @@ CORS_ALLOW_HEADERS = [
     'user-agent',
     'x-csrftoken',
     'x-requested-with',
+    'x-landing-leads-key',
 ]
 CORS_ALLOW_METHODS = [
     'DELETE',
