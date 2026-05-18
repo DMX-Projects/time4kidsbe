@@ -18,6 +18,7 @@ from rest_framework_simplejwt.views import TokenRefreshView
 
 from franchises.views import CentersListView, CitiesListView
 from documents.pc_views import serve_pc_upload
+from common.views import cms_public_media_file
 
 # Function to create CSRF-exempt API include
 def api_include(urlconf_module, namespace=None):
@@ -56,6 +57,7 @@ urlpatterns = [
     path("api/media/", include("gallery.urls")),
     path("api/students/", include("students.urls")),
     path("api/documents/", include("documents.urls")),
+    path("api/cms-files/<path:relative_path>", cms_public_media_file, name="cms-public-media-file"),
 ]
 
 if settings.PC_DOCUMENTS_ROOT:
