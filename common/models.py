@@ -146,6 +146,49 @@ class PageContent(models.Model):
         return f"Page Content: {self.slug}"
 
 
+class StudentsKitPage(models.Model):
+    """
+    Public student kit poster pages (/StudentskitNursery, etc.) and linked PDFs for franchise hub.
+    Fixed rows (seeded); admin updates image + PDF per programme.
+    """
+
+    slug = models.SlugField(
+        max_length=32,
+        unique=True,
+        help_text="Programme key: nursery, play-group, pp1, pp2",
+    )
+    title = models.CharField(max_length=255)
+    short_label = models.CharField(max_length=64)
+    public_path = models.CharField(
+        max_length=64,
+        help_text="Legacy public URL path, e.g. /StudentskitNursery",
+    )
+    image_alt = models.CharField(max_length=255, blank=True)
+    link_label = models.CharField(
+        max_length=255,
+        help_text="Label on franchise Center Page checklist",
+    )
+    row_key = models.CharField(
+        max_length=64,
+        unique=True,
+        help_text="Stable key for FranchiseDocument.source_path sync",
+    )
+    academic_year = models.CharField(max_length=32, default="AY 2026-27", blank=True)
+    image = models.ImageField(upload_to="students_kit_pages/", blank=True)
+    pdf = models.FileField(upload_to="students_kit_pages/pdf/", blank=True)
+    order = models.PositiveIntegerField(default=0)
+    is_active = models.BooleanField(default=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["order", "slug"]
+        verbose_name = "Students kit page"
+        verbose_name_plural = "Students kit pages"
+
+    def __str__(self) -> str:
+        return f"{self.short_label} ({self.slug})"
+
+
 class MarketingAsset(models.Model):
     """Assets like brochures, virtual tour links, etc. that can be downloaded or viewed."""
     title = models.CharField(max_length=255)

@@ -7,6 +7,7 @@ from django.http import FileResponse, Http404
 from django.views.decorators.cache import cache_control
 from django.views.decorators.http import require_GET
 from rest_framework import viewsets
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -14,8 +15,14 @@ from rest_framework.exceptions import ValidationError
 
 from accounts.models import User, UserRole
 from accounts.permissions import IsAdminUser
-from .models import HeroSlide, HomeTestimonial, HomePageContent, MarketingAsset
-from .serializers import HeroSlideSerializer, HomeTestimonialSerializer, MarketingAssetSerializer
+from .models import HeroSlide, HomeTestimonial, HomePageContent, MarketingAsset, StudentsKitPage
+from .serializers import (
+    HeroSlideSerializer,
+    HomeTestimonialSerializer,
+    MarketingAssetSerializer,
+    StudentsKitPageSerializer,
+)
+from .students_kit_sync import sync_students_kit_franchise_document
 from .home_page_defaults import DEFAULT_HOME_PAGE_DATA, normalize_home_page_data
 
 
@@ -57,6 +64,34 @@ class HomeTestimonialViewSet(viewsets.ModelViewSet):
         if self.action in ("list", "retrieve"):
             return [AllowAny()]
         return [IsAdminUser()]
+
+
+class StudentsKitPageViewSet(viewsets.ModelViewSet):
+    """Public: active kit posters. Admin: upload image + PDF for each programme."""
+
+    serializer_class = StudentsKitPageSerializer
+    pagination_class = None
+    lookup_field = "slug"
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+    http_method_names = ["get", "put", "patch", "head", "options"]
+
+    def get_queryset(self):
+        qs = StudentsKitPage.objects.all().order_by("order", "slug")
+        if self.action in ("list", "retrieve"):
+            user = self.request.user
+            if user.is_authenticated and isinstance(user, User) and user.normalized_role() == UserRole.ADMIN.value:
+                return qs
+            return qs.filter(is_active=True)
+        return qs
+
+    def get_permissions(self):
+        if self.action in ("list", "retrieve"):
+            return [AllowAny()]
+        return [IsAdminUser()]
+
+    def perform_update(self, serializer):
+        instance = serializer.save()
+        sync_students_kit_franchise_document(instance)
 
 
 class MarketingAssetViewSet(viewsets.ModelViewSet):
