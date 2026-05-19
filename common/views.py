@@ -96,8 +96,10 @@ class StudentsKitPageViewSet(viewsets.ModelViewSet):
 
 class MarketingAssetViewSet(viewsets.ModelViewSet):
     """Public list: active assets only. Admin: full CRUD."""
+
     serializer_class = MarketingAssetSerializer
     pagination_class = None
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get_queryset(self):
         qs = MarketingAsset.objects.all().order_by("-updated_at")
