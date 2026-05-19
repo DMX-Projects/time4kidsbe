@@ -76,3 +76,11 @@ class Command(BaseCommand):
             self.stdout.write(self.style.SUCCESS("Test insert + delete succeeded."))
         except Exception as exc:
             self.stderr.write(self.style.ERROR(f"Test insert failed: {type(exc).__name__}: {exc}"))
+            err = str(exc).lower()
+            if "kids_enquiry_pkey" in err or "duplicate key" in err:
+                self.stderr.write(
+                    self.style.WARNING(
+                        "Primary key sequence is out of sync (common after legacy imports). "
+                        "Run: python manage.py fix_kids_enquiry_sequence"
+                    )
+                )
