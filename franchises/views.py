@@ -7,7 +7,12 @@ from rest_framework.views import APIView
 
 from accounts.permissions import IsAdminUser, IsFranchiseUser
 from accounts.profile_access import franchise_profile_for_user
-from .franchise_geo import cities_from_franchises, state_choices_from_franchises, state_filter_q
+from .franchise_geo import (
+    cities_from_franchises,
+    filter_queryset_by_city,
+    state_choices_from_franchises,
+    state_filter_q,
+)
 from .models import Franchise, ParentProfile, FranchiseLocation, FranchiseHeroSlide, FranchiseGalleryItem
 from .serializers import (
     FranchiseCreateSerializer,
@@ -138,15 +143,16 @@ class PublicFranchiseListView(generics.ListAPIView):
             "admin", "user"
         )
         
-        # Filter by state (code or full name as stored on franchise rows)
-        state = self.request.query_params.get('state', None)
-        if state:
-            queryset = queryset.filter(state_filter_q(state))
-        
-        # Filter by city (case-insensitive; matches locate-centre dropdown values)
         city = self.request.query_params.get('city', None)
+
+        # City is authoritative: counts on /public/locations/ are per city name only.
+        # Do not also filter by state or centres with a mismatched state field are dropped.
         if city:
-            queryset = queryset.filter(city__iexact=city.strip())
+            queryset = filter_queryset_by_city(queryset, city)
+        else:
+            state = self.request.query_params.get('state', None)
+            if state:
+                queryset = queryset.filter(state_filter_q(state))
         
         # Search across name, city, and address with weighted relevance
         search = self.request.query_params.get('search', None)
@@ -316,10 +322,9 @@ class CentersListView(APIView):
         if len(city) > 255:
             raise ValidationError({"city": "Value is too long."})
 
-        queryset = (
-            Franchise.objects.filter(is_active=True, city__iexact=city)
-            .exclude(Q(name__isnull=True) | Q(name__exact=""))
-            .order_by("name")
-        )
+        queryset = filter_queryset_by_city(
+            Franchise.objects.filter(is_active=True),
+            city,
+        ).exclude(Q(name__isnull=True) | Q(name__exact="")).order_by("name")
         results = CentreOptionSerializer(queryset, many=True).data
         return Response({"count": len(results), "city": city, "results": results})

@@ -6,12 +6,13 @@ from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from accounts.permissions import IsFranchiseUser, IsParentUser
+from accounts.permissions import IsAdminUser, IsFranchiseUser, IsParentUser
 from accounts.profile_access import franchise_profile_for_user, parent_profile_for_user
 from events.models import Event
 
 from .models import Grade, StudentAchievement, StudentProfile
 from .serializers import (
+    AdminStudentAchievementSerializer,
     FranchiseStudentSerializer,
     GradeSerializer,
     ParentStudentAchievementSerializer,
@@ -243,7 +244,8 @@ class FranchiseGradeDetailView(generics.RetrieveUpdateDestroyAPIView):
         serializer.save()
 
 
-class FranchiseAchievementListCreateView(generics.ListCreateAPIView):
+class FranchiseAchievementListView(generics.ListAPIView):
+    """Franchise centres can view achievements (managed by head office)."""
     permission_classes = [IsFranchiseUser]
     serializer_class = StudentAchievementSerializer
     pagination_class = None
@@ -259,22 +261,52 @@ class FranchiseAchievementListCreateView(generics.ListCreateAPIView):
         ctx["request"] = self.request
         return ctx
 
-    def perform_create(self, serializer):
-        franchise = franchise_profile_for_user(self.request.user)
-        if not franchise:
-            raise PermissionDenied("Franchise profile not found")
-        serializer.save(franchise=franchise)
 
-
-class FranchiseAchievementDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsFranchiseUser]
-    serializer_class = StudentAchievementSerializer
+class AdminStudentMiniListView(generics.ListAPIView):
+    """Students at a centre — for admin achievement picker."""
+    permission_classes = [IsAdminUser]
+    serializer_class = StudentMiniSerializer
+    pagination_class = None
 
     def get_queryset(self):
-        franchise = franchise_profile_for_user(self.request.user)
-        if not franchise:
-            return StudentAchievement.objects.none()
-        return StudentAchievement.objects.filter(franchise=franchise).select_related("student")
+        franchise_id = self.request.query_params.get("franchise")
+        if not franchise_id:
+            return StudentProfile.objects.none()
+        return (
+            StudentProfile.objects.filter(parent__franchise_id=franchise_id)
+            .select_related("parent")
+            .order_by("full_name")
+        )
+
+
+class AdminAchievementListCreateView(generics.ListCreateAPIView):
+    permission_classes = [IsAdminUser]
+    serializer_class = AdminStudentAchievementSerializer
+    pagination_class = None
+
+    def get_queryset(self):
+        qs = StudentAchievement.objects.select_related("student", "franchise").filter(
+            franchise__admin=self.request.user
+        )
+        franchise_id = self.request.query_params.get("franchise")
+        if franchise_id:
+            qs = qs.filter(franchise_id=franchise_id)
+        return qs
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx["request"] = self.request
+        return ctx
+
+
+class AdminAchievementDetailView(generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [IsAdminUser]
+    serializer_class = AdminStudentAchievementSerializer
+
+    def get_queryset(self):
+        return StudentAchievement.objects.select_related("student", "franchise").filter(
+            franchise__admin=self.request.user
+        )
 
     def get_serializer_context(self):
         ctx = super().get_serializer_context()

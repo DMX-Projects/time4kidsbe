@@ -184,7 +184,14 @@ class PageContentView(APIView):
         return [IsAdminUser()]
 
     def get_default_data(self, slug):
-        from .home_page_defaults import ADMISSION_PAGE_DATA, FRANCHISE_PAGE_DATA, PROGRAMS_PAGE_DATA, FAQ_PAGE_DATA, ABOUT_PAGE_DATA
+        from .home_page_defaults import (
+            ADMISSION_PAGE_DATA,
+            FRANCHISE_PAGE_DATA,
+            PROGRAMS_PAGE_DATA,
+            FAQ_PAGE_DATA,
+            ABOUT_PAGE_DATA,
+            CENTRE_PROGRAM_CARDS_DATA,
+        )
         from .footer_defaults import FOOTER_PAGE_DATA
         if slug == "admission":
             return ADMISSION_PAGE_DATA
@@ -198,6 +205,8 @@ class PageContentView(APIView):
             return ABOUT_PAGE_DATA
         if slug == "footer":
             return FOOTER_PAGE_DATA
+        if slug == "centre-program-cards":
+            return CENTRE_PROGRAM_CARDS_DATA
         return {}
 
     def get(self, request, slug):
