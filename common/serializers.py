@@ -62,11 +62,50 @@ class HolidaySerializer(serializers.ModelSerializer):
 
 class MarketingAssetSerializer(serializers.ModelSerializer):
     file = RelativeFileField(required=False, allow_null=True)
+    link = serializers.CharField(required=False, allow_blank=True, max_length=500)
 
     class Meta:
         model = MarketingAsset
-        fields = '__all__'
-        read_only_fields = ['id', 'created_at', 'updated_at']
+        fields = "__all__"
+        read_only_fields = ["id", "created_at", "updated_at"]
+        extra_kwargs = {
+            "slug": {"required": False},
+            "title": {"required": False},
+            "is_active": {"required": False},
+        }
+
+    def validate_link(self, value):
+        value = (value or "").strip()
+        if not value:
+            return ""
+        if not value.startswith(("http://", "https://")):
+            raise serializers.ValidationError("Enter a valid URL starting with http:// or https://")
+        return value
+
+    def validate(self, attrs):
+        if self.instance is None and not (attrs.get("slug") or "").strip():
+            raise serializers.ValidationError({"slug": "This field is required."})
+        return attrs
+
+    def _apply_file_upload(self, instance, validated_data):
+        new_file = validated_data.get("file")
+        if not new_file:
+            return validated_data
+        validated_data["link"] = ""
+        if instance and instance.file:
+            try:
+                instance.file.delete(save=False)
+            except OSError:
+                pass
+        return validated_data
+
+    def create(self, validated_data):
+        validated_data = self._apply_file_upload(None, validated_data)
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        validated_data = self._apply_file_upload(instance, validated_data)
+        return super().update(instance, validated_data)
 
 
 class StudentsKitPageSerializer(serializers.ModelSerializer):
