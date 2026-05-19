@@ -3,13 +3,12 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from django.db import DatabaseError
 from django.db.models import Q
 from django.http import HttpResponseBadRequest, HttpResponseRedirect
 from franchises.franchise_geo import city_query_variants
 from franchises.models import Franchise
 
-from .models import Enquiry, EnquiryType, KidsEnquiry
+from .models import KidsEnquiry
 
 logger = logging.getLogger(__name__)
 
@@ -33,13 +32,11 @@ class LandingEnquiryRecord:
     centre_name: str
     centre_phone: str
     centre_email: str
-    kids_enquiry_id: int | None = None
 
     @classmethod
     def from_kids_enquiry(cls, row: KidsEnquiry) -> "LandingEnquiryRecord":
         return cls(
             pk=row.pk,
-            kids_enquiry_id=row.pk,
             name=row.name,
             email=row.email or "",
             mobileno=row.mobileno or "",
@@ -89,89 +86,8 @@ def _centre_contact(franchise: Franchise | None) -> tuple[str, str, str]:
     return franchise.name, phone, email
 
 
-def _raw_payload(post_data: Any) -> dict:
-    if not hasattr(post_data, "keys"):
-        return {}
-    return {key: post_data.get(key) for key in post_data.keys()}
-
-
-def _save_kids_enquiry_row(
-    *,
-    name: str,
-    telephone: str,
-    email: str,
-    state: str,
-    city: str,
-    location: str,
-    source: str,
-    centre_name: str,
-    centre_phone: str,
-    centre_email: str,
-    raw_payload: dict,
-) -> KidsEnquiry:
-    return KidsEnquiry.objects.create(
-        name=name,
-        mobile=telephone,
-        mobileno=telephone,
-        email=email,
-        state=state,
-        city=city,
-        location=location,
-        enquiry_type=LANDING_ENQUIRY_TYPE,
-        source=source,
-        centre_name=centre_name or location,
-        centre_phone=centre_phone,
-        centre_email=centre_email,
-        raw_payload=raw_payload,
-    )
-
-
-def _save_enquiry_fallback(
-    *,
-    name: str,
-    telephone: str,
-    email: str,
-    city: str,
-    location: str,
-    source: str,
-    franchise: Franchise | None,
-    centre_name: str,
-    centre_phone: str,
-    centre_email: str,
-) -> LandingEnquiryRecord:
-    """Persist to ``enquiry`` when ``kids_enquiry`` is missing or not migrated yet."""
-    message_parts = [f"Location: {location}", f"Source: {source}"]
-    if centre_phone:
-        message_parts.append(f"Centre phone: {centre_phone}")
-    if centre_email:
-        message_parts.append(f"Centre email: {centre_email}")
-
-    row = Enquiry.objects.create(
-        enquiry_type=EnquiryType.ADMISSION,
-        name=name,
-        email=email,
-        phone=telephone,
-        message="\n".join(message_parts),
-        franchise=franchise,
-        city=city or (franchise.city if franchise else ""),
-    )
-    return LandingEnquiryRecord(
-        pk=row.pk,
-        kids_enquiry_id=None,
-        name=name,
-        email=email,
-        mobileno=telephone,
-        city=city or (franchise.city if franchise else ""),
-        state=(franchise.state if franchise else "") or "",
-        location=location,
-        source=source,
-        centre_name=centre_name or location,
-        centre_phone=centre_phone,
-        centre_email=centre_email,
-    )
-
-
 def save_landing_enquiry(post_data: Any) -> LandingEnquiryRecord:
+    """Persist landing-page form submissions to ``kids_enquiry`` only."""
     name = _post_value(post_data, "name")
     telephone = _post_value(post_data, "telephone")
     email = _post_value(post_data, "email")
@@ -191,41 +107,22 @@ def save_landing_enquiry(post_data: Any) -> LandingEnquiryRecord:
     franchise = _lookup_franchise(city, location)
     centre_name, centre_phone, centre_email = _centre_contact(franchise)
     state = (franchise.state if franchise else "") or ""
-    raw_payload = _raw_payload(post_data)
 
-    try:
-        row = _save_kids_enquiry_row(
-            name=name,
-            telephone=telephone,
-            email=email,
-            state=state,
-            city=city,
-            location=location,
-            source=source,
-            centre_name=centre_name,
-            centre_phone=centre_phone,
-            centre_email=centre_email,
-            raw_payload=raw_payload,
-        )
-        return LandingEnquiryRecord.from_kids_enquiry(row)
-    except DatabaseError as exc:
-        logger.warning(
-            "kids_enquiry insert failed (%s); falling back to enquiry table. "
-            "Run: python manage.py migrate enquiries",
-            exc,
-        )
-        return _save_enquiry_fallback(
-            name=name,
-            telephone=telephone,
-            email=email,
-            city=city,
-            location=location,
-            source=source,
-            franchise=franchise,
-            centre_name=centre_name,
-            centre_phone=centre_phone,
-            centre_email=centre_email,
-        )
+    row = KidsEnquiry.objects.create(
+        name=name,
+        mobile=telephone,
+        mobileno=telephone,
+        email=email,
+        state=state,
+        city=city,
+        location=location,
+        enquiry_type=LANDING_ENQUIRY_TYPE,
+        source=source,
+        centre_name=centre_name or location,
+        centre_phone=centre_phone,
+        centre_email=centre_email,
+    )
+    return LandingEnquiryRecord.from_kids_enquiry(row)
 
 
 def handle_landing_enquiry_post(post_data: Any):
@@ -243,8 +140,8 @@ def handle_landing_enquiry_post(post_data: Any):
         from .emails import send_landing_enquiry_emails
 
         email_status = send_landing_enquiry_emails(record)
-        if email_status and record.kids_enquiry_id:
-            KidsEnquiry.objects.filter(pk=record.kids_enquiry_id).update(email_status=email_status)
+        if email_status:
+            KidsEnquiry.objects.filter(pk=record.pk).update(email_status=email_status)
     except Exception:
         logger.exception("Landing enquiry email failed for id=%s", record.pk)
 

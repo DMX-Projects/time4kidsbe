@@ -72,7 +72,12 @@ class FranchiseEnquiry(models.Model):
 
 
 class KidsEnquiry(models.Model):
-    """Legacy landing-page admission leads (``public.kids_enquiry``)."""
+    """
+    Landing-page leads — mirrors ``public.kids_enquiry`` exactly:
+    id, name, mobile, mobileno, email, state, city, location, enquiry_type,
+    created_date, source, centre_name, centre_phone, centre_email,
+    email_status, whatsapp_status, raw_payload.
+    """
 
     name = models.TextField()
     mobile = models.TextField(blank=True, null=True)
@@ -94,6 +99,13 @@ class KidsEnquiry(models.Model):
     class Meta:
         db_table = "kids_enquiry"
         ordering = ["-created_date"]
+        indexes = [
+            models.Index(fields=["created_date"], name="idx_kids_enquiry_created_date"),
+            models.Index(
+                fields=["mobileno", "enquiry_type"],
+                name="idx_kids_enquiry_mobile_type",
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"{self.name} ({self.enquiry_type})"

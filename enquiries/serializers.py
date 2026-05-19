@@ -164,23 +164,27 @@ class FranchiseEnquiryStatusSerializer(serializers.ModelSerializer):
 
 
 class KidsEnquirySerializer(serializers.ModelSerializer):
+    """Same columns as ``public.kids_enquiry`` — no extra fields."""
+
     class Meta:
         model = KidsEnquiry
         fields = [
             "id",
             "name",
-            "mobileno",
             "mobile",
+            "mobileno",
             "email",
             "state",
             "city",
             "location",
             "enquiry_type",
+            "created_date",
             "source",
             "centre_name",
             "centre_phone",
             "centre_email",
             "email_status",
-            "created_date",
+            "whatsapp_status",
+            "raw_payload",
         ]
         read_only_fields = fields
