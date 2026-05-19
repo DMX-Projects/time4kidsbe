@@ -1,5 +1,6 @@
 from django.db.models import Q
 from django.utils.decorators import method_decorator
+from django.views import View
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework import generics, permissions, status
 from rest_framework.response import Response
@@ -82,10 +83,8 @@ def _merge_enquiry_rows(
 
 
 @method_decorator(csrf_exempt, name="dispatch")
-class LandingEnquirySubmitView(APIView):
+class LandingEnquirySubmitView(View):
     """HTML form POST from legacy landing pages → ``kids_enquiry`` + redirect."""
-
-    permission_classes = [permissions.AllowAny]
 
     def post(self, request, *args, **kwargs):
         return handle_landing_enquiry_post(request.POST)

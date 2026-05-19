@@ -14,7 +14,7 @@ from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import IsAuthenticated
 from accounts.models import UserRole
 from accounts.permissions import IsFranchiseUser, IsParentUser, IsAdminOrApproverUser
-from accounts.profile_access import franchise_profile_for_user
+from accounts.profile_access import franchise_profile_for_user, parent_profile_for_user
 from .auth import QueryJWTAuthentication
 from .download_names import (
     franchise_document_download_filename,
@@ -24,6 +24,7 @@ from .download_names import (
 from .models import ParentDocument, DocumentCategory, FranchiseDocument, FranchiseDocumentCategory, IndentRequest
 from .serializers import (
     ParentDocumentSerializer,
+    AdminParentDocumentSerializer,
     FranchiseDocumentSerializer,
     FranchiseCentreDocumentCreateSerializer,
     AdminFranchiseDocumentSerializer,
@@ -38,11 +39,7 @@ class ParentDocumentListView(generics.ListAPIView):
     pagination_class = None  # Disable pagination to show all documents
 
     def get_queryset(self):
-        # Product expectation: parent should see uploaded parent docs without strict
-        # dependency on profile->franchise linkage.
-        return ParentDocument.objects.filter(
-            is_active=True
-        ).select_related('franchise').order_by('category', 'order', '-created_at')
+        return _parent_documents_visible_queryset(self.request.user)
 
 
 @api_view(['GET'])
@@ -55,10 +52,7 @@ def parent_documents_by_category(request, category):
     if category not in valid_categories:
         return Response({"error": "Invalid category"}, status=400)
 
-    documents = ParentDocument.objects.filter(
-        category=category,
-        is_active=True
-    ).order_by('order', '-created_at')
+    documents = _parent_documents_visible_queryset(request.user).filter(category=category)
 
     serializer = ParentDocumentSerializer(documents, many=True)
     return Response(serializer.data)
@@ -68,14 +62,33 @@ def _norm_user_role(user) -> str:
     return str(getattr(user, "role", "") or "").strip().upper()
 
 
-def _user_can_stream_parent_document(user, doc: ParentDocument) -> bool:
-    """Parents: active docs only (matches list APIs). Franchise: own centre rows only."""
+def _parent_documents_visible_queryset(user):
+    """Active parent-app documents: global + parent's centre (when linked)."""
+    qs = ParentDocument.objects.filter(is_active=True).select_related("franchise")
     role = _norm_user_role(user)
     if role == UserRole.PARENT.value:
-        return bool(doc.is_active)
+        profile = parent_profile_for_user(user)
+        if profile and profile.franchise_id:
+            qs = qs.filter(Q(franchise__isnull=True) | Q(franchise_id=profile.franchise_id))
+        else:
+            qs = qs.filter(franchise__isnull=True)
+    return qs.order_by("category", "order", "-created_at")
+
+
+def _user_can_stream_parent_document(user, doc: ParentDocument) -> bool:
+    """Parents: visible active docs. Franchise: global + own centre. Admin: all."""
+    role = _norm_user_role(user)
+    if role in (UserRole.ADMIN.value, UserRole.APPROVER.value):
+        return True
+    if not doc.is_active:
+        return False
+    if role == UserRole.PARENT.value:
+        return _parent_documents_visible_queryset(user).filter(pk=doc.pk).exists()
     if role == UserRole.FRANCHISE.value:
         franchise = franchise_profile_for_user(user)
-        return franchise is not None and doc.franchise_id == franchise.id
+        if franchise is None:
+            return False
+        return doc.franchise_id is None or doc.franchise_id == franchise.id
     return False
 
 
@@ -239,8 +252,8 @@ def admin_franchise_documents_summary(request):
     return Response(out)
 
 
-class FranchiseParentDocumentListCreateView(generics.ListCreateAPIView):
-    """Franchise can upload/manage parent-facing documents for their own centre."""
+class FranchiseParentDocumentListView(generics.ListAPIView):
+    """Franchise: read-only list of parent-app documents (global + this centre). Uploads are admin-only."""
 
     serializer_class = ParentDocumentSerializer
     permission_classes = [IsFranchiseUser]
@@ -250,14 +263,66 @@ class FranchiseParentDocumentListCreateView(generics.ListCreateAPIView):
         franchise_profile = franchise_profile_for_user(self.request.user)
         if not franchise_profile:
             return ParentDocument.objects.none()
-        return ParentDocument.objects.filter(franchise=franchise_profile).order_by("category", "order", "-created_at")
+        return (
+            ParentDocument.objects.filter(is_active=True)
+            .filter(Q(franchise__isnull=True) | Q(franchise=franchise_profile))
+            .select_related("franchise")
+            .order_by("category", "order", "-created_at")
+        )
+
+
+class AdminParentDocumentListCreateView(generics.ListCreateAPIView):
+    """Head office: list/create parent mobile app documents (global or per-centre)."""
+
+    serializer_class = AdminParentDocumentSerializer
+    permission_classes = [IsAdminOrApproverUser]
+    pagination_class = None
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def get_queryset(self):
+        qs = ParentDocument.objects.all().select_related("franchise").order_by("category", "order", "-created_at")
+        cat = (self.request.query_params.get("category") or "").strip()
+        if cat:
+            valid = [c[0] for c in DocumentCategory.choices]
+            if cat in valid:
+                qs = qs.filter(category=cat)
+            else:
+                return ParentDocument.objects.none()
+        franchise_id = (self.request.query_params.get("franchise") or "").strip()
+        if franchise_id == "global":
+            qs = qs.filter(franchise__isnull=True)
+        elif franchise_id.isdigit():
+            qs = qs.filter(franchise_id=int(franchise_id))
+        return qs
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx["request"] = self.request
+        return ctx
 
     def perform_create(self, serializer):
-        franchise_profile = franchise_profile_for_user(self.request.user)
-        if not franchise_profile:
-            raise PermissionDenied("Franchise profile not found")
-        # Always publish uploads as active so parents can see them immediately.
-        serializer.save(franchise=franchise_profile, is_active=True)
+        serializer.save(is_active=True)
+
+
+class AdminParentDocumentDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """Head office: retrieve, update, or delete a parent app document."""
+
+    serializer_class = AdminParentDocumentSerializer
+    permission_classes = [IsAdminOrApproverUser]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+    queryset = ParentDocument.objects.all().select_related("franchise")
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx["request"] = self.request
+        return ctx
+
+    def perform_destroy(self, instance):
+        if instance.file:
+            instance.file.delete(save=False)
+        if instance.thumbnail:
+            instance.thumbnail.delete(save=False)
+        super().perform_destroy(instance)
 
 
 class FranchiseCentreDocumentListCreateView(generics.ListCreateAPIView):
@@ -299,19 +364,6 @@ class FranchiseCentreDocumentDetailView(generics.RetrieveDestroyAPIView):
         if instance.file:
             instance.file.delete(save=False)
         super().perform_destroy(instance)
-
-
-class FranchiseParentDocumentDeleteView(generics.DestroyAPIView):
-    """Franchise can delete only their own parent-facing documents."""
-
-    serializer_class = ParentDocumentSerializer
-    permission_classes = [IsFranchiseUser]
-
-    def get_queryset(self):
-        franchise_profile = franchise_profile_for_user(self.request.user)
-        if not franchise_profile:
-            return ParentDocument.objects.none()
-        return ParentDocument.objects.filter(franchise=franchise_profile)
 
 
 class FranchiseIndentRequestListCreateView(generics.ListCreateAPIView):

@@ -24,6 +24,7 @@ from rest_framework.views import APIView
 
 from accounts.permissions import IsFranchiseUser, IsParentUser
 from accounts.profile_access import franchise_profile_for_user, parent_profile_for_user
+from events.calendar_filters import exclude_showcase_placeholder_events
 from events.models import Event
 from events.serializers import EventSerializer
 
@@ -129,7 +130,9 @@ class ParentCalendarAttendanceView(APIView):
         if not pp:
             return Response({"calendar_events": [], "attendance": []})
 
-        events_qs = Event.objects.filter(franchise=pp.franchise).order_by("-start_date", "-created_at")
+        events_qs = exclude_showcase_placeholder_events(
+            Event.objects.filter(franchise=pp.franchise)
+        ).order_by("-start_date", "-created_at")
         attendance_qs = (
             AttendanceRecord.objects.filter(student__parent=pp, student__is_active=True)
             .select_related("student")
@@ -321,7 +324,9 @@ class ParentNotificationsView(APIView):
             .order_by("-due_date", "-created_at")
         )
         transport_qs = TransportRoute.objects.filter(franchise=pp.franchise).order_by("sort_order", "route_name")
-        events_qs = Event.objects.filter(franchise=pp.franchise).order_by("-start_date", "-created_at")
+        events_qs = exclude_showcase_placeholder_events(
+            Event.objects.filter(franchise=pp.franchise)
+        ).order_by("-start_date", "-created_at")
         kids = StudentProfile.objects.filter(parent=pp, is_active=True)
         achievements_qs = (
             StudentAchievement.objects.filter(franchise=pp.franchise)

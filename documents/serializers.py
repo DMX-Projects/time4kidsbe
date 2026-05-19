@@ -12,14 +12,22 @@ class ParentDocumentSerializer(serializers.ModelSerializer):
     franchise_name = serializers.CharField(source='franchise.name', read_only=True, allow_null=True)
     state_display = serializers.CharField(source='get_state_display', read_only=True, allow_null=True)
     display_title = serializers.SerializerMethodField()
+    file_view_path = serializers.SerializerMethodField()
 
     class Meta:
         model = ParentDocument
-        fields = ['id', 'category', 'category_display', 'title', 'description', 
-                  'file', 'thumbnail', 'franchise', 'franchise_name', 'is_active', 
-                  'order', 'state', 'state_display', 'academic_year', 'display_title',
-                  'created_at', 'updated_at']
-        read_only_fields = ['id', 'franchise', 'is_active', 'created_at', 'updated_at']
+        fields = [
+            'id', 'category', 'category_display', 'title', 'description',
+            'file', 'file_view_path', 'thumbnail', 'franchise', 'franchise_name', 'is_active',
+            'order', 'state', 'state_display', 'academic_year', 'display_title',
+            'created_at', 'updated_at',
+        ]
+        read_only_fields = ['id', 'franchise', 'is_active', 'created_at', 'updated_at', 'file_view_path']
+
+    def get_file_view_path(self, obj: ParentDocument) -> str | None:
+        if not obj.pk or not obj.file:
+            return None
+        return f"/documents/parent/documents/{obj.pk}/file/"
 
     def get_display_title(self, obj):
         """Return formatted title - for holiday lists, include state and academic year"""
@@ -30,6 +38,28 @@ class ParentDocumentSerializer(serializers.ModelSerializer):
             year = f" ({obj.academic_year})" if obj.academic_year else ''
             return f"{state_display}{year}" if state_display else obj.title
         return obj.title
+
+
+class AdminParentDocumentSerializer(ParentDocumentSerializer):
+    """Head office: CRUD parent app documents (global or per-centre)."""
+
+    file = RelativeFileField(required=False, allow_null=True)
+    thumbnail = RelativeImageField(required=False, allow_null=True)
+
+    class Meta(ParentDocumentSerializer.Meta):
+        read_only_fields = ['id', 'created_at', 'updated_at', 'file_view_path']
+
+    def validate(self, attrs):
+        request = self.context.get("request")
+        uploaded = getattr(request, "FILES", None).get("file") if request else None
+        has_file = bool(attrs.get("file") or uploaded)
+        if self.instance is None and not has_file:
+            raise serializers.ValidationError({"file": "Choose a file to upload."})
+        category = attrs.get("category") or (self.instance.category if self.instance else None)
+        state = attrs.get("state")
+        if category == "HOLIDAY_LISTS" and not state and not (self.instance and self.instance.state):
+            raise serializers.ValidationError({"state": "State is required for holiday lists."})
+        return attrs
 
 
 class FranchiseCentreDocumentCreateSerializer(serializers.ModelSerializer):

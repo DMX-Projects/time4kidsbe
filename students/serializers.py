@@ -149,6 +149,63 @@ class FranchiseStudentSerializer(serializers.ModelSerializer):
         return value
 
 
+class AdminStudentAchievementSerializer(serializers.ModelSerializer):
+    """Head office publishes achievements for any centre."""
+
+    student_name = serializers.SerializerMethodField()
+    franchise_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = StudentAchievement
+        fields = [
+            "id",
+            "franchise",
+            "franchise_name",
+            "student",
+            "student_name",
+            "title",
+            "notes",
+            "achieved_date",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "franchise_name", "student_name", "created_at", "updated_at"]
+
+    def get_student_name(self, obj):
+        if not obj.student_id:
+            return None
+        try:
+            st = obj.student
+        except ObjectDoesNotExist:
+            return ""
+        return getattr(st, "full_name", "") or ""
+
+    def get_franchise_name(self, obj):
+        try:
+            return obj.franchise.name if obj.franchise_id else ""
+        except ObjectDoesNotExist:
+            return ""
+
+    def validate_franchise(self, value):
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if not user or not getattr(user, "is_admin", False):
+            raise serializers.ValidationError("Invalid franchise.")
+        if value.admin_id != user.id:
+            raise serializers.ValidationError("Franchise is not in your account.")
+        return value
+
+    def validate_student(self, value):
+        if value is None:
+            return value
+        franchise = self.initial_data.get("franchise")
+        if self.instance and not franchise:
+            franchise = self.instance.franchise_id
+        if franchise and value.parent.franchise_id != int(franchise):
+            raise serializers.ValidationError("Student is not enrolled at the selected centre.")
+        return value
+
+
 class StudentAchievementSerializer(serializers.ModelSerializer):
     """Franchise achievements list; student is optional (centre-wide) and FK may be orphan on live DB."""
 

@@ -84,6 +84,41 @@ def state_filter_q(state_param: str) -> Q:
     return q
 
 
+def normalized_city_key(raw: str | None) -> str:
+    return _clean(raw).lower()
+
+
+# Legacy landing URLs and ads often use colloquial names; franchise.city uses canonical spellings.
+_CITY_QUERY_EQUIVALENTS: dict[str, tuple[str, ...]] = {
+    "bengaluru": ("bengaluru", "bangalore"),
+    "bangalore": ("bengaluru", "bangalore"),
+    "mysore": ("mysore", "mysuru"),
+    "mysuru": ("mysore", "mysuru"),
+}
+
+
+def city_query_variants(city_param: str | None) -> list[str]:
+    """Spellings to match for a public ``?city=`` filter (case-insensitive per variant)."""
+    key = normalized_city_key(city_param)
+    if not key:
+        return []
+    group = _CITY_QUERY_EQUIVALENTS.get(key)
+    if group:
+        return list(group)
+    return [key]
+
+
+def filter_queryset_by_city(queryset, city_param: str | None):
+    """Match franchise rows by trimmed, case-insensitive city name (with legacy aliases)."""
+    variants = city_query_variants(city_param)
+    if not variants:
+        return queryset
+    q = Q()
+    for variant in variants:
+        q |= Q(city__iexact=variant)
+    return queryset.filter(q)
+
+
 def _pick_display_city(rows: list[Franchise]) -> str:
     names = [_clean(r.city) for r in rows if _clean(r.city)]
     if not names:
@@ -110,7 +145,7 @@ def cities_from_franchises() -> list[dict]:
     )
     groups: dict[str, list[Franchise]] = defaultdict(list)
     for row in qs:
-        key = _clean(row.city).lower()
+        key = normalized_city_key(row.city)
         if key:
             groups[key].append(row)
 

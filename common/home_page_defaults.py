@@ -112,7 +112,7 @@ DEFAULT_HOME_PAGE_DATA: dict = {
             "nav_class": "nav-link2",
             "external": True,
         },
-        {"icon": "/icon-television.png", "alt": "TV Commercial", "href": "/tv-commercial", "label": "TV\nCommercial", "nav_class": "nav-link3"},
+        {"icon": "/icon-media.svg", "alt": "Media", "href": "/gallery", "label": "Media", "nav_class": "nav-link3"},
     ],
     "franchise_benefits": [
         "Low Investment High Returns",
@@ -583,6 +583,17 @@ PROGRAMS_PAGE_DATA: dict = {
             "description": PROGRAM_DESCRIPTIONS["summer"],
             "features": ["Summer Camp", "Refresher Course", "Writing Readiness", "Care, Play, and Enrichment"],
         },
+    ],
+}
+
+# Global “Our Classes” card images on every centre page (/locations/...).
+CENTRE_PROGRAM_CARDS_DATA: dict = {
+    "cards": [
+        {"id": 1, "image": "/1.png"},
+        {"id": 2, "image": "/2 (1).png"},
+        {"id": 3, "image": "/2.png"},
+        {"id": 4, "image": "/16.png"},
+        {"id": 5, "image": "/day care.png"},
     ],
 }
 
