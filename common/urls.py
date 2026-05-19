@@ -7,12 +7,14 @@ from .views import (
     HomePageContentResetView,
     PageContentView,
     MarketingAssetViewSet,
+    StudentsKitPageViewSet,
 )
 
 router = DefaultRouter()
 router.register(r'hero-slides', HeroSlideViewSet, basename='hero-slides')
 router.register(r'home-testimonials', HomeTestimonialViewSet, basename='home-testimonials')
 router.register(r'marketing-assets', MarketingAssetViewSet, basename='marketing-assets')
+router.register(r'students-kit-pages', StudentsKitPageViewSet, basename='students-kit-pages')
 
 urlpatterns = [
     path("home-page-content/reset/", HomePageContentResetView.as_view(), name="home-page-content-reset"),

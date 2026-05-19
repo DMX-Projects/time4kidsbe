@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import HeroSlide, Holiday, HomeTestimonial, MarketingAsset
+from .models import HeroSlide, Holiday, HomeTestimonial, MarketingAsset, StudentsKitPage
 from .fields import RelativeImageField, RelativeFileField
 
 class HeroSlideSerializer(serializers.ModelSerializer):
@@ -67,3 +67,41 @@ class MarketingAssetSerializer(serializers.ModelSerializer):
         model = MarketingAsset
         fields = '__all__'
         read_only_fields = ['id', 'created_at', 'updated_at']
+
+
+class StudentsKitPageSerializer(serializers.ModelSerializer):
+    image = RelativeImageField(required=False, allow_null=True)
+    pdf = RelativeFileField(required=False, allow_null=True)
+
+    def update(self, instance, validated_data):
+        request = self.context.get("request")
+        if request is not None:
+            if str(request.data.get("clear_pdf", "")).lower() in ("1", "true", "yes"):
+                if instance.pdf:
+                    instance.pdf.delete(save=False)
+                validated_data["pdf"] = None
+            if str(request.data.get("clear_image", "")).lower() in ("1", "true", "yes"):
+                if instance.image:
+                    instance.image.delete(save=False)
+                validated_data["image"] = None
+        return super().update(instance, validated_data)
+
+    class Meta:
+        model = StudentsKitPage
+        fields = [
+            "id",
+            "slug",
+            "title",
+            "short_label",
+            "public_path",
+            "image_alt",
+            "link_label",
+            "row_key",
+            "academic_year",
+            "image",
+            "pdf",
+            "order",
+            "is_active",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "slug", "public_path", "row_key", "updated_at"]

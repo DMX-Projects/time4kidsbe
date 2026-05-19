@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import HeroSlide, HomeTestimonial, HomePageContent, Holiday, PageContent, MarketingAsset
+from .models import HeroSlide, HomeTestimonial, HomePageContent, Holiday, PageContent, MarketingAsset, StudentsKitPage
 
 
 @admin.register(HeroSlide)
@@ -38,6 +38,14 @@ class HomePageContentAdmin(admin.ModelAdmin):
 class PageContentAdmin(admin.ModelAdmin):
     list_display = ('slug', 'updated_at')
     search_fields = ('slug',)
+
+
+@admin.register(StudentsKitPage)
+class StudentsKitPageAdmin(admin.ModelAdmin):
+    list_display = ("short_label", "slug", "public_path", "is_active", "updated_at")
+    list_editable = ("is_active",)
+    search_fields = ("title", "slug", "row_key")
+    readonly_fields = ("slug", "public_path", "row_key")
 
 
 @admin.register(MarketingAsset)
