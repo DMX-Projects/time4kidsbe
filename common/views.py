@@ -226,6 +226,35 @@ class PageContentView(APIView):
                 for item in testimonials:
                     if isinstance(item, dict):
                         item["location"] = ""
+            main_branch = data.get("main_branch")
+            if isinstance(main_branch, dict):
+                if (
+                    main_branch.get("heading_prefix") == "Visit Our"
+                    and main_branch.get("heading_accent") == "Main Branch"
+                ):
+                    main_branch["heading_prefix"] = "Connect with Our"
+                    main_branch["heading_accent"] = "Representative"
+                address_html = main_branch.get("address_html") or ""
+                if "Triumphant Institute of Management Education" in address_html:
+                    main_branch["address_html"] = (
+                        "Kids Early Education Pvt. Ltd.<br />95B, Second Floor<br />"
+                        "Siddamsetty Complex<br />Parklane, Secunderabad<br />500003"
+                    )
+                if main_branch.get("email") == "info@timekidspreschools.com":
+                    main_branch["email"] = "admissions@timekidspreschools.com"
+                if not (main_branch.get("regional_office_title") or "").strip():
+                    main_branch["regional_office_title"] = "T.I.M.E. Kids Regional Offices"
+                from .home_page_defaults import (
+                    REGIONAL_OFFICES_ADDRESS_HTML,
+                    _should_migrate_regional_address,
+                )
+
+                regional_addr = main_branch.get("regional_address_html") or ""
+                if (
+                    _should_migrate_regional_address(regional_addr)
+                    or regional_addr.strip() == (main_branch.get("address_html") or "").strip()
+                ):
+                    main_branch["regional_address_html"] = REGIONAL_OFFICES_ADDRESS_HTML
         return Response(data)
 
     def put(self, request, slug):
