@@ -66,6 +66,17 @@ class MediaItemSerializer(serializers.ModelSerializer):
         media_type = attrs.get("media_type") or (self.instance.media_type if self.instance else "image")
         if has_embed and not has_file:
             attrs["media_type"] = "embed"
+        elif has_embed and has_file:
+            name = getattr(file_val, "name", "") if file_val is not None else str(file_val or "")
+            lower = name.lower() if name else str(file_val or "").lower()
+            if lower.endswith((".mp4", ".webm", ".mov", ".m4v")):
+                attrs["media_type"] = "video"
+            else:
+                attrs["media_type"] = "embed"
         elif media_type == "embed" and has_file:
-            attrs["media_type"] = "video" if (file_val or "").lower().endswith((".mp4", ".webm", ".mov")) else "image"
+            name = getattr(file_val, "name", "") if file_val is not None else str(file_val or "")
+            lower = name.lower() if name else str(file_val or "").lower()
+            attrs["media_type"] = (
+                "video" if lower.endswith((".mp4", ".webm", ".mov", ".m4v")) else "embed"
+            )
         return attrs

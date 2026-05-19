@@ -107,7 +107,7 @@ DEFAULT_HOME_PAGE_DATA: dict = {
         {
             "icon": "/icon-brochure.png",
             "alt": "Download Brochure",
-            "href": "https://www.timekidspreschools.in/uploads/pc/TIME-Kids-Franchise%20Brochure.pdf",
+            "href": "https://www.timekidspreschools.in/api/cms-files/pc/franchise-brochure/franchise-brochure.pdf",
             "label": "Download Brochure",
             "nav_class": "nav-link2",
             "external": True,
@@ -335,6 +335,106 @@ ADMISSION_PAGE_DATA: dict = {
     ],
 }
 
+def _regional_phone_html(phone: str) -> str:
+    parts = [p.strip() for p in re.split(r"\s*/\s*", phone) if p.strip()]
+    if len(parts) > 1:
+        numbers = "".join(
+            f'<span class="tk-regional-offices__number">{part}</span>' for part in parts
+        )
+    else:
+        numbers = f'<span class="tk-regional-offices__number">{parts[0] if parts else phone}</span>'
+    return (
+        '<span class="tk-regional-offices__phone">'
+        '<span class="tk-regional-offices__label">Cell :</span>'
+        f'<span class="tk-regional-offices__numbers">{numbers}</span>'
+        "</span>"
+    )
+
+
+def _regional_office_row_html(*, city: str, phone: str, state: str | None = None) -> str:
+    is_sub = not state
+    row_class = "tk-regional-offices__row tk-regional-offices__row--sub" if is_sub else "tk-regional-offices__row"
+    dot = (
+        '<span class="tk-regional-offices__dot" aria-hidden="true"></span>'
+        if is_sub
+        else '<span class="tk-regional-offices__dot" aria-hidden="true">•</span>'
+    )
+    state_cell = (
+        f'<span class="tk-regional-offices__state"><strong>{state}</strong></span>'
+        if state
+        else '<span class="tk-regional-offices__state" aria-hidden="true"></span>'
+    )
+    return (
+        f'<li class="{row_class}">'
+        f"{dot}{state_cell}"
+        f'<span class="tk-regional-offices__city">{city}</span>'
+        f"{_regional_phone_html(phone)}"
+        "</li>"
+    )
+
+
+def _build_regional_offices_address_html() -> str:
+    rows: list[str] = []
+    entries = [
+        ("Bihar & Jharkhand", "Patna", "7979833564", []),
+        (
+            "Kerala",
+            "Kochin",
+            "9074586895 / 8089001116",
+            [
+                ("Thiruananthpuram", "9074586895 / 8089001116"),
+                ("Calicut", "7907467952"),
+            ],
+        ),
+        ("Maharashtra", "Pune", "9958546677", []),
+        ("Odissa & Chattisgarh", "Bhuvaneshwar", "8917320143", []),
+        ("Tamilnadu", "Chennai", "9566349498", []),
+        ("Telangana & Andhra Pradesh", "Hyderabad", "7989281696", []),
+        ("West Bengal", "Kolkata", "8335807272", []),
+    ]
+    for state, city, phone, subs in entries:
+        rows.append(_regional_office_row_html(state=state, city=city, phone=phone))
+        for sub_city, sub_phone in subs:
+            rows.append(_regional_office_row_html(city=sub_city, phone=sub_phone))
+    return f'<ul class="tk-regional-offices">{"".join(rows)}</ul>'
+
+
+REGIONAL_OFFICES_ADDRESS_HTML = _build_regional_offices_address_html()
+
+_LEGACY_REGIONAL_ADDRESS_VALUES = frozenset(
+    {
+        "Telangana & Andhra Pradesh - Hyderabad - 7989281696",
+        "Telangana & Andhra Pradesh - Hyderabad - Cell : 7989281696",
+    }
+)
+
+
+def _should_migrate_regional_address(html: str) -> bool:
+    trimmed = (html or "").strip()
+    if not trimmed:
+        return True
+    if "tk-regional-offices" not in trimmed:
+        return True
+    if "tk-regional-offices__numbers" not in trimmed:
+        return True
+    if trimmed in _LEGACY_REGIONAL_ADDRESS_VALUES:
+        return True
+    if "Kids Early Education" in trimmed:
+        return True
+    if "→" in trimmed:
+        return True
+    if trimmed.count("Kerala") > 1:
+        return True
+    if "<br />" in trimmed:
+        return True
+    if "Tamilnadu" not in trimmed:
+        return True
+    telangana_pos = trimmed.find("Telangana")
+    bihar_pos = trimmed.find("Bihar")
+    if telangana_pos >= 0 and bihar_pos >= 0 and telangana_pos < bihar_pos:
+        return True
+    return False
+
 
 FRANCHISE_PAGE_DATA: dict = {
     "hero": {
@@ -457,15 +557,17 @@ FRANCHISE_PAGE_DATA: dict = {
         },
     ],
     "main_branch": {
-        "heading_prefix": "Visit Our",
-        "heading_accent": "Main Branch",
+        "heading_prefix": "Connect with Our",
+        "heading_accent": "Representative",
         "subtitle": "Come meet our team and explore our flagship centre",
         "map_embed_url": "https://www.google.com/maps/embed/v1/place?key=AIzaSyBFw0Qbyq9zTFTd-tUY6dZWTgaQzuU17R8&q=Siddamsetty+Complex+Parklane+Secunderabad+500003&zoom=15",
         "office_title": "T.I.M.E. Kids Corporate Office",
-        "address_html": "Triumphant Institute of Management Education Pvt. (T.I.M.E.)<br />95B, Second Floor<br />Siddamsetty Complex<br />Parklane, Secunderabad<br />500003",
+        "regional_office_title": "T.I.M.E. Kids Regional Offices",
+        "regional_address_html": REGIONAL_OFFICES_ADDRESS_HTML,
+        "address_html": "Kids Early Education Pvt. Ltd.<br />95B, Second Floor<br />Siddamsetty Complex<br />Parklane, Secunderabad<br />500003",
         "phone": "040-40088300",
         "fax": "040-27847334",
-        "email": "info@timekidspreschools.com",
+        "email": "admissions@timekidspreschools.com",
         "franchise_email": "franchise@timekidspreschools.com",
         "cell": "8096355335",
         "directions_url": "https://www.google.com/maps/dir/?api=1&destination=Siddamsetty+Complex+Secunderabad+500003",
@@ -475,7 +577,7 @@ FRANCHISE_PAGE_DATA: dict = {
         "heading": "Download Franchise Brochure",
         "subtitle": "Get detailed information about investment, support, and franchise benefits",
         "button_label": "Download Brochure (PDF)",
-        "fallback_url": "https://www.timekidspreschools.in/uploads/pc/TIME-Kids-Franchise%20Brochure.pdf",
+        "fallback_url": "https://www.timekidspreschools.in/api/cms-files/pc/franchise-brochure/franchise-brochure.pdf",
         "marketing_asset_slug": "franchise-brochure",
     },
 }
