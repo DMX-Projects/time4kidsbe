@@ -3,6 +3,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from django.db import DatabaseError
 from django.db.models import Q
 from django.http import HttpResponseBadRequest, HttpResponseRedirect
 from franchises.franchise_geo import city_query_variants
@@ -55,7 +56,34 @@ def _post_value(data: Any, key: str) -> str:
         value = data.get(key, "")
     else:
         value = ""
+    if isinstance(value, (list, tuple)):
+        value = value[0] if value else ""
     return str(value or "").strip()
+
+
+def _post_phone(data: Any) -> str:
+    for key in ("telephone", "mobile", "mobileno", "phone"):
+        value = _post_value(data, key)
+        if value:
+            return value
+    return ""
+
+
+def _normalize_phone(raw: str) -> str:
+    digits = re.sub(r"\D", "", raw or "")
+    if len(digits) == 12 and digits.startswith("91"):
+        digits = digits[2:]
+    elif len(digits) == 11 and digits.startswith("0"):
+        digits = digits[1:]
+    elif len(digits) > 10:
+        digits = digits[-10:]
+    return digits
+
+
+def _raw_payload(post_data: Any) -> dict:
+    if not hasattr(post_data, "keys"):
+        return {}
+    return {key: post_data.get(key) for key in post_data.keys()}
 
 
 def _lookup_franchise(city: str, location: str) -> Franchise | None:
@@ -89,7 +117,7 @@ def _centre_contact(franchise: Franchise | None) -> tuple[str, str, str]:
 def save_landing_enquiry(post_data: Any) -> LandingEnquiryRecord:
     """Persist landing-page form submissions to ``kids_enquiry`` only."""
     name = _post_value(post_data, "name")
-    telephone = _post_value(post_data, "telephone")
+    telephone = _normalize_phone(_post_phone(post_data))
     email = _post_value(post_data, "email")
     city = _post_value(post_data, "city")
     location = _post_value(post_data, "Location") or _post_value(post_data, "location")
@@ -101,7 +129,9 @@ def save_landing_enquiry(post_data: Any) -> LandingEnquiryRecord:
         raise ValueError("Please enter a valid 10-digit mobile number.")
     if not EMAIL_RE.match(email):
         raise ValueError("Please enter a valid email address.")
-    if not location or location.lower() == "select location":
+    if not city:
+        raise ValueError("Please select a city.")
+    if not location or location.lower() in ("select location", "select centre", "select center"):
         raise ValueError("Please select a location.")
 
     franchise = _lookup_franchise(city, location)
@@ -121,6 +151,7 @@ def save_landing_enquiry(post_data: Any) -> LandingEnquiryRecord:
         centre_name=centre_name or location,
         centre_phone=centre_phone,
         centre_email=centre_email,
+        raw_payload=_raw_payload(post_data),
     )
     return LandingEnquiryRecord.from_kids_enquiry(row)
 
@@ -129,7 +160,14 @@ def handle_landing_enquiry_post(post_data: Any):
     try:
         record = save_landing_enquiry(post_data)
     except ValueError as exc:
+        logger.info("Landing enquiry validation failed: %s", exc)
         return HttpResponseBadRequest(str(exc))
+    except DatabaseError as exc:
+        logger.exception("Landing enquiry database error")
+        return HttpResponseBadRequest(
+            "We could not save your enquiry (database error). "
+            "Please try again later or call the centre directly."
+        )
     except Exception:
         logger.exception("Landing enquiry save failed")
         return HttpResponseBadRequest(
