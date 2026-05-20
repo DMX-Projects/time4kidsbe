@@ -137,8 +137,8 @@ DEFAULT_HOME_PAGE_DATA: dict = {
         ],
     },
     "why_choose_us": {
-        "heading_prefix": "Why Choose ",
-        "heading_accent": "T.I.M.E. Kids?",
+        "heading_prefix": "why parents love ",
+        "heading_accent": "timekids",
         "features": [
             {"image": "/feature-safe-infrastructure.png", "title": "Safe Infrastructure", "desc": "Secure premises for complete peace of mind.", "color": "#FEE2E2", "accent": "#EF4444"},
             {"image": "/feature-trained-teachers.png", "title": "Trained Teachers", "desc": "Experienced educators nurturing your child.", "color": "#E0F2FE", "accent": "#0EA5E9"},

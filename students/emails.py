@@ -68,7 +68,7 @@ def notify_parents_new_announcement(announcement: Announcement) -> int:
             <h2 style="color:#1e3a5f;margin:16px 0 8px;">{safe_title}</h2>
             <div>{safe_body}</div>
             <a class="btn" href="{html.escape(notifications_url)}">Open parent dashboard — Notifications</a>
-            <p class="footer">You can also sign in to the parent portal and open the Notifications section.</p>
+            <p class="footer">You can also sign in to the Parent App and open the Notifications section.</p>
         </div>
     </body>
     </html>

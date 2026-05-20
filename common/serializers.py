@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from .models import HeroSlide, Holiday, HomeTestimonial, MarketingAsset, StudentsKitPage
 from .fields import RelativeImageField, RelativeFileField
+from .hero_media_fallback import resolve_hero_slide_image_url
 
 class HeroSlideSerializer(serializers.ModelSerializer):
     image = RelativeImageField()
@@ -9,6 +10,17 @@ class HeroSlideSerializer(serializers.ModelSerializer):
     class Meta:
         model = HeroSlide
         fields = '__all__'
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        resolved = resolve_hero_slide_image_url(instance.image)
+        if resolved:
+            data["image"] = resolved
+        if instance.mobile_image:
+            mobile = resolve_hero_slide_image_url(instance.mobile_image)
+            if mobile:
+                data["mobile_image"] = mobile
+        return data
 
 
 class HomeTestimonialSerializer(serializers.ModelSerializer):
