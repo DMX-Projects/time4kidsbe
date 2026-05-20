@@ -10,8 +10,9 @@ from accounts.profile_access import franchise_profile_for_user
 from .franchise_geo import (
     cities_from_franchises,
     filter_queryset_by_city,
+    filter_queryset_by_search,
+    filter_queryset_by_state,
     state_choices_from_franchises,
-    state_filter_q,
 )
 from .models import Franchise, ParentProfile, FranchiseLocation, FranchiseHeroSlide, FranchiseGalleryItem
 from .serializers import (
@@ -32,7 +33,7 @@ from .serializers import (
 @api_view(['GET'])
 @permission_classes([permissions.AllowAny])
 def state_choices_view(request):
-    """Return states that have at least one active centre (from ``franchise`` table)."""
+    """Return states that have at least one centre (from ``franchise`` table)."""
     return Response(state_choices_from_franchises())
 
 
@@ -129,57 +130,34 @@ class PublicFranchiseDetailView(generics.RetrieveAPIView):
     serializer_class = PublicFranchiseSerializer
     lookup_field = "slug"
     permission_classes = [permissions.AllowAny]
-    queryset = Franchise.objects.filter(is_active=True).prefetch_related("events__media")
+    queryset = Franchise.objects.all().prefetch_related("events__media")
 
 
 class PublicFranchiseListView(generics.ListAPIView):
-    """Public view for listing all active franchises with optional filtering."""
+    """Public view for listing all franchises with optional filtering."""
     serializer_class = PublicFranchiseSerializer
     permission_classes = [permissions.AllowAny]
     pagination_class = None  # Locate a Centre / maps need the full filtered set
 
     def get_queryset(self):
-        queryset = Franchise.objects.filter(is_active=True).select_related(
+        queryset = Franchise.objects.all().select_related(
             "admin", "user"
         )
         
-        city = self.request.query_params.get('city', None)
+        search = (self.request.query_params.get("search") or "").strip()
+        if search:
+            return filter_queryset_by_search(queryset, search)
 
+        city = self.request.query_params.get("city", None)
         # City is authoritative: counts on /public/locations/ are per city name only.
-        # Do not also filter by state or centres with a mismatched state field are dropped.
         if city:
             queryset = filter_queryset_by_city(queryset, city)
         else:
-            state = self.request.query_params.get('state', None)
+            state = self.request.query_params.get("state", None)
             if state:
-                queryset = queryset.filter(state_filter_q(state))
-        
-        # Search across name, city, and address with weighted relevance
-        search = self.request.query_params.get('search', None)
-        if search:
-            from django.db.models import Case, When, Value, IntegerField
-            
-            queryset = queryset.filter(
-                Q(name__icontains=search) |
-                Q(city__icontains=search) |
-                Q(address__icontains=search)
-            ).annotate(
-                relevance=Case(
-                    # Exact name match: highest priority
-                    When(name__iexact=search, then=Value(4)),
-                    # Name contains search: high priority
-                    When(name__icontains=search, then=Value(3)),
-                    # City contains search: medium priority
-                    When(city__icontains=search, then=Value(2)),
-                    # Address contains search: lower priority
-                    When(address__icontains=search, then=Value(1)),
-                    default=Value(0),
-                    output_field=IntegerField()
-                )
-            ).order_by('-relevance', 'city', 'name')
-            return queryset
-        
-        return queryset.order_by('city', 'name')
+                queryset = filter_queryset_by_state(queryset, state)
+
+        return queryset.order_by("city", "name")
 
 
 class PublicStatsView(generics.GenericAPIView):
@@ -188,8 +166,8 @@ class PublicStatsView(generics.GenericAPIView):
 
     def get(self, request, *args, **kwargs):
         return Response({
-            'total_schools': 250,
-            'total_cities': 50,
+            'total_schools': Franchise.objects.count(),
+            'total_cities': len(cities_from_franchises()),
             'total_students': 100000,
         })
 
@@ -197,7 +175,7 @@ class PublicStatsView(generics.GenericAPIView):
 class PublicLocationListView(generics.GenericAPIView):
     """Distinct cities + centre counts from the ``franchise`` table (not ``franchise_location``)."""
     permission_classes = [permissions.AllowAny]
-    queryset = Franchise.objects.filter(is_active=True)
+    queryset = Franchise.objects.all()
 
     def get_queryset(self):
         return self.queryset
@@ -279,9 +257,9 @@ class FranchiseGalleryItemViewSet(viewsets.ModelViewSet):
 
 
 def _distinct_franchise_cities():
-    """Non-empty distinct ``city`` values from active franchise rows."""
+    """Non-empty distinct ``city`` values from franchise rows."""
     return (
-        Franchise.objects.filter(is_active=True)
+        Franchise.objects.all()
         .exclude(Q(city__isnull=True) | Q(city__exact=""))
         .values_list("city", flat=True)
         .distinct()
@@ -310,7 +288,7 @@ class CentersListView(APIView):
     GET /api/centers/?city=Chennai
 
     Query param ``city`` filters ``franchise.city`` (case-insensitive).
-    Returns active centres' ``name`` values for location dropdowns.
+    Returns centres' ``name`` values for location dropdowns.
     """
 
     permission_classes = [permissions.AllowAny]
@@ -323,7 +301,7 @@ class CentersListView(APIView):
             raise ValidationError({"city": "Value is too long."})
 
         queryset = filter_queryset_by_city(
-            Franchise.objects.filter(is_active=True),
+            Franchise.objects.all(),
             city,
         ).exclude(Q(name__isnull=True) | Q(name__exact="")).order_by("name")
         results = CentreOptionSerializer(queryset, many=True).data

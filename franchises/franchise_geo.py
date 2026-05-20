@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 
-from django.db.models import Q
+from django.db.models import Case, IntegerField, Q, Value, When
+from django.db.models.functions import Trim
 
 from .models import Franchise, FranchiseLocation
 
@@ -77,11 +78,38 @@ def expand_state_filter(state_param: str) -> list[str]:
 
 
 def state_filter_q(state_param: str) -> Q:
+    """Deprecated: use ``filter_queryset_by_state`` (trim-aware)."""
     q = Q()
     for value in expand_state_filter(state_param):
         q |= Q(state__iexact=value)
         q |= Q(state__icontains=value)
     return q
+
+
+def filter_queryset_by_state(queryset, state_param: str | None):
+    """
+    Match centres by state using trimmed DB values and all legacy spellings
+    that map to the same state code (fixes count vs list mismatches).
+    """
+    variants = expand_state_filter(state_param)
+    target_code = state_to_code(state_param)
+    if not variants and not target_code:
+        return queryset
+
+    q = Q()
+    for value in variants:
+        q |= Q(state_trim__iexact=value)
+
+    if target_code:
+        for raw in Franchise.objects.values_list("state", flat=True).distinct():
+            if not raw:
+                continue
+            if state_to_code(str(raw)) == target_code:
+                trimmed = _clean(str(raw))
+                if trimmed:
+                    q |= Q(state_trim__iexact=trimmed)
+
+    return queryset.annotate(state_trim=Trim("state")).filter(q)
 
 
 def normalized_city_key(raw: str | None) -> str:
@@ -115,8 +143,53 @@ def filter_queryset_by_city(queryset, city_param: str | None):
         return queryset
     q = Q()
     for variant in variants:
-        q |= Q(city__iexact=variant)
-    return queryset.filter(q)
+        q |= Q(city_trim__iexact=variant)
+    return queryset.annotate(city_trim=Trim("city")).filter(q)
+
+
+def _search_matches_known_city(queryset, term: str) -> bool:
+    """True when ``term`` is an exact city name stored on at least one centre."""
+    variants = city_query_variants(term)
+    if not variants:
+        return False
+    qs = queryset.annotate(city_trim=Trim("city"))
+    for variant in variants:
+        if qs.filter(city_trim__iexact=variant).exists():
+            return True
+    return False
+
+
+def filter_queryset_by_search(queryset, search_param: str):
+    """
+    Locate-centre search.
+
+    If the term is a known city name, return only centres in that city (avoids
+    false matches from addresses in other cities that mention the name).
+    Otherwise search name, city, and address.
+    """
+    term = _clean(search_param)
+    if not term:
+        return queryset
+
+    if _search_matches_known_city(queryset, term):
+        return filter_queryset_by_city(queryset, term).order_by("name")
+
+    return (
+        queryset.filter(
+            Q(name__icontains=term) | Q(city__icontains=term) | Q(address__icontains=term)
+        )
+        .annotate(
+            relevance=Case(
+                When(name__iexact=term, then=Value(4)),
+                When(name__icontains=term, then=Value(3)),
+                When(city__icontains=term, then=Value(2)),
+                When(address__icontains=term, then=Value(1)),
+                default=Value(0),
+                output_field=IntegerField(),
+            )
+        )
+        .order_by("-relevance", "city", "name")
+    )
 
 
 def _pick_display_city(rows: list[Franchise]) -> str:
@@ -139,7 +212,7 @@ def cities_from_franchises() -> list[dict]:
   Used by public/admin location lists and locate-centre dropdowns.
     """
     qs = (
-        Franchise.objects.filter(is_active=True)
+        Franchise.objects.all()
         .exclude(Q(city__isnull=True) | Q(city__exact=""))
         .only("city", "state")
     )
@@ -176,9 +249,9 @@ def cities_from_franchises() -> list[dict]:
 
 
 def state_choices_from_franchises() -> list[dict]:
-    """State dropdown options: only states that have at least one active centre."""
+    """State dropdown options: only states that have at least one centre."""
     raw_states = (
-        Franchise.objects.filter(is_active=True)
+        Franchise.objects.all()
         .exclude(Q(state__isnull=True) | Q(state__exact=""))
         .values_list("state", flat=True)
         .distinct()
