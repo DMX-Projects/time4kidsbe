@@ -29,7 +29,7 @@ class GradeInline(admin.TabularInline):
 
 @admin.register(StudentProfile)
 class StudentProfileAdmin(admin.ModelAdmin):
-    list_display = ("full_name", "class_name", "display_parent", "is_active", "created_at")
+    list_display = ("full_name", "gender", "class_name", "display_parent", "is_active", "created_at")
     list_filter = ('is_active', 'class_name', 'created_at', 'parent__franchise')
     search_fields = ('first_name', 'last_name', 'roll_number', 'parent__user__email', 'parent__user__full_name')
     list_editable = ('is_active',)
