@@ -61,7 +61,7 @@ class StudentProfileSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = StudentProfile
-        fields = ['id', 'parent', 'first_name', 'last_name', 'full_name', 'class_name', 'section',
+        fields = ['id', 'parent', 'first_name', 'last_name', 'full_name', 'class_name', 'section', 'gender',
                   'roll_number', 'date_of_birth', 'admission_date', 'profile_picture',
                   'is_active', 'blood_group', 'emergency_contact', 'parent_info', 'grades_count', 'created_at', 'updated_at']
         read_only_fields = ['id', 'created_at', 'updated_at', 'parent_info', 'grades_count']
@@ -113,7 +113,7 @@ class StudentMiniSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = StudentProfile
-        fields = ["id", "full_name", "class_name", "roll_number"]
+        fields = ["id", "full_name", "class_name", "roll_number", "gender"]
 
 
 class FranchiseStudentSerializer(serializers.ModelSerializer):
@@ -130,6 +130,7 @@ class FranchiseStudentSerializer(serializers.ModelSerializer):
             "full_name",
             "class_name",
             "section",
+            "gender",
             "roll_number",
             "date_of_birth",
             "admission_date",

@@ -5,6 +5,8 @@ from accounts.serializers import UserSerializer
 from .models import Event, EventMedia
 from common.fields import RelativeFileField
 
+MAX_EVENT_GALLERY_IMAGE_BYTES = 1 * 1024 * 1024
+
 
 class EventMediaSerializer(serializers.ModelSerializer):
     file = RelativeFileField()
@@ -14,6 +16,20 @@ class EventMediaSerializer(serializers.ModelSerializer):
         model = EventMedia
         fields = ["id", "file", "media_type", "caption", "uploaded_by", "uploaded_at"]
         read_only_fields = ["id", "uploaded_by", "uploaded_at"]
+
+    def validate(self, attrs):
+        uploaded = attrs.get("file")
+        media_type = attrs.get("media_type") or getattr(self.instance, "media_type", None)
+        if (
+            uploaded
+            and media_type == EventMedia.MediaType.IMAGE
+            and uploaded.size > MAX_EVENT_GALLERY_IMAGE_BYTES
+        ):
+            mb = uploaded.size / (1024 * 1024)
+            raise serializers.ValidationError(
+                {"file": f"Each image must be 1 MB or smaller (this file is {mb:.2f} MB)."}
+            )
+        return attrs
 
 
 class EventSerializer(serializers.ModelSerializer):

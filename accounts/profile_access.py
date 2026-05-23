@@ -76,6 +76,102 @@ def parent_profile_for_user(user):
         return None
 
 
+def primary_student_for_parent_user(user):
+    """
+    Best-effort student row for a parent login (portal + legacy id-card accounts).
+    Returns ``(student, parent_profile)``; either may be ``None``.
+    """
+    if not user:
+        return None, None
+
+    from students.models import StudentProfile
+
+    pp = parent_profile_for_user(user)
+    if pp:
+        student = (
+            StudentProfile.objects.filter(parent=pp, is_active=True)
+            .select_related("parent", "parent__franchise")
+            .order_by("id")
+            .first()
+        )
+        if student:
+            return student, pp
+
+    ident = (getattr(user, "username", None) or "").strip()
+    if ident:
+        student = (
+            StudentProfile.objects.filter(Idcardno__iexact=ident)
+            .select_related("parent", "parent__franchise")
+            .first()
+        )
+        if student:
+            return student, student.parent if student.parent_id else pp
+
+    email = (getattr(user, "email", None) or "").strip()
+    if email:
+        student = (
+            StudentProfile.objects.filter(Emailid__iexact=email)
+            .select_related("parent", "parent__franchise")
+            .first()
+        )
+        if student:
+            return student, student.parent if student.parent_id else pp
+
+    return None, pp
+
+
+def parent_login_context(user) -> dict:
+    """
+    Extra fields for parent JWT login / ``/auth/me/`` responses.
+
+    Keys: child_name, franchise, franchise_id, class, id_card_no, academic_year.
+    """
+    student, pp = primary_student_for_parent_user(user)
+
+    franchise_name = ""
+    franchise_id = None
+    if pp and pp.franchise_id:
+        try:
+            franchise_name = (pp.franchise.name or "").strip()
+            franchise_id = pp.franchise.id
+        except ObjectDoesNotExist:
+            pass
+    elif student and (student.Centre or "").strip():
+        franchise_name = (student.Centre or "").strip()
+
+    child_name = ""
+    if student:
+        child_name = student.full_name
+    elif pp:
+        child_name = (pp.child_name or "").strip()
+
+    class_name = (student.class_name or "").strip() if student else ""
+    id_card_no = ""
+    if student:
+        id_card_no = (student.Idcardno or "").strip()
+    if not id_card_no:
+        id_card_no = (getattr(user, "username", None) or "").strip()
+
+    academic_year = (student.Year or "").strip() if student else ""
+
+    parent_full_name = ""
+    if user:
+        parent_full_name = (getattr(user, "full_name", None) or "").strip()
+
+    # App home/header greeting: child name only (not parent full_name).
+    display_name = child_name or parent_full_name
+
+    return {
+        "child_name": child_name,
+        "display_name": display_name,
+        "franchise": franchise_name,
+        "franchise_id": franchise_id,
+        "class": class_name,
+        "id_card_no": id_card_no,
+        "academic_year": academic_year,
+    }
+
+
 def driver_profile_for_user(user):
     if not user or not getattr(user, "is_authenticated", False):
         return None

@@ -13,7 +13,7 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenObtainPairView
 
 from accounts.permissions import IsAdminUser, IsParentUser
-from accounts.profile_access import parent_profile_for_user
+from accounts.profile_access import parent_login_context, parent_profile_for_user
 
 from .serializers import CustomTokenObtainPairSerializer, ParentTokenObtainPairSerializer, UserSerializer
 from .models import User
@@ -72,7 +72,10 @@ class CurrentUserView(APIView):
 
     def get(self, request):
         serializer = UserSerializer(request.user)
-        return Response(serializer.data)
+        data = dict(serializer.data)
+        if request.user.normalized_role() == UserRole.PARENT.value:
+            data.update(parent_login_context(request.user))
+        return Response(data)
 
 
 @method_decorator(csrf_exempt, name="dispatch")
@@ -253,8 +256,24 @@ class ParentSelfProfileView(APIView):
 
     def get(self, request):
         pp = parent_profile_for_user(request.user)
+        child_ctx = parent_login_context(request.user)
         if not pp:
-            return Response({"detail": "Parent profile not found"}, status=404)
+            return Response(
+                {
+                    "id": request.user.id,
+                    "email": request.user.email,
+                    "full_name": request.user.full_name or "",
+                    "phone": "",
+                    "address": "",
+                    "city": "",
+                    "photo_url": "",
+                    "franchise_name": child_ctx.get("franchise") or "",
+                    "franchise_contact_phone": "",
+                    "franchise_contact_email": "",
+                    "notifications_muted": False,
+                    **child_ctx,
+                }
+            )
         f = pp.franchise
         return Response(
             {
@@ -269,6 +288,7 @@ class ParentSelfProfileView(APIView):
                 "franchise_contact_phone": f.contact_phone or "",
                 "franchise_contact_email": f.contact_email or "",
                 "notifications_muted": bool(pp.notifications_muted),
+                **child_ctx,
             }
         )
 
@@ -276,7 +296,15 @@ class ParentSelfProfileView(APIView):
         user = request.user
         pp = parent_profile_for_user(user)
         if not pp:
-            return Response({"detail": "Parent profile not found"}, status=404)
+            return Response(
+                {
+                    "detail": (
+                        "Your account is not linked to a centre parent profile yet. "
+                        "You can still view child data; contact your preschool to complete profile setup."
+                    )
+                },
+                status=400,
+            )
 
         full_name = request.data.get("full_name")
         if full_name is not None:

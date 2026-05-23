@@ -116,12 +116,34 @@ def normalized_city_key(raw: str | None) -> str:
     return _clean(raw).lower()
 
 
+def effective_city(raw: Franchise | None = None, *, city: str | None = None, cityname: str | None = None) -> str:
+    """Public location city: prefer ``city``, fall back to legacy ``cityname``."""
+    if raw is not None:
+        city = getattr(raw, "city", None)
+        cityname = getattr(raw, "cityname", None)
+    return _clean(city) or _clean(cityname)
+
+
+def public_franchise_queryset():
+    """Centres shown on the marketing site (/locations, locate-centre, public pages)."""
+    return Franchise.objects.filter(is_active=True)
+
+
 # Legacy landing URLs and ads often use colloquial names; franchise.city uses canonical spellings.
 _CITY_QUERY_EQUIVALENTS: dict[str, tuple[str, ...]] = {
     "bengaluru": ("bengaluru", "bangalore"),
     "bangalore": ("bengaluru", "bangalore"),
     "mysore": ("mysore", "mysuru"),
     "mysuru": ("mysore", "mysuru"),
+    "trivandrum": ("trivandrum", "thiruvananthapuram"),
+    "thiruvananthapuram": ("trivandrum", "thiruvananthapuram"),
+    "trichy": ("trichy", "tiruchirappalli", "tiruchirapalli"),
+    "tiruchirappalli": ("trichy", "tiruchirappalli", "tiruchirapalli"),
+    "visakhapatnam": ("visakhapatnam", "vizag", "visakapatnam"),
+    "vizag": ("visakhapatnam", "vizag", "visakapatnam"),
+    "ernakulam": ("ernakulam", "kochi", "cochin"),
+    "kochi": ("ernakulam", "kochi", "cochin"),
+    "cochin": ("ernakulam", "kochi", "cochin"),
 }
 
 
@@ -137,14 +159,17 @@ def city_query_variants(city_param: str | None) -> list[str]:
 
 
 def filter_queryset_by_city(queryset, city_param: str | None):
-    """Match franchise rows by trimmed, case-insensitive city name (with legacy aliases)."""
+    """Match franchise rows by trimmed, case-insensitive city or cityname (with legacy aliases)."""
     variants = city_query_variants(city_param)
     if not variants:
         return queryset
     q = Q()
     for variant in variants:
-        q |= Q(city_trim__iexact=variant)
-    return queryset.annotate(city_trim=Trim("city")).filter(q)
+        q |= Q(city_trim__iexact=variant) | Q(cityname_trim__iexact=variant)
+    return queryset.annotate(
+        city_trim=Trim("city"),
+        cityname_trim=Trim("cityname"),
+    ).filter(q)
 
 
 def _search_matches_known_city(queryset, term: str) -> bool:
@@ -152,48 +177,72 @@ def _search_matches_known_city(queryset, term: str) -> bool:
     variants = city_query_variants(term)
     if not variants:
         return False
-    qs = queryset.annotate(city_trim=Trim("city"))
+    qs = queryset.annotate(city_trim=Trim("city"), cityname_trim=Trim("cityname"))
     for variant in variants:
-        if qs.filter(city_trim__iexact=variant).exists():
+        if qs.filter(Q(city_trim__iexact=variant) | Q(cityname_trim__iexact=variant)).exists():
             return True
     return False
 
 
-def filter_queryset_by_search(queryset, search_param: str):
+def _search_q_for_term(term: str) -> Q:
+    """Match centre name, city, area, address, state (any one field)."""
+    q = (
+        Q(name__icontains=term)
+        | Q(city__icontains=term)
+        | Q(cityname__icontains=term)
+        | Q(areaname__icontains=term)
+        | Q(address__icontains=term)
+        | Q(state__icontains=term)
+        | Q(statename__icontains=term)
+        | Q(postal_code__icontains=term)
+    )
+    compact = term.replace(".", "").replace(" ", "")
+    if compact and compact != term:
+        q |= Q(name__icontains=compact) | Q(address__icontains=compact)
+    return q
+
+
+def filter_queryset_by_search(queryset, search_param: str, *, within_filters: bool = False):
     """
     Locate-centre search.
 
-    If the term is a known city name, return only centres in that city (avoids
-    false matches from addresses in other cities that mention the name).
-    Otherwise search name, city, and address.
+    When ``within_filters`` is False and the term is an exact known city, return
+    centres in that city only (avoids address false positives).
+
+    When ``within_filters`` is True (state/city already applied), search only
+    within that subset using partial text match on all centre fields.
     """
     term = _clean(search_param)
     if not term:
         return queryset
 
-    if _search_matches_known_city(queryset, term):
+    if not within_filters and _search_matches_known_city(queryset, term):
         return filter_queryset_by_city(queryset, term).order_by("name")
 
-    return (
-        queryset.filter(
-            Q(name__icontains=term) | Q(city__icontains=term) | Q(address__icontains=term)
+    tokens = [t for t in term.split() if len(t) >= 2]
+    if not tokens:
+        tokens = [term]
+
+    narrowed = queryset
+    for token in tokens:
+        narrowed = narrowed.filter(_search_q_for_term(token))
+
+    return narrowed.annotate(
+        relevance=Case(
+            When(name__iexact=term, then=Value(5)),
+            When(name__icontains=term, then=Value(4)),
+            When(city__icontains=term, then=Value(3)),
+            When(cityname__icontains=term, then=Value(3)),
+            When(areaname__icontains=term, then=Value(2)),
+            When(address__icontains=term, then=Value(1)),
+            default=Value(0),
+            output_field=IntegerField(),
         )
-        .annotate(
-            relevance=Case(
-                When(name__iexact=term, then=Value(4)),
-                When(name__icontains=term, then=Value(3)),
-                When(city__icontains=term, then=Value(2)),
-                When(address__icontains=term, then=Value(1)),
-                default=Value(0),
-                output_field=IntegerField(),
-            )
-        )
-        .order_by("-relevance", "city", "name")
-    )
+    ).order_by("-relevance", "city", "name")
 
 
 def _pick_display_city(rows: list[Franchise]) -> str:
-    names = [_clean(r.city) for r in rows if _clean(r.city)]
+    names = [effective_city(r) for r in rows if effective_city(r)]
     if not names:
         return ""
     return Counter(names).most_common(1)[0][0]
@@ -211,14 +260,11 @@ def cities_from_franchises() -> list[dict]:
   Distinct cities with centre counts from ``franchise`` table.
   Used by public/admin location lists and locate-centre dropdowns.
     """
-    qs = (
-        Franchise.objects.all()
-        .exclude(Q(city__isnull=True) | Q(city__exact=""))
-        .only("city", "state")
-    )
+    qs = public_franchise_queryset().only("city", "cityname", "state")
     groups: dict[str, list[Franchise]] = defaultdict(list)
     for row in qs:
-        key = normalized_city_key(row.city)
+        city_label = effective_city(row)
+        key = normalized_city_key(city_label)
         if key:
             groups[key].append(row)
 
@@ -251,7 +297,7 @@ def cities_from_franchises() -> list[dict]:
 def state_choices_from_franchises() -> list[dict]:
     """State dropdown options: only states that have at least one centre."""
     raw_states = (
-        Franchise.objects.all()
+        public_franchise_queryset()
         .exclude(Q(state__isnull=True) | Q(state__exact=""))
         .values_list("state", flat=True)
         .distinct()

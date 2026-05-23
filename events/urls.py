@@ -9,6 +9,7 @@ from .views import (
     ParentEventListView,
     PublicEventListView,
     event_media_file,
+    public_event_media_file,
 )
 
 router = DefaultRouter()
@@ -21,4 +22,9 @@ urlpatterns = router.urls + [
     path("franchise/<int:event_id>/media/<int:pk>/", EventMediaDetailView.as_view(), name="event-media-detail"),
     path("parent/", ParentEventListView.as_view(), name="parent-events"),
     path("public/<slug:slug>/", PublicEventListView.as_view(), name="public-events"),
+    path(
+        "public/<slug:slug>/media/<int:pk>/file/",
+        public_event_media_file,
+        name="public-event-media-file",
+    ),
 ]

@@ -46,17 +46,7 @@ def _user_can_stream_event_media(user, media: EventMedia) -> bool:
     return False
 
 
-@api_view(["GET"])
-@authentication_classes([QueryJWTAuthentication])
-@permission_classes([IsAuthenticated])
-def event_media_file(request, pk: int):
-    """
-    Stream event media (photo/video) with JWT in header or ?access= so dashboards
-    do not rely on public /media/… on the marketing domain.
-    """
-    media = get_object_or_404(EventMedia.objects.select_related("event"), pk=pk)
-    if not _user_can_stream_event_media(request.user, media):
-        raise PermissionDenied("You do not have access to this media.")
+def _stream_event_media_response(media: EventMedia, request) -> FileResponse:
     if not media.file:
         raise Http404("No file on this record.")
     try:
@@ -75,6 +65,33 @@ def event_media_file(request, pk: int):
         content_type=content_type,
         filename=filename,
     )
+
+
+@api_view(["GET"])
+@authentication_classes([QueryJWTAuthentication])
+@permission_classes([IsAuthenticated])
+def event_media_file(request, pk: int):
+    """
+    Stream event media (photo/video) with JWT in header or ?access= so dashboards
+    do not rely on public /media/… on the marketing domain.
+    """
+    media = get_object_or_404(EventMedia.objects.select_related("event"), pk=pk)
+    if not _user_can_stream_event_media(request.user, media):
+        raise PermissionDenied("You do not have access to this media.")
+    return _stream_event_media_response(media, request)
+
+
+@api_view(["GET"])
+@permission_classes([permissions.AllowAny])
+def public_event_media_file(request, slug: str, pk: int):
+    """Public centre “Life at …” gallery — active franchise only."""
+    franchise = get_object_or_404(Franchise, slug=slug, is_active=True)
+    media = get_object_or_404(
+        EventMedia.objects.select_related("event"),
+        pk=pk,
+        event__franchise=franchise,
+    )
+    return _stream_event_media_response(media, request)
 
 
 class AdminEventViewSet(viewsets.ModelViewSet):
@@ -105,7 +122,7 @@ class FranchiseEventViewSet(viewsets.ModelViewSet):
         franchise = franchise_profile_for_user(self.request.user)
         if not franchise:
             return Event.objects.none()
-        return Event.objects.filter(franchise=franchise)
+        return Event.objects.filter(franchise=franchise).prefetch_related("media")
 
     def perform_create(self, serializer):
         franchise = franchise_profile_for_user(self.request.user)
@@ -182,7 +199,7 @@ class ParentEventListView(generics.ListAPIView):
         parent_profile = parent_profile_for_user(self.request.user)
         if not parent_profile:
             return Event.objects.none()
-        return Event.objects.filter(franchise=parent_profile.franchise)
+        return Event.objects.filter(franchise=parent_profile.franchise).prefetch_related("media")
 
 
 class PublicEventListView(generics.ListAPIView):
@@ -191,4 +208,4 @@ class PublicEventListView(generics.ListAPIView):
 
     def get_queryset(self):
         franchise = get_object_or_404(Franchise, slug=self.kwargs["slug"], is_active=True)
-        return Event.objects.filter(franchise=franchise)
+        return Event.objects.filter(franchise=franchise).prefetch_related("media")

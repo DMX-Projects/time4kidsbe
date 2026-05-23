@@ -9,11 +9,23 @@ from franchises.models import DriverProfile, Franchise, ParentProfile
 
 class StudentProfile(models.Model):
     """Student profile linked to parent"""
+
+    class Gender(models.TextChoices):
+        MALE = "M", "Male"
+        FEMALE = "F", "Female"
+
     parent = models.ForeignKey(ParentProfile, on_delete=models.CASCADE, related_name="students")
     first_name = models.CharField(max_length=100)
     last_name = models.CharField(max_length=100)
     class_name = models.CharField(max_length=50, help_text="e.g., KG-2")
     section = models.CharField(max_length=50, blank=True, default="")
+    gender = models.CharField(
+        max_length=1,
+        choices=Gender.choices,
+        blank=True,
+        default="",
+        help_text="M = Male, F = Female",
+    )
     roll_number = models.CharField(max_length=50, blank=True)
     date_of_birth = models.DateField(null=True, blank=True)
     admission_date = models.DateField(null=True, blank=True)

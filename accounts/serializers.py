@@ -8,7 +8,7 @@ from rest_framework import serializers
 from rest_framework.exceptions import AuthenticationFailed, PermissionDenied
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
-from accounts.profile_access import parent_profile_for_user
+from accounts.profile_access import parent_login_context, parent_profile_for_user
 
 from .models import User, UserRole
 
@@ -187,6 +187,8 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
             "full_name": user.full_name,
             "role": user.role,
         }
+        if user.normalized_role() == UserRole.PARENT.value:
+            data["user"].update(parent_login_context(user))
         return data
 
 
@@ -247,12 +249,14 @@ class ParentTokenObtainPairSerializer(TokenObtainPairSerializer):
         }
 
         parent_profile = parent_profile_for_user(user)
+        parent_ctx = parent_login_context(user)
 
         data["user"] = {
             "id": user.id,
             "email": user.email,
             "full_name": user.full_name,
             "role": user.role,
+            **parent_ctx,
         }
 
         # Add parent profile information if available
@@ -262,7 +266,10 @@ class ParentTokenObtainPairSerializer(TokenObtainPairSerializer):
                 "franchise_id": parent_profile.franchise.id,
                 "franchise_name": parent_profile.franchise.name,
                 "franchise_slug": parent_profile.franchise.slug,
-                "child_name": parent_profile.child_name,
+                "child_name": parent_ctx.get("child_name") or parent_profile.child_name,
+                "class": parent_ctx.get("class") or "",
+                "id_card_no": parent_ctx.get("id_card_no") or "",
+                "academic_year": parent_ctx.get("academic_year") or "",
             }
 
         return data

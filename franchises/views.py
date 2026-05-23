@@ -12,6 +12,7 @@ from .franchise_geo import (
     filter_queryset_by_city,
     filter_queryset_by_search,
     filter_queryset_by_state,
+    public_franchise_queryset,
     state_choices_from_franchises,
 )
 from .models import Franchise, ParentProfile, FranchiseLocation, FranchiseHeroSlide, FranchiseGalleryItem
@@ -130,7 +131,7 @@ class PublicFranchiseDetailView(generics.RetrieveAPIView):
     serializer_class = PublicFranchiseSerializer
     lookup_field = "slug"
     permission_classes = [permissions.AllowAny]
-    queryset = Franchise.objects.all().prefetch_related("events__media")
+    queryset = public_franchise_queryset().prefetch_related("events__media")
 
 
 class PublicFranchiseListView(generics.ListAPIView):
@@ -140,22 +141,23 @@ class PublicFranchiseListView(generics.ListAPIView):
     pagination_class = None  # Locate a Centre / maps need the full filtered set
 
     def get_queryset(self):
-        queryset = Franchise.objects.all().select_related(
-            "admin", "user"
-        )
-        
-        search = (self.request.query_params.get("search") or "").strip()
-        if search:
-            return filter_queryset_by_search(queryset, search)
+        # Do not select_related(admin, user): INNER JOIN drops centres whose login rows were removed.
+        queryset = public_franchise_queryset()
 
-        city = self.request.query_params.get("city", None)
-        # City is authoritative: counts on /public/locations/ are per city name only.
+        state = (self.request.query_params.get("state") or "").strip() or None
+        city = (self.request.query_params.get("city") or "").strip() or None
+        search = (self.request.query_params.get("search") or "").strip() or None
+
+        if state:
+            queryset = filter_queryset_by_state(queryset, state)
         if city:
             queryset = filter_queryset_by_city(queryset, city)
-        else:
-            state = self.request.query_params.get("state", None)
-            if state:
-                queryset = filter_queryset_by_state(queryset, state)
+        if search:
+            queryset = filter_queryset_by_search(
+                queryset,
+                search,
+                within_filters=bool(state or city),
+            )
 
         return queryset.order_by("city", "name")
 
@@ -166,7 +168,7 @@ class PublicStatsView(generics.GenericAPIView):
 
     def get(self, request, *args, **kwargs):
         return Response({
-            'total_schools': Franchise.objects.count(),
+            'total_schools': public_franchise_queryset().count(),
             'total_cities': len(cities_from_franchises()),
             'total_students': 100000,
         })
@@ -175,7 +177,7 @@ class PublicStatsView(generics.GenericAPIView):
 class PublicLocationListView(generics.GenericAPIView):
     """Distinct cities + centre counts from the ``franchise`` table (not ``franchise_location``)."""
     permission_classes = [permissions.AllowAny]
-    queryset = Franchise.objects.all()
+    queryset = public_franchise_queryset()
 
     def get_queryset(self):
         return self.queryset
