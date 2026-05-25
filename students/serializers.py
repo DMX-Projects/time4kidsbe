@@ -58,12 +58,34 @@ class StudentProfileSerializer(serializers.ModelSerializer):
     full_name = serializers.ReadOnlyField()
     parent_info = serializers.SerializerMethodField(read_only=True)
     grades_count = serializers.SerializerMethodField(read_only=True)
+    id_card_no = serializers.CharField(source="Idcardno", required=False, allow_blank=True)
+    academic_year = serializers.CharField(source="Year", required=False, allow_blank=True)
 
     class Meta:
         model = StudentProfile
-        fields = ['id', 'parent', 'first_name', 'last_name', 'full_name', 'class_name', 'section', 'gender',
-                  'roll_number', 'date_of_birth', 'admission_date', 'profile_picture',
-                  'is_active', 'blood_group', 'emergency_contact', 'parent_info', 'grades_count', 'created_at', 'updated_at']
+        fields = [
+            "id",
+            "parent",
+            "first_name",
+            "last_name",
+            "full_name",
+            "class_name",
+            "section",
+            "gender",
+            "roll_number",
+            "id_card_no",
+            "academic_year",
+            "date_of_birth",
+            "admission_date",
+            "profile_picture",
+            "is_active",
+            "blood_group",
+            "emergency_contact",
+            "parent_info",
+            "grades_count",
+            "created_at",
+            "updated_at",
+        ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'parent_info', 'grades_count']
 
     def get_parent_info(self, obj):
@@ -119,6 +141,8 @@ class StudentMiniSerializer(serializers.ModelSerializer):
 class FranchiseStudentSerializer(serializers.ModelSerializer):
     full_name = serializers.ReadOnlyField()
     parent = serializers.PrimaryKeyRelatedField(queryset=ParentProfile.objects.all())
+    id_card_no = serializers.CharField(source="Idcardno", required=False, allow_blank=True)
+    academic_year = serializers.CharField(source="Year", required=False, allow_blank=True)
 
     class Meta:
         model = StudentProfile
@@ -132,6 +156,8 @@ class FranchiseStudentSerializer(serializers.ModelSerializer):
             "section",
             "gender",
             "roll_number",
+            "id_card_no",
+            "academic_year",
             "date_of_birth",
             "admission_date",
             "is_active",

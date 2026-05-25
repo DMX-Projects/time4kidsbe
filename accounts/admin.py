@@ -2,7 +2,34 @@ from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.utils.translation import gettext_lazy as _
 
-from .models import User
+from .models import ParentRegistration, User
+
+
+@admin.register(ParentRegistration)
+class ParentRegistrationAdmin(admin.ModelAdmin):
+    list_display = (
+        "parent_name",
+        "email",
+        "phone",
+        "child_name",
+        "city",
+        "display_franchise",
+        "status",
+        "created_at",
+    )
+    list_filter = ("status", "franchise", "created_at")
+    search_fields = ("parent_name", "email", "phone", "child_name", "city")
+    readonly_fields = ("created_at",)
+    raw_id_fields = ("user", "franchise")
+
+    @admin.display(description="Centre")
+    def display_franchise(self, obj: ParentRegistration) -> str:
+        if not obj.franchise_id:
+            return "—"
+        try:
+            return obj.franchise.name
+        except Exception:
+            return f"#{obj.franchise_id}"
 
 
 @admin.register(User)

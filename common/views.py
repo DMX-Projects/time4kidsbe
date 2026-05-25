@@ -209,6 +209,8 @@ class PageContentView(APIView):
             return FOOTER_PAGE_DATA
         if slug == "centre-program-cards":
             return CENTRE_PROGRAM_CARDS_DATA
+        if slug == "centre-page-nav-custom":
+            return {"customTopSections": [], "staticExtensions": []}
         return {}
 
     def get(self, request, slug):

@@ -204,21 +204,31 @@ SIMPLE_JWT = {
     "AUTH_HEADER_TYPES": ("Bearer",),
 }
 
-EMAIL_BACKEND = os.getenv(
-    "EMAIL_BACKEND",
-    "django.core.mail.backends.console.EmailBackend",
+# SendGrid — one API key for landing pages, admission/register forms, enquiries, careers, etc.
+SENDGRID_API_KEY = (os.getenv("SENDGRID_API_KEY", "") or "").strip()
+MAIL_FROM_ADDRESS = (
+    os.getenv("MAIL_FROM_ADDRESS", "").strip()
+    or os.getenv("SENDGRID_FROM_EMAIL", "").strip()
+    or "info@timekidspreschools.com"
 )
+# Team alerts: admission, landing, register thank-you CC
+MAIL_TO_ADDRESS = os.getenv("MAIL_TO_ADDRESS", "info@timekidspreschools.com")
+MAIL_LANDING_CC = os.getenv("MAIL_LANDING_CC", "info@timekidspreschools.com")
+# Franchise opportunity form — internal alerts only
+MAIL_FRANCHISE_TO_ADDRESS = os.getenv("MAIL_FRANCHISE_TO_ADDRESS", "franchise@timekidspreschools.com")
+
+_default_email_backend = (
+    "django.core.mail.backends.smtp.EmailBackend"
+    if SENDGRID_API_KEY
+    else "django.core.mail.backends.console.EmailBackend"
+)
+EMAIL_BACKEND = os.getenv("EMAIL_BACKEND", _default_email_backend)
 EMAIL_HOST = os.getenv("EMAIL_HOST", "smtp.sendgrid.net")
 EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "apikey")
-EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
+EMAIL_HOST_PASSWORD = (os.getenv("EMAIL_HOST_PASSWORD", "") or SENDGRID_API_KEY).strip()
 EMAIL_PORT = int(os.getenv("EMAIL_PORT", "587"))
 EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", "True").lower() == "true"
-DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "no-reply@time4kids.app")
-
-# SendGrid Email Configuration for Career Applications
-SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY", "")
-MAIL_FROM_ADDRESS = os.getenv("MAIL_FROM_ADDRESS", "info@time4education.com")
-MAIL_TO_ADDRESS = os.getenv("MAIL_TO_ADDRESS", "mdsahilkhan634@gmail.com")
+DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "") or MAIL_FROM_ADDRESS
 
 CACHES = {
     "default": {

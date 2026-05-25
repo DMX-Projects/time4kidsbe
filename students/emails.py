@@ -39,7 +39,7 @@ def notify_parents_new_announcement(announcement: Announcement) -> int:
     base_url = getattr(settings, "PUBLIC_SITE_URL", "http://localhost:3000").rstrip("/")
     notifications_url = f"{base_url}/dashboard/parent/notifications"
     from_email = getattr(settings, "MAIL_FROM_ADDRESS", None) or getattr(
-        settings, "DEFAULT_FROM_EMAIL", "no-reply@time4kids.app"
+        settings, "DEFAULT_FROM_EMAIL", "info@timekidspreschools.com"
     )
     franchise_name = announcement.franchise.name
 

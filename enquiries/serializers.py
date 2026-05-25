@@ -1,10 +1,9 @@
 from rest_framework import serializers
 
+from accounts.registration_checks import ALREADY_REGISTERED_MESSAGE, email_has_parent_account
 from franchises.models import Franchise
 
-from franchises.models import Franchise
-
-from .models import Enquiry, FranchiseEnquiry, KidsEnquiry
+from .models import Enquiry, EnquiryType, FranchiseEnquiry, KidsEnquiry
 
 
 class EnquirySerializer(serializers.ModelSerializer):
@@ -41,6 +40,15 @@ class EnquirySerializer(serializers.ModelSerializer):
                 "Franchise opportunity leads use POST /enquiries/franchise-submit/."
             )
         return value
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        enquiry_type = attrs.get("enquiry_type")
+        if enquiry_type == EnquiryType.ADMISSION or enquiry_type == "ADMISSION":
+            email = (attrs.get("email") or "").strip().lower()
+            if email_has_parent_account(email):
+                raise serializers.ValidationError({"email": ALREADY_REGISTERED_MESSAGE})
+        return attrs
 
     def create(self, validated_data):
         franchise_slug = validated_data.pop("franchise_slug", None)

@@ -270,6 +270,8 @@ class ParentTokenObtainPairSerializer(TokenObtainPairSerializer):
                 "class": parent_ctx.get("class") or "",
                 "id_card_no": parent_ctx.get("id_card_no") or "",
                 "academic_year": parent_ctx.get("academic_year") or "",
+                "gender": parent_ctx.get("gender") or "",
+                "gender_label": parent_ctx.get("gender_label") or "",
             }
 
         return data
