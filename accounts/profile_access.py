@@ -88,11 +88,16 @@ def primary_student_for_parent_user(user):
 
     pp = parent_profile_for_user(user)
     if pp:
-        student = (
+        students_qs = (
             StudentProfile.objects.filter(parent=pp, is_active=True)
             .select_related("parent", "parent__franchise")
-            .order_by("id")
+            .order_by("-updated_at", "id")
+        )
+        student = (
+            students_qs.exclude(Idcardno__isnull=True)
+            .exclude(Idcardno="")
             .first()
+            or students_qs.first()
         )
         if student:
             return student, pp
@@ -120,11 +125,24 @@ def primary_student_for_parent_user(user):
     return None, pp
 
 
+def student_gender_for_login(student) -> tuple[str, str]:
+    """Return ``(gender_code, gender_label)`` — e.g. ``("M", "Male")``."""
+    if not student:
+        return "", ""
+    raw = (getattr(student, "gender", None) or "").strip().upper()
+    if raw in ("M", "MALE"):
+        return "M", "Male"
+    if raw in ("F", "FEMALE"):
+        return "F", "Female"
+    return "", ""
+
+
 def parent_login_context(user) -> dict:
     """
     Extra fields for parent JWT login / ``/auth/me/`` responses.
 
-    Keys: child_name, franchise, franchise_id, class, id_card_no, academic_year.
+    Keys: child_name, franchise, franchise_id, class, id_card_no, academic_year,
+    gender, gender_label.
     """
     student, pp = primary_student_for_parent_user(user)
 
@@ -153,6 +171,7 @@ def parent_login_context(user) -> dict:
         id_card_no = (getattr(user, "username", None) or "").strip()
 
     academic_year = (student.Year or "").strip() if student else ""
+    gender, gender_label = student_gender_for_login(student)
 
     parent_full_name = ""
     if user:
@@ -169,6 +188,8 @@ def parent_login_context(user) -> dict:
         "class": class_name,
         "id_card_no": id_card_no,
         "academic_year": academic_year,
+        "gender": gender,
+        "gender_label": gender_label,
     }
 
 

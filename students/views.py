@@ -180,6 +180,13 @@ class FranchiseStudentListCreateView(generics.ListCreateAPIView):
         ctx["request"] = self.request
         return ctx
 
+    def perform_create(self, serializer):
+        parent = serializer.validated_data.get("parent")
+        franchise = franchise_profile_for_user(self.request.user)
+        if not franchise or parent.franchise_id != franchise.id:
+            raise PermissionDenied("Parent does not belong to your centre.")
+        serializer.save()
+
 
 class FranchiseStudentDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsFranchiseUser]
@@ -307,83 +314,6 @@ class AdminAchievementDetailView(generics.RetrieveUpdateDestroyAPIView):
         return StudentAchievement.objects.select_related("student", "franchise").filter(
             franchise__admin=self.request.user
         )
-
-    def get_serializer_context(self):
-        ctx = super().get_serializer_context()
-        ctx["request"] = self.request
-        return ctx
-
-
-# ----- Franchise Student & Grade CRUD -----
-
-class FranchiseStudentListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsFranchiseUser]
-    serializer_class = StudentProfileSerializer
-    pagination_class = None
-
-    def get_queryset(self):
-        franchise = franchise_profile_for_user(self.request.user)
-        if not franchise:
-            return StudentProfile.objects.none()
-        return StudentProfile.objects.filter(parent__franchise=franchise).select_related("parent", "parent__user")
-
-    def get_serializer_context(self):
-        ctx = super().get_serializer_context()
-        ctx["request"] = self.request
-        return ctx
-
-    def perform_create(self, serializer):
-        # Verify parent belongs to franchise
-        parent = serializer.validated_data.get('parent')
-        franchise = franchise_profile_for_user(self.request.user)
-        if parent.franchise != franchise:
-            raise PermissionDenied("Parent does not belong to your centre.")
-        serializer.save()
-
-
-class FranchiseStudentDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsFranchiseUser]
-    serializer_class = StudentProfileSerializer
-
-    def get_queryset(self):
-        franchise = franchise_profile_for_user(self.request.user)
-        if not franchise:
-            return StudentProfile.objects.none()
-        return StudentProfile.objects.filter(parent__franchise=franchise).select_related("parent", "parent__user")
-
-    def get_serializer_context(self):
-        ctx = super().get_serializer_context()
-        ctx["request"] = self.request
-        return ctx
-
-
-class FranchiseGradeListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsFranchiseUser]
-    serializer_class = GradeSerializer
-    pagination_class = None
-
-    def get_queryset(self):
-        franchise = franchise_profile_for_user(self.request.user)
-        if not franchise:
-            return Grade.objects.none()
-        return Grade.objects.filter(student__parent__franchise=franchise).select_related("student")
-
-    def get_serializer_context(self):
-        ctx = super().get_serializer_context()
-        ctx["request"] = self.request
-        return ctx
-
-
-
-class FranchiseGradeDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsFranchiseUser]
-    serializer_class = GradeSerializer
-
-    def get_queryset(self):
-        franchise = franchise_profile_for_user(self.request.user)
-        if not franchise:
-            return Grade.objects.none()
-        return Grade.objects.filter(student__parent__franchise=franchise)
 
     def get_serializer_context(self):
         ctx = super().get_serializer_context()

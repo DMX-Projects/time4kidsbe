@@ -1,5 +1,6 @@
 from django.contrib.auth.base_user import AbstractBaseUser, BaseUserManager
 from django.contrib.auth.models import PermissionsMixin
+from django.core.validators import RegexValidator
 from django.db import models
 from django.utils import timezone
 
@@ -128,3 +129,52 @@ class User(AbstractBaseUser, PermissionsMixin):
     @property
     def is_driver(self) -> bool:
         return self.normalized_role() == UserRole.DRIVER.value
+
+
+class ParentRegistration(models.Model):
+    """
+    Parent sign-up from /login/register/ (separate from admission ``enquiry`` leads).
+    """
+
+    class Status(models.TextChoices):
+        NEW = "new", "New"
+        IN_PROGRESS = "in-progress", "In Progress"
+        CLOSED = "closed", "Closed"
+
+    user = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="registration_records",
+    )
+    parent_name = models.CharField(max_length=255)
+    email = models.EmailField()
+    phone = models.CharField(
+        max_length=10,
+        blank=True,
+        validators=[RegexValidator(r"^\d{10}$", "Phone number must be exactly 10 digits.")],
+    )
+    child_name = models.CharField(max_length=255, blank=True)
+    child_age = models.CharField(max_length=50, blank=True)
+    program = models.CharField(max_length=100, blank=True)
+    city = models.CharField(max_length=100, blank=True)
+    franchise = models.ForeignKey(
+        "franchises.Franchise",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="parent_registrations",
+    )
+    message = models.TextField(blank=True)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.NEW)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "parent_registration"
+        ordering = ["-created_at"]
+        verbose_name = "Parent registration"
+        verbose_name_plural = "Parent registrations"
+
+    def __str__(self) -> str:
+        return f"Registration: {self.parent_name} ({self.email})"

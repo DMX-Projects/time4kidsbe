@@ -24,7 +24,7 @@ def send_career_application_email(application):
         return False
     
     # Email addresses from settings
-    from_email = getattr(settings, 'MAIL_FROM_ADDRESS', 'info@time4education.com')
+    from_email = getattr(settings, 'MAIL_FROM_ADDRESS', 'info@timekidspreschools.com')
     to_email = getattr(settings, 'MAIL_TO_ADDRESS', 'mdsahilkhan634@gmail.com')
     
     # Build email content

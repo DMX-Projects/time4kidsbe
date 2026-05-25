@@ -7,6 +7,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.generic import RedirectView
 
 from accounts.views import (
+    CheckParentEmailView,
     CurrentUserView,
     CustomTokenObtainPairView,
     ParentLoginView,
@@ -39,6 +40,8 @@ urlpatterns = [
     path("api/auth/password-reset-confirm/", PasswordResetConfirmView.as_view(), name="password_reset_confirm"),
     path("api/auth/register", RegisterUserView.as_view()),
     path("api/auth/register/", RegisterUserView.as_view(), name="register_user"),
+    path("api/auth/check-parent-email", CheckParentEmailView.as_view()),
+    path("api/auth/check-parent-email/", CheckParentEmailView.as_view(), name="check_parent_email"),
     path("api/auth/refresh", TokenRefreshView.as_view()),
     path("api/auth/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
     path("api/auth/me", CurrentUserView.as_view()),

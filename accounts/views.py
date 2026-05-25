@@ -1,22 +1,22 @@
-from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.contrib.auth.tokens import default_token_generator
-from django.core.mail import send_mail
 import re
 from django.utils.decorators import method_decorator
-from django.utils.encoding import force_bytes
-from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
+from django.utils.http import urlsafe_base64_decode
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework import generics, permissions
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenObtainPairView
 
+from accounts.emails import find_user_for_password_reset, send_password_reset_email, send_registration_emails
 from accounts.permissions import IsAdminUser, IsParentUser
 from accounts.profile_access import parent_login_context, parent_profile_for_user
+from accounts.registration_checks import ALREADY_REGISTERED_MESSAGE, email_has_parent_account
+
+from django.db import transaction
 
 from .serializers import CustomTokenObtainPairSerializer, ParentTokenObtainPairSerializer, UserSerializer
-from .models import User
+from .models import ParentRegistration, User
 from django.contrib.auth.password_validation import validate_password
 from django.db.models import Q
 from accounts.models import UserRole
@@ -92,13 +92,11 @@ class PasswordResetRequestView(APIView):
         if not identifier:
             return Response({"detail": "Email is required."}, status=400)
 
-        # Accept either email or username
-        user = User.objects.filter(email__iexact=identifier).first()
-        if not user:
-            user = User.objects.filter(username__iexact=identifier).first()
+        user = find_user_for_password_reset(identifier)
 
         if user and user.is_active:
-            _send_password_reset_email(user)
+            to_email = identifier if "@" in (identifier or "") else None
+            send_password_reset_email(user, to_email=to_email)
 
         return Response(
             {"detail": "If the email exists, you will receive reset instructions shortly."},
@@ -133,6 +131,8 @@ class PasswordResetConfirmView(APIView):
         except UserModel.DoesNotExist:
             return Response({"detail": "Invalid user."}, status=400)
 
+        from django.contrib.auth.tokens import default_token_generator
+
         if not default_token_generator.check_token(user, token):
             return Response({"detail": "Invalid or expired token."}, status=400)
 
@@ -148,36 +148,27 @@ class PasswordResetConfirmView(APIView):
         return Response({"detail": "Password reset successful."}, status=200)
 
 
-def _build_reset_url(user: User) -> str:
-    uidb64 = urlsafe_base64_encode(force_bytes(user.pk))
-    token = default_token_generator.make_token(user)
-    frontend_base = (getattr(settings, "PUBLIC_SITE_URL", "") or "").strip().rstrip("/")
-    if not frontend_base:
-        frontend_base = "http://localhost:3000"
-    return f"{frontend_base}/reset-password?uid={uidb64}&token={token}"
+@method_decorator(csrf_exempt, name="dispatch")
+class CheckParentEmailView(APIView):
+    """Public check before admission/register forms submit."""
 
+    permission_classes = [permissions.AllowAny]
 
-def _send_password_reset_email(user: User) -> str:
-    reset_url = _build_reset_url(user)
-    subject = "T.I.M.E. Kids - Password Reset"
-    message = (
-        f"Hi,\n\n"
-        f"Please set your password using the link below:\n\n"
-        f"{reset_url}\n\n"
-        f"If you did not request this, please ignore this email.\n"
-    )
-    try:
-        send_mail(
-            subject=subject,
-            message=message,
-            from_email=getattr(settings, "DEFAULT_FROM_EMAIL", "no-reply@time4kids.app"),
-            recipient_list=[user.email],
-            fail_silently=False,
+    def post(self, request):
+        email = (request.data.get("email") or "").strip().lower()
+        if not email:
+            return Response({"detail": "Email is required."}, status=400)
+        if not EMAIL_REGEX.match(email):
+            return Response({"detail": "Please provide a valid email address."}, status=400)
+
+        registered = email_has_parent_account(email)
+        return Response(
+            {
+                "registered": registered,
+                "detail": ALREADY_REGISTERED_MESSAGE if registered else "",
+            },
+            status=200,
         )
-    except Exception:
-        # Avoid failing registration/reset flows if email provider is misconfigured.
-        pass
-    return reset_url
 
 
 @method_decorator(csrf_exempt, name="dispatch")
@@ -190,10 +181,18 @@ class RegisterUserView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
+        from franchises.models import Franchise
+
         email = (request.data.get("email") or "").strip().lower()
-        full_name = (request.data.get("full_name") or request.data.get("name") or "").strip()
+        full_name = (request.data.get("full_name") or request.data.get("name") or request.data.get("parent_name") or "").strip()
         phone = re.sub(r"\D", "", (request.data.get("phone") or "").strip())
         requested_username = (request.data.get("username") or "").strip()
+        child_name = (request.data.get("child_name") or "").strip()
+        child_age = (request.data.get("child_age") or "").strip()
+        program = (request.data.get("program") or "").strip()
+        city = (request.data.get("city") or "").strip()
+        message = (request.data.get("message") or "").strip()
+        franchise_slug = (request.data.get("franchise_slug") or request.data.get("center") or "").strip()
 
         if len(full_name) < 2:
             return Response({"detail": "Full name must be at least 2 characters."}, status=400)
@@ -203,8 +202,8 @@ class RegisterUserView(APIView):
             return Response({"detail": "Please provide a valid email address."}, status=400)
         if not PHONE_REGEX.match(phone):
             return Response({"detail": "Phone number must be 10 digits and start with 6, 7, 8, or 9."}, status=400)
-        if User.objects.filter(email__iexact=email).exists():
-            return Response({"detail": "An account with this email already exists."}, status=400)
+        if email_has_parent_account(email):
+            return Response({"detail": ALREADY_REGISTERED_MESSAGE}, status=400)
         if requested_username and not USERNAME_REGEX.match(requested_username):
             return Response(
                 {
@@ -214,6 +213,10 @@ class RegisterUserView(APIView):
                 },
                 status=400,
             )
+
+        franchise = None
+        if franchise_slug:
+            franchise = Franchise.objects.filter(slug=franchise_slug).first()
 
         username = requested_username or email.split("@")[0]
         base_username = username[:150] if username else "user"
@@ -227,18 +230,37 @@ class RegisterUserView(APIView):
             final_username = f"{base_username[: max(1, 150 - len(suffix_str) - 1)]}-{suffix_str}"
             suffix += 1
 
-        user = User.objects.create_user(
-            email=email,
-            password=None,
-            role=UserRole.PARENT,
-            username=final_username,
-            full_name=full_name,
-            is_active=True,
-        )
-        user.set_unusable_password()
-        user.save(update_fields=["password"])
+        with transaction.atomic():
+            user = User.objects.create_user(
+                email=email,
+                password=None,
+                role=UserRole.PARENT,
+                username=final_username,
+                full_name=full_name,
+                is_active=True,
+            )
+            user.set_unusable_password()
+            user.save(update_fields=["password"])
 
-        reset_url = _send_password_reset_email(user)
+            ParentRegistration.objects.create(
+                user=user,
+                parent_name=full_name,
+                email=email,
+                phone=phone,
+                child_name=child_name,
+                child_age=child_age,
+                program=program,
+                city=city,
+                franchise=franchise,
+                message=message,
+            )
+
+        reset_url, _sent = send_registration_emails(
+            user,
+            to_email=email,
+            full_name=full_name,
+            franchise=franchise,
+        )
         return Response(
             {
                 "detail": "Registration successful. Use the reset link to set your password.",
