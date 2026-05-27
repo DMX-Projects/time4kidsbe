@@ -4,7 +4,12 @@ getattr(user, "franchise_profile", None) is NOT safe: Django's ReverseOneToOneDe
 still raises RelatedObjectDoesNotExist when the related row is missing.
 """
 
+import re
+
 from django.core.exceptions import ObjectDoesNotExist
+from django.db import IntegrityError
+from django.db.models import Q
+from django.utils.text import slugify
 
 from accounts.models import UserRole
 
@@ -21,6 +26,39 @@ def franchise_slug_login_key(slug: str) -> str:
     return s.split("-")[0] if s else ""
 
 
+def _login_keys_for_franchise_user(user) -> list[str]:
+    """Username and email-derived keys used to match a centre slug after login."""
+    keys: list[str] = []
+
+    def add(raw: str | None) -> None:
+        key = (raw or "").strip().lower()
+        if key and key not in keys:
+            keys.append(key)
+
+    add(getattr(user, "username", None) or "")
+
+    email = (getattr(user, "email", None) or "").strip().lower()
+    if email and "@" in email:
+        local = email.split("@", 1)[0]
+        add(local)
+        if "+" in local:
+            after_plus = local.split("+", 1)[1]
+            add(after_plus.split(".")[0])
+
+    return keys
+
+
+def _slug_matches_login_key(slug: str, key: str) -> bool:
+    slug_key = franchise_slug_login_key(slug)
+    key = (key or "").strip().lower()
+    if not slug_key or not key:
+        return False
+    if slug_key == key:
+        return True
+    # e.g. username ``padmaraonagar`` vs slug ``padmaraonagarnew-timekids...``
+    return slug_key.startswith(key) or key.startswith(slug_key)
+
+
 def franchise_for_centre_login(user):
     """
     Legacy imports often left ``franchise.user_id`` on HO/admin accounts while centre
@@ -33,18 +71,29 @@ def franchise_for_centre_login(user):
 
     from franchises.models import Franchise
 
-    username = (getattr(user, "username", None) or "").strip()
-    if not username:
+    keys = _login_keys_for_franchise_user(user)
+    if not keys:
         return None
-    key = username.lower()
 
-    for prefix in (f"{key}-timekid", f"{key}-"):
-        match = Franchise.objects.filter(slug__istartswith=prefix).order_by("id").first()
-        if match:
-            return match
+    for key in keys:
+        for prefix in (f"{key}-timekid", f"{key}-"):
+            match = Franchise.objects.filter(slug__istartswith=prefix).order_by("id").first()
+            if match:
+                return match
 
-    candidates = list(Franchise.objects.filter(slug__icontains=key).only("id", "slug")[:40])
-    matches = [f for f in candidates if franchise_slug_login_key(f.slug) == key]
+    seen_ids: set[int] = set()
+    matches = []
+    for key in keys:
+        candidates = list(
+            Franchise.objects.filter(slug__icontains=key).only("id", "slug").order_by("id")[:40]
+        )
+        for franchise in candidates:
+            if franchise.id in seen_ids:
+                continue
+            if _slug_matches_login_key(franchise.slug, key):
+                seen_ids.add(franchise.id)
+                matches.append(franchise)
+
     if len(matches) == 1:
         return matches[0]
     return None
@@ -53,27 +102,315 @@ def franchise_for_centre_login(user):
 def franchise_profile_for_user(user):
     if not user or not getattr(user, "is_authenticated", False):
         return None
-    try:
-        return user.franchise_profile
-    except ObjectDoesNotExist:
-        pass
 
     from franchises.models import Franchise
 
-    franchise = Franchise.objects.filter(user_id=user.pk).first()
+    # Use filter().first() — legacy data may have multiple franchises per user_id.
+    franchise = Franchise.objects.filter(user_id=user.pk).order_by("id").first()
     if franchise:
         return franchise
 
     return franchise_for_centre_login(user)
 
 
+def _login_identifiers_for_user(user) -> list[str]:
+    keys: list[str] = []
+
+    def add(raw: str | None) -> None:
+        key = (raw or "").strip()
+        if not key:
+            return
+        if key.lower() not in {k.lower() for k in keys}:
+            keys.append(key)
+
+    add(getattr(user, "username", None))
+    add(getattr(user, "email", None))
+    email = (getattr(user, "email", None) or "").strip()
+    if email and "@" in email:
+        add(email.split("@", 1)[0])
+    return keys
+
+
+def _student_id_keys(student) -> list[str]:
+    """Legacy id-card values stored on ``Idcardno`` and/or ``roll_number``."""
+    keys: list[str] = []
+
+    def add(raw: str | None) -> None:
+        key = (raw or "").strip()
+        if not key:
+            return
+        if key.lower() not in {k.lower() for k in keys}:
+            keys.append(key)
+
+    add(getattr(student, "Idcardno", None))
+    add(getattr(student, "roll_number", None))
+    return keys
+
+
+def _identifier_matches_student_id(key: str, student) -> bool:
+    needle = (key or "").strip().lower()
+    if not needle:
+        return False
+    return needle in {k.lower() for k in _student_id_keys(student)}
+
+
+def _student_queryset():
+    from students.models import StudentProfile
+
+    return StudentProfile.objects.select_related("parent", "parent__franchise", "parent__user")
+
+
+def user_owns_legacy_student(user, student) -> bool:
+    """True when this login clearly belongs to the imported student row."""
+    if not user or not student:
+        return False
+
+    username = (getattr(user, "username", None) or "").strip()
+    email = (getattr(user, "email", None) or "").strip().lower()
+    student_email = (getattr(student, "Emailid", None) or "").strip().lower()
+    mobile = re.sub(r"\D", "", (getattr(student, "Mobileno", None) or ""))[-10:]
+
+    if username and _identifier_matches_student_id(username, student):
+        return True
+    if email and student_email and email == student_email:
+        return True
+    if student.parent_id:
+        parent_email = (getattr(student.parent, "Emailid", None) or "").strip().lower()
+        if email and parent_email and email == parent_email:
+            return True
+        parent_user_email = (
+            getattr(getattr(student.parent, "user", None), "email", None) or ""
+        ).strip().lower()
+        if email and parent_user_email and email == parent_user_email:
+            return True
+    if mobile and len(mobile) == 10:
+        for key in _login_identifiers_for_user(user):
+            digits = re.sub(r"\D", "", key)
+            if digits.endswith(mobile):
+                return True
+    return False
+
+
+def find_student_for_parent_user(user):
+    """Best-effort legacy student row for a parent login (id card, email, phone)."""
+    if not user:
+        return None
+
+    from franchises.models import ParentProfile
+
+    for key in _login_identifiers_for_user(user):
+        student = (
+            _student_queryset()
+            .filter(Q(Idcardno__iexact=key) | Q(roll_number__iexact=key))
+            .first()
+        )
+        if student:
+            return student
+        if "@" in key:
+            student = _student_queryset().filter(Emailid__iexact=key).first()
+            if student:
+                return student
+
+    for key in _login_identifiers_for_user(user):
+        digits = re.sub(r"\D", "", key)
+        if len(digits) >= 10:
+            phone10 = digits[-10:]
+            student = _student_queryset().filter(Mobileno__icontains=phone10).first()
+            if student:
+                return student
+
+    email = (getattr(user, "email", None) or "").strip()
+    if email and "@" in email:
+        profile = (
+            ParentProfile.objects.filter(Emailid__iexact=email)
+            .select_related("franchise", "user")
+            .order_by("-id")
+            .first()
+        )
+        if profile:
+            student = _student_queryset().filter(parent=profile).order_by("-updated_at", "id").first()
+            if student:
+                return student
+
+    return None
+
+
+def _sync_parent_profile_user(profile, user, *, student=None):
+    """Attach legacy parent profile to the logged-in user when safe."""
+    if not profile or not user:
+        return profile
+    if profile.user_id == user.pk:
+        return profile
+
+    can_claim = False
+    if student and user_owns_legacy_student(user, student):
+        can_claim = True
+    else:
+        username = (getattr(user, "username", None) or "").strip()
+        email = (getattr(user, "email", None) or "").strip()
+        can_claim = _student_queryset().filter(parent=profile).filter(
+            Q(Idcardno__iexact=username)
+            | Q(roll_number__iexact=username)
+            | Q(Emailid__iexact=email)
+        ).exists()
+
+    if can_claim or not profile.user_id:
+        try:
+            profile.user = user
+            profile.save(update_fields=["user_id"])
+        except IntegrityError:
+            pass
+    return profile
+
+
 def parent_profile_for_user(user):
     if not user or not getattr(user, "is_authenticated", False):
         return None
+
+    from franchises.models import ParentProfile
+
     try:
-        return user.parent_profile
+        profile = user.parent_profile
+        return _sync_parent_profile_user(profile, user)
     except ObjectDoesNotExist:
+        pass
+
+    profile = ParentProfile.objects.filter(user_id=user.pk).select_related("franchise", "user").first()
+    if profile:
+        return profile
+
+    student = find_student_for_parent_user(user)
+    if student and student.parent_id and user_owns_legacy_student(user, student):
+        return _sync_parent_profile_user(student.parent, user, student=student)
+
+    for key in _login_identifiers_for_user(user):
+        if "@" not in key:
+            continue
+        profile = (
+            ParentProfile.objects.filter(Emailid__iexact=key)
+            .select_related("franchise", "user")
+            .order_by("-id")
+            .first()
+        )
+        if profile:
+            return _sync_parent_profile_user(profile, user)
+
+    return None
+
+
+def _franchise_for_student_centre(centre_name: str):
+    from franchises.models import Franchise
+
+    centre = (centre_name or "").strip()
+    if not centre:
         return None
+
+    franchises = list(Franchise.objects.filter(is_active=True).only("id", "name", "slug"))
+    key_slug = slugify(centre).strip().lower()
+    if key_slug:
+        for franchise in franchises:
+            if (franchise.slug or "").strip().lower() == key_slug:
+                return franchise
+        for franchise in franchises:
+            slug = (franchise.slug or "").strip().lower()
+            if slug.startswith(f"{key_slug}-") or slug.startswith(f"{key_slug}_"):
+                return franchise
+
+    key_name = centre.lower()
+    for franchise in franchises:
+        if (franchise.name or "").strip().lower() == key_name:
+            return franchise
+
+    needle = key_name
+    matches = [
+        franchise
+        for franchise in franchises
+        if needle and needle in (franchise.name or "").strip().lower()
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
+def _franchise_for_legacy_student(student):
+    """Best-effort franchise for an imported student row."""
+    from franchises.models import Franchise
+
+    if student.parent_id:
+        try:
+            franchise = student.parent.franchise
+            if franchise:
+                return franchise
+        except ObjectDoesNotExist:
+            pass
+
+    franchise = _franchise_for_student_centre(student.Centre or "")
+    if franchise:
+        return franchise
+
+    city = (getattr(student, "City", None) or "").strip()
+    if city:
+        matches = list(
+            Franchise.objects.filter(is_active=True, city__iexact=city).order_by("id")[:2]
+        )
+        if len(matches) == 1:
+            return matches[0]
+
+    return None
+
+
+def ensure_parent_profile_for_user(user):
+    """
+    Resolve the parent's centre profile for portal actions (tickets, etc.).
+    Creates and links a ``ParentProfile`` from legacy ``StudentProfile`` rows when missing.
+    """
+    profile = parent_profile_for_user(user)
+    if profile:
+        return profile
+
+    if _norm_role(user) != UserRole.PARENT.value:
+        return None
+
+    from franchises.models import ParentProfile
+
+    student = find_student_for_parent_user(user)
+    if not student or not user_owns_legacy_student(user, student):
+        return None
+
+    if student.parent_id:
+        synced = _sync_parent_profile_user(student.parent, user, student=student)
+        if synced:
+            return synced
+
+    franchise = _franchise_for_legacy_student(student)
+    if not franchise:
+        return None
+
+    child_name = student.full_name or (student.ParentName or "").strip()
+    email = (getattr(user, "email", None) or "").strip()
+    student_email = (getattr(student, "Emailid", None) or "").strip()
+    profile, _created = ParentProfile.objects.get_or_create(
+        user=user,
+        defaults={
+            "franchise": franchise,
+            "child_name": child_name[:255],
+            "Emailid": (
+                email[:254]
+                if email and "@" in email
+                else (student_email[:254] if student_email and "@" in student_email else None)
+            ),
+            "phone": re.sub(r"\D", "", (student.Mobileno or ""))[-10:],
+        },
+    )
+    if not student.parent_id:
+        student.parent = profile
+        student.save(update_fields=["parent_id"])
+    return profile
+
+
+def resolved_parent_profile_for_user(user):
+    """Parent profile for portal APIs; auto-links legacy student rows when needed."""
+    return ensure_parent_profile_for_user(user) or parent_profile_for_user(user)
 
 
 def primary_student_for_parent_user(user):
@@ -102,25 +439,10 @@ def primary_student_for_parent_user(user):
         if student:
             return student, pp
 
-    ident = (getattr(user, "username", None) or "").strip()
-    if ident:
-        student = (
-            StudentProfile.objects.filter(Idcardno__iexact=ident)
-            .select_related("parent", "parent__franchise")
-            .first()
-        )
-        if student:
-            return student, student.parent if student.parent_id else pp
-
-    email = (getattr(user, "email", None) or "").strip()
-    if email:
-        student = (
-            StudentProfile.objects.filter(Emailid__iexact=email)
-            .select_related("parent", "parent__franchise")
-            .first()
-        )
-        if student:
-            return student, student.parent if student.parent_id else pp
+    student = find_student_for_parent_user(user)
+    if student:
+        profile = student.parent if student.parent_id else pp
+        return student, profile or pp
 
     return None, pp
 
@@ -199,4 +521,20 @@ def driver_profile_for_user(user):
     try:
         return user.driver_profile
     except ObjectDoesNotExist:
-        return None
+        pass
+
+    from franchises.models import DriverProfile
+
+    profile = DriverProfile.objects.filter(user_id=user.pk).select_related("user").first()
+    if profile:
+        return profile
+
+    email = (getattr(user, "email", None) or "").strip()
+    if email:
+        return (
+            DriverProfile.objects.filter(user__email__iexact=email)
+            .select_related("user")
+            .order_by("-id")
+            .first()
+        )
+    return None

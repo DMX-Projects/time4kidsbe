@@ -7,7 +7,11 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.permissions import IsAdminUser, IsFranchiseUser, IsParentUser
-from accounts.profile_access import franchise_profile_for_user, parent_profile_for_user
+from accounts.profile_access import (
+    franchise_profile_for_user,
+    parent_profile_for_user,
+    resolved_parent_profile_for_user,
+)
 from events.models import Event
 
 from .models import Grade, StudentAchievement, StudentProfile
@@ -29,7 +33,7 @@ class ParentStudentListView(generics.ListAPIView):
     permission_classes = [IsParentUser]
 
     def get_queryset(self):
-        parent_profile = parent_profile_for_user(self.request.user)
+        parent_profile = resolved_parent_profile_for_user(self.request.user)
         if not parent_profile:
             return StudentProfile.objects.none()
         return StudentProfile.objects.filter(
@@ -44,7 +48,7 @@ class ParentStudentDetailView(generics.RetrieveUpdateAPIView):
     permission_classes = [IsParentUser]
 
     def get_queryset(self):
-        parent_profile = parent_profile_for_user(self.request.user)
+        parent_profile = resolved_parent_profile_for_user(self.request.user)
         if not parent_profile:
             return StudentProfile.objects.none()
         return StudentProfile.objects.filter(
@@ -60,7 +64,7 @@ class ParentStudentGradesView(generics.ListAPIView):
 
     def get_queryset(self):
         student_id = self.kwargs.get('student_id')
-        parent_profile = parent_profile_for_user(self.request.user)
+        parent_profile = resolved_parent_profile_for_user(self.request.user)
         if not parent_profile:
             return Grade.objects.none()
         
@@ -82,7 +86,7 @@ class ParentDashboardView(APIView):
     permission_classes = [IsParentUser]
 
     def get(self, request):
-        parent_profile = parent_profile_for_user(request.user)
+        parent_profile = resolved_parent_profile_for_user(request.user)
         if not parent_profile:
             return Response({"error": "Parent profile not found"}, status=404)
         
@@ -137,7 +141,7 @@ class ParentAchievementListView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        parent_profile = parent_profile_for_user(self.request.user)
+        parent_profile = resolved_parent_profile_for_user(self.request.user)
         if not parent_profile:
             return StudentAchievement.objects.none()
         kids = StudentProfile.objects.filter(parent=parent_profile, is_active=True)

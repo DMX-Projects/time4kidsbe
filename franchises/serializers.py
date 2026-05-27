@@ -1,3 +1,5 @@
+import re
+
 from django.db import IntegrityError, transaction
 from django.utils.text import slugify
 from rest_framework import serializers
@@ -6,7 +8,7 @@ from accounts.models import User, UserRole
 from accounts.serializers import UserSerializer
 from events.serializers import EventSerializer
 from .models import DriverProfile, Franchise, ParentProfile, FranchiseLocation, FranchiseHeroSlide, FranchiseGalleryItem
-from common.fields import RelativeImageField
+from common.fields import RelativeFileField, RelativeImageField
 
 
 # ... (FranchiseLocationSerializer, FranchiseSerializer, FranchiseCreateSerializer, FranchiseUpdateSerializer, FranchiseProfileSerializer, ParentSerializer, FranchiseHeroSlideSerializer remain unchanged) ...
@@ -328,10 +330,24 @@ class ParentSerializer(serializers.ModelSerializer):
 
 class DriverProfileSerializer(serializers.ModelSerializer):
     user = UserSerializer(read_only=True)
-    
+    license_document = RelativeFileField(read_only=True)
+    vehicle_rc = RelativeFileField(read_only=True)
+    vehicle_insurance = RelativeFileField(read_only=True)
+
     class Meta:
         model = DriverProfile
-        fields = ["id", "user", "phone", "license_number", "is_active", "created_at"]
+        fields = [
+            "id",
+            "user",
+            "phone",
+            "service_number",
+            "license_number",
+            "license_document",
+            "vehicle_rc",
+            "vehicle_insurance",
+            "is_active",
+            "created_at",
+        ]
         read_only_fields = ["id", "user", "created_at"]
 
 
@@ -340,11 +356,34 @@ class DriverCreateSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, min_length=8)
     full_name = serializers.CharField(write_only=True)
     phone = serializers.CharField(required=False, allow_blank=True)
+    service_number = serializers.CharField(required=False, allow_blank=True)
     license_number = serializers.CharField(required=False, allow_blank=True)
+    license_document = RelativeFileField(required=False, allow_null=True)
+    vehicle_rc = RelativeFileField(required=False, allow_null=True)
+    vehicle_insurance = RelativeFileField(required=False, allow_null=True)
 
     class Meta:
         model = DriverProfile
-        fields = ["id", "email", "password", "full_name", "phone", "license_number"]
+        fields = [
+            "id",
+            "email",
+            "password",
+            "full_name",
+            "phone",
+            "service_number",
+            "license_number",
+            "license_document",
+            "vehicle_rc",
+            "vehicle_insurance",
+        ]
+
+    def validate_phone(self, value):
+        if not value:
+            return ""
+        digits = re.sub(r"\D", "", value)
+        if len(digits) != 10:
+            raise serializers.ValidationError("Phone number must be exactly 10 digits.")
+        return digits
 
     def create(self, validated_data):
         # Always pop to avoid duplicate arguments, check context first as primary source
@@ -356,21 +395,39 @@ class DriverCreateSerializer(serializers.ModelSerializer):
         email = validated_data.pop("email")
         password = validated_data.pop("password")
         full_name = validated_data.pop("full_name")
-        
+
         try:
             with transaction.atomic():
-                # Set username = email to ensure uniqueness in databases that treat NULL as a single value
-                user = User.objects.create_user(
-                    email=email, 
-                    username=email,
-                    password=password, 
-                    full_name=full_name, 
-                    role=UserRole.DRIVER
-                )
+                existing = User.objects.filter(email__iexact=email).first()
+                if existing:
+                    if existing.normalized_role() != UserRole.DRIVER.value:
+                        raise serializers.ValidationError(
+                            {"email": "An account with this email already exists with a different role."}
+                        )
+                    if DriverProfile.objects.filter(user_id=existing.pk).exists():
+                        raise serializers.ValidationError(
+                            {"email": "A driver account with this email already exists."}
+                        )
+                    existing.full_name = full_name
+                    existing.set_password(password)
+                    existing.role = UserRole.DRIVER
+                    existing.username = existing.username or email
+                    existing.save(update_fields=["full_name", "password", "role", "username"])
+                    user = existing
+                else:
+                    user = User.objects.create_user(
+                        email=email,
+                        username=email,
+                        password=password,
+                        full_name=full_name,
+                        role=UserRole.DRIVER,
+                    )
                 driver = DriverProfile.objects.create(user=user, franchise=franchise, **validated_data)
                 return driver
         except IntegrityError:
             raise serializers.ValidationError({"email": "User with this email or username already exists."})
+        except serializers.ValidationError:
+            raise
         except Exception as e:
             raise serializers.ValidationError({"detail": f"An unexpected error occurred: {str(e)}"})
 
