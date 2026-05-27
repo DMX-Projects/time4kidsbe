@@ -10,7 +10,7 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 
 from accounts.emails import find_user_for_password_reset, send_password_reset_email, send_registration_emails
 from accounts.permissions import IsAdminUser, IsParentUser
-from accounts.profile_access import parent_login_context, parent_profile_for_user
+from accounts.profile_access import parent_login_context, driver_profile_for_user, resolved_parent_profile_for_user
 from accounts.registration_checks import ALREADY_REGISTERED_MESSAGE, email_has_parent_account
 
 from django.db import transaction
@@ -75,6 +75,15 @@ class CurrentUserView(APIView):
         data = dict(serializer.data)
         if request.user.normalized_role() == UserRole.PARENT.value:
             data.update(parent_login_context(request.user))
+        if request.user.normalized_role() == UserRole.DRIVER.value:
+            dp = driver_profile_for_user(request.user)
+            if dp:
+                from franchises.serializers import DriverProfileSerializer
+
+                data["driver_profile"] = DriverProfileSerializer(
+                    dp,
+                    context={"request": request},
+                ).data
         return Response(data)
 
 
@@ -277,7 +286,7 @@ class ParentSelfProfileView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsParentUser]
 
     def get(self, request):
-        pp = parent_profile_for_user(request.user)
+        pp = resolved_parent_profile_for_user(request.user)
         child_ctx = parent_login_context(request.user)
         if not pp:
             return Response(
@@ -316,7 +325,7 @@ class ParentSelfProfileView(APIView):
 
     def patch(self, request):
         user = request.user
-        pp = parent_profile_for_user(user)
+        pp = resolved_parent_profile_for_user(user)
         if not pp:
             return Response(
                 {

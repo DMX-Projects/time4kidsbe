@@ -13,17 +13,19 @@ from django.db.utils import OperationalError, ProgrammingError
 from django.db.models import Q
 from django.utils import timezone
 from django.utils.dateparse import parse_date
-from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework import generics
+from rest_framework import generics, status
 from rest_framework.exceptions import PermissionDenied
+from rest_framework.decorators import api_view, permission_classes
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.permissions import IsFranchiseUser, IsParentUser
-from accounts.profile_access import franchise_profile_for_user, parent_profile_for_user
+from accounts.profile_access import (
+    franchise_profile_for_user,
+    resolved_parent_profile_for_user,
+)
 from events.calendar_filters import exclude_showcase_placeholder_events
 from events.models import Event
 from events.serializers import EventSerializer
@@ -80,7 +82,7 @@ class ParentHomeworkListView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        pp = parent_profile_for_user(self.request.user)
+        pp = resolved_parent_profile_for_user(self.request.user)
         if not pp:
             return HomeworkAssignment.objects.none()
         return (
@@ -98,7 +100,7 @@ class ParentAnnouncementListView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        pp = parent_profile_for_user(self.request.user)
+        pp = resolved_parent_profile_for_user(self.request.user)
         if not pp:
             return Announcement.objects.none()
         return Announcement.objects.filter(franchise=pp.franchise, is_active=True).order_by("-published_at")
@@ -110,7 +112,7 @@ class ParentAttendanceListView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        pp = parent_profile_for_user(self.request.user)
+        pp = resolved_parent_profile_for_user(self.request.user)
         if not pp:
             return AttendanceRecord.objects.none()
         return (
@@ -126,7 +128,7 @@ class ParentCalendarAttendanceView(APIView):
     permission_classes = [IsParentUser]
 
     def get(self, request):
-        pp = parent_profile_for_user(request.user)
+        pp = resolved_parent_profile_for_user(request.user)
         if not pp:
             return Response({"calendar_events": [], "attendance": []})
 
@@ -152,7 +154,7 @@ class ParentFeeListView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        pp = parent_profile_for_user(self.request.user)
+        pp = resolved_parent_profile_for_user(self.request.user)
         if not pp:
             return FeeRecord.objects.none()
         return (
@@ -168,7 +170,7 @@ class ParentGradeListView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        pp = parent_profile_for_user(self.request.user)
+        pp = resolved_parent_profile_for_user(self.request.user)
         if not pp:
             return Grade.objects.none()
         return (
@@ -183,7 +185,7 @@ class ParentTransportListView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        pp = parent_profile_for_user(self.request.user)
+        pp = resolved_parent_profile_for_user(self.request.user)
         if not pp:
             return TransportRoute.objects.none()
         return TransportRoute.objects.filter(franchise=pp.franchise).order_by("sort_order", "route_name")
@@ -200,7 +202,7 @@ class ParentLiveTransportView(APIView):
     permission_classes = [IsParentUser]
 
     def get(self, request):
-        pp = parent_profile_for_user(request.user)
+        pp = resolved_parent_profile_for_user(request.user)
         if not pp:
             return Response({"live": False, "detail": "Parent profile not found"}, status=404)
 
@@ -272,15 +274,17 @@ class ParentSupportTicketListCreateView(generics.ListCreateAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        pp = parent_profile_for_user(self.request.user)
+        pp = resolved_parent_profile_for_user(self.request.user)
         if not pp:
             return SupportTicket.objects.none()
         return SupportTicket.objects.filter(parent=pp).order_by("-created_at")
 
     def perform_create(self, serializer):
-        pp = parent_profile_for_user(self.request.user)
+        pp = resolved_parent_profile_for_user(self.request.user)
         if not pp:
-            raise PermissionDenied("Parent profile not found")
+            raise PermissionDenied(
+                "Parent profile not found. Your account is not linked to a centre yet — contact your preschool."
+            )
         serializer.save(parent=pp)
 
 
@@ -294,7 +298,7 @@ class ParentNotificationsView(APIView):
         return f"{source}-{item_id}"
 
     def get(self, request):
-        pp = parent_profile_for_user(request.user)
+        pp = resolved_parent_profile_for_user(request.user)
         if not pp:
             return Response(
                 {
@@ -495,7 +499,7 @@ class ParentNotificationReadView(APIView):
     permission_classes = [IsParentUser]
 
     def post(self, request):
-        pp = parent_profile_for_user(request.user)
+        pp = resolved_parent_profile_for_user(request.user)
         if not pp:
             return Response({"detail": "Parent profile not found"}, status=404)
 
@@ -986,6 +990,7 @@ class FranchiseDriverListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsFranchiseUser]
     serializer_class = DriverProfileSerializer
     pagination_class = None
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get_queryset(self):
         f = franchise_profile_for_user(self.request.user)
@@ -1008,6 +1013,13 @@ class FranchiseDriverListCreateView(generics.ListCreateAPIView):
         if not f:
             raise PermissionDenied("Franchise profile not found")
         serializer.save(franchise=f)
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        output = DriverProfileSerializer(serializer.instance, context=self.get_serializer_context())
+        return Response(output.data, status=status.HTTP_201_CREATED)
 
 
 class FranchiseDriverDetailView(generics.RetrieveUpdateDestroyAPIView):

@@ -8,7 +8,7 @@ from rest_framework import serializers
 from rest_framework.exceptions import AuthenticationFailed, PermissionDenied
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
-from accounts.profile_access import parent_login_context, parent_profile_for_user
+from accounts.profile_access import parent_login_context, driver_profile_for_user, parent_profile_for_user
 
 from .models import User, UserRole
 
@@ -180,6 +180,20 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
             "refresh": str(refresh),
             "access": str(refresh.access_token),
         }
+
+        if user.normalized_role() == UserRole.DRIVER.value:
+            dp = driver_profile_for_user(user)
+            if not dp:
+                raise AuthenticationFailed(
+                    "Driver profile not found. Ask your centre to create your driver account again."
+                )
+            from franchises.serializers import DriverProfileSerializer
+
+            data["driver_profile"] = DriverProfileSerializer(
+                dp,
+                context={"request": self.context.get("request")},
+            ).data
+            return data
 
         data["user"] = {
             "id": user.id,

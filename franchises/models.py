@@ -246,6 +246,10 @@ class DriverProfile(models.Model):
         validators=[RegexValidator(r'^\d{10}$', 'Phone number must be exactly 10 digits.')]
     )
     license_number = models.CharField(max_length=100, blank=True)
+    service_number = models.CharField(max_length=50, blank=True, help_text="Driver / vehicle service ID")
+    license_document = models.FileField(upload_to="drivers/licenses/", blank=True, null=True)
+    vehicle_rc = models.FileField(upload_to="drivers/vehicle_rc/", blank=True, null=True)
+    vehicle_insurance = models.FileField(upload_to="drivers/vehicle_insurance/", blank=True, null=True)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
