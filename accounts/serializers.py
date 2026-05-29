@@ -1,4 +1,5 @@
 import os
+import re
 
 from django.conf import settings
 from django.contrib.auth import authenticate
@@ -13,6 +14,39 @@ from accounts.profile_access import parent_login_context, driver_profile_for_use
 from .models import User, UserRole
 
 
+def _normalize_phone10(identifier: str) -> str | None:
+    digits = re.sub(r"\D", "", (identifier or "").strip())
+    if len(digits) >= 10:
+        return digits[-10:]
+    return None
+
+
+def _users_for_phone_login(phone10: str) -> list[User]:
+    """ParentProfile.phone, DriverProfile.phone, or legacy student Mobileno."""
+    from franchises.models import DriverProfile, ParentProfile
+    from students.models import StudentProfile
+
+    users: list[User] = []
+    seen: set[int] = set()
+
+    def add(user: User | None) -> None:
+        if user and user.pk not in seen:
+            seen.add(user.pk)
+            users.append(user)
+
+    for profile in ParentProfile.objects.filter(phone=phone10).select_related("user"):
+        add(profile.user)
+
+    for profile in DriverProfile.objects.filter(phone=phone10).select_related("user"):
+        add(profile.user)
+
+    for student in StudentProfile.objects.filter(Mobileno__icontains=phone10).select_related("parent__user"):
+        if student.parent_id and student.parent.user_id:
+            add(student.parent.user)
+
+    return users
+
+
 def _inactive_user_with_valid_password(identifier: str, password: str) -> User | None:
     """
     Django's ModelBackend.authenticate() returns None for inactive users even when the
@@ -21,13 +55,27 @@ def _inactive_user_with_valid_password(identifier: str, password: str) -> User |
     ident = (identifier or "").strip()
     if not ident or not password:
         return None
-    cand = User.objects.filter(Q(email__iexact=ident) | Q(username__iexact=ident)).first()
-    if cand and not cand.is_active and cand.password:
-        try:
-            if cand.check_password(password):
-                return cand
-        except Exception:  # noqa: BLE001
-            return None
+    candidates: list[User] = []
+    seen: set[int] = set()
+
+    def add(user: User | None) -> None:
+        if user and user.pk not in seen:
+            seen.add(user.pk)
+            candidates.append(user)
+
+    add(User.objects.filter(Q(email__iexact=ident) | Q(username__iexact=ident)).first())
+    phone10 = _normalize_phone10(ident)
+    if phone10:
+        for user in _users_for_phone_login(phone10):
+            add(user)
+
+    for cand in candidates:
+        if cand and not cand.is_active and cand.password:
+            try:
+                if cand.check_password(password):
+                    return cand
+            except Exception:  # noqa: BLE001
+                continue
     return None
 
 
@@ -52,6 +100,7 @@ def _authenticate_with_identifier(identifier: str, password: str):
     3. Find by ``username__iexact`` (e.g. legacy id card in ``users.username``), then
        ``authenticate(username=user.email, ...)`` — password is checked against
        ``users.password`` only; ``username`` on the row is used for lookup only.
+    4. Find by mobile (10-digit) on parent/driver profile or legacy student ``Mobileno``.
     """
     ident = (identifier or "").strip()
     if not ident or not password:
@@ -138,6 +187,19 @@ def _authenticate_with_identifier(identifier: str, password: str):
             )
         if user:
             return user
+
+    phone10 = _normalize_phone10(ident)
+    if phone10:
+        for cand in _users_for_phone_login(phone10):
+            user = authenticate(username=cand.email, password=password)
+            if _login_trace_enabled():
+                print(
+                    "LOGIN TRACE: via phone %r -> user pk=%s authenticate -> %s"
+                    % (phone10, cand.pk, f"User(pk={user.pk})" if user else None),
+                    flush=True,
+                )
+            if user:
+                return user
 
     return None
 

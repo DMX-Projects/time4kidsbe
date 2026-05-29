@@ -164,6 +164,121 @@ class ParentFeeListView(generics.ListAPIView):
         )
 
 
+class ParentFeeSummaryView(APIView):
+    """Parent fee view — legacy TiKES MySQL when configured, else centre-entered FeeRecord rows."""
+
+    permission_classes = [IsParentUser]
+
+    def get(self, request):
+        from accounts.profile_access import primary_student_for_parent_user
+        from students.fee_summary import build_fee_summary_from_records
+        from students.legacy_fee_service import build_legacy_fee_summary, legacy_fee_db_configured
+
+        def empty_summary(*, id_card_no: str = "", lookup_message: str = "") -> Response:
+            payload: dict = {
+                "source": "empty",
+                "student": {},
+                "alerts": {"dropped_out": False, "drop_reason": "", "refund_done": False},
+                "lines": [],
+                "totals": {
+                    "total_fee": 0,
+                    "discount": 0,
+                    "net_payable": 0,
+                    "amount_paid": 0,
+                    "balance": 0,
+                },
+                "payments": [],
+                "legacy_configured": legacy_fee_db_configured(),
+            }
+            if id_card_no:
+                payload["lookup_id_card"] = id_card_no
+            if lookup_message:
+                payload["lookup_message"] = lookup_message
+            return Response(payload)
+
+        pp = resolved_parent_profile_for_user(request.user)
+        student_id = (request.query_params.get("student") or "").strip()
+        student = None
+
+        if pp:
+            students_qs = StudentProfile.objects.filter(parent=pp, is_active=True).select_related(
+                "parent", "parent__franchise"
+            )
+            if student_id:
+                student = students_qs.filter(pk=student_id).first()
+
+        if not student:
+            student, pp_from_primary = primary_student_for_parent_user(request.user)
+            if not pp:
+                pp = pp_from_primary
+
+        id_card_no = ""
+        if student:
+            id_card_no = (student.Idcardno or "").strip() or (request.user.username or "").strip()
+        else:
+            id_card_no = (request.user.username or "").strip()
+
+        if not student and id_card_no and legacy_fee_db_configured():
+            try:
+                summary = build_legacy_fee_summary(id_card_no)
+            except Exception:
+                summary = None
+            if summary:
+                summary["legacy_configured"] = True
+                summary.setdefault("student", {})
+                parent_name = (summary["student"].get("parent_name") or "").strip()
+                if not parent_name:
+                    parent_name = (request.user.full_name or "").strip()
+                summary["student"]["parent_name"] = parent_name
+                summary["lookup_id_card"] = id_card_no
+                return Response(summary)
+
+        if not student:
+            msg = "No student is linked to this parent login."
+            if id_card_no and legacy_fee_db_configured():
+                msg = (
+                    f"No student profile found locally. TiKES was checked for ID card {id_card_no} "
+                    f"but no fee_payment rows exist."
+                )
+            return empty_summary(id_card_no=id_card_no, lookup_message=msg)
+
+        centre_name = ""
+        if pp and pp.franchise_id:
+            centre_name = (pp.franchise.name or "").strip()
+        if not centre_name:
+            centre_name = (student.Centre or "").strip()
+
+        if not id_card_no:
+            id_card_no = (request.user.username or "").strip()
+
+        summary = None
+        if id_card_no and legacy_fee_db_configured():
+            try:
+                summary = build_legacy_fee_summary(id_card_no)
+            except Exception:
+                summary = None
+
+        if not summary:
+            summary = build_fee_summary_from_records(student, centre_name=centre_name)
+
+        summary["legacy_configured"] = legacy_fee_db_configured()
+        summary["student_id"] = student.id
+        summary.setdefault("student", {})
+        parent_name = (student.ParentName or "").strip()
+        if not parent_name and pp and getattr(pp, "user", None):
+            parent_name = (pp.user.full_name or "").strip()
+        if not parent_name:
+            parent_name = (request.user.full_name or "").strip()
+        summary["student"]["parent_name"] = parent_name
+        if id_card_no:
+            summary["lookup_id_card"] = id_card_no
+        if not summary.get("lines") and legacy_fee_db_configured() and id_card_no:
+            summary["lookup_message"] = (
+                f"TiKES is connected but fee_payment has no active records for ID card {id_card_no}."
+            )
+        return Response(summary)
+
+
 class ParentGradeListView(generics.ListAPIView):
     permission_classes = [IsParentUser]
     serializer_class = GradeSerializer
