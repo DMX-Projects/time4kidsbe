@@ -172,7 +172,7 @@ class ParentFeeSummaryView(APIView):
     def get(self, request):
         from accounts.profile_access import primary_student_for_parent_user
         from students.fee_summary import build_fee_summary_from_records
-        from students.legacy_fee_service import build_legacy_fee_summary, legacy_fee_db_configured
+        from students.legacy_fee_service import fetch_legacy_fee_summary, legacy_fee_db_configured
 
         def empty_summary(*, id_card_no: str = "", lookup_message: str = "") -> Response:
             payload: dict = {
@@ -218,27 +218,27 @@ class ParentFeeSummaryView(APIView):
         else:
             id_card_no = (request.user.username or "").strip()
 
-        if not student and id_card_no and legacy_fee_db_configured():
-            try:
-                summary = build_legacy_fee_summary(id_card_no)
-            except Exception:
-                summary = None
-            if summary:
-                summary["legacy_configured"] = True
-                summary.setdefault("student", {})
-                parent_name = (summary["student"].get("parent_name") or "").strip()
-                if not parent_name:
-                    parent_name = (request.user.full_name or "").strip()
-                summary["student"]["parent_name"] = parent_name
-                summary["lookup_id_card"] = id_card_no
-                return Response(summary)
+        legacy_summary = None
+        legacy_lookup_error = ""
+        if id_card_no and legacy_fee_db_configured():
+            legacy_summary, legacy_lookup_error = fetch_legacy_fee_summary(id_card_no)
 
         if not student:
+            if legacy_summary:
+                legacy_summary["legacy_configured"] = True
+                legacy_summary.setdefault("student", {})
+                parent_name = (legacy_summary["student"].get("parent_name") or "").strip()
+                if not parent_name:
+                    parent_name = (request.user.full_name or "").strip()
+                legacy_summary["student"]["parent_name"] = parent_name
+                legacy_summary["lookup_id_card"] = id_card_no
+                return Response(legacy_summary)
+
             msg = "No student is linked to this parent login."
-            if id_card_no and legacy_fee_db_configured():
+            if id_card_no and legacy_fee_db_configured() and legacy_lookup_error:
                 msg = (
-                    f"No student profile found locally. TiKES was checked for ID card {id_card_no} "
-                    f"but no fee_payment rows exist."
+                    f"No student profile found locally. TiKES lookup for ID card {id_card_no}: "
+                    f"{legacy_lookup_error}"
                 )
             return empty_summary(id_card_no=id_card_no, lookup_message=msg)
 
@@ -251,13 +251,7 @@ class ParentFeeSummaryView(APIView):
         if not id_card_no:
             id_card_no = (request.user.username or "").strip()
 
-        summary = None
-        if id_card_no and legacy_fee_db_configured():
-            try:
-                summary = build_legacy_fee_summary(id_card_no)
-            except Exception:
-                summary = None
-
+        summary = legacy_summary
         if not summary:
             summary = build_fee_summary_from_records(student, centre_name=centre_name)
 
@@ -272,7 +266,9 @@ class ParentFeeSummaryView(APIView):
         summary["student"]["parent_name"] = parent_name
         if id_card_no:
             summary["lookup_id_card"] = id_card_no
-        if not summary.get("lines") and legacy_fee_db_configured() and id_card_no:
+        if not summary.get("lines") and legacy_lookup_error:
+            summary["lookup_message"] = legacy_lookup_error
+        elif not summary.get("lines") and legacy_fee_db_configured() and id_card_no:
             summary["lookup_message"] = (
                 f"TiKES is connected but fee_payment has no active records for ID card {id_card_no}."
             )
