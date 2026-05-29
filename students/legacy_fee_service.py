@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from contextlib import contextmanager
@@ -11,9 +12,75 @@ from typing import Any
 
 import pymysql
 
+logger = logging.getLogger(__name__)
+
 
 def legacy_fee_db_configured() -> bool:
     return bool(os.getenv("LEGACY_FEE_DB_HOST", "").strip())
+
+
+def normalize_id_card_no(value: str | None) -> str:
+    return (value or "").strip().upper()
+
+
+def fetch_legacy_fee_summary(id_card_no: str) -> tuple[dict[str, Any] | None, str | None]:
+    """Return (summary, error_message). error_message is set when summary is None."""
+    normalized = normalize_id_card_no(id_card_no)
+    if not normalized:
+        return None, "Missing ID card number."
+
+    if not legacy_fee_db_configured():
+        return None, "Legacy fee database is not configured on the server."
+
+    try:
+        summary = build_legacy_fee_summary(normalized)
+    except Exception as exc:
+        logger.warning("Legacy fee lookup failed for %s: %s", normalized, exc, exc_info=True)
+        return None, f"Could not reach the TiKES fee database: {exc}"
+
+    if not summary:
+        return None, f"No active fee_payment records in TiKES for ID card {normalized}."
+
+    return summary, None
+
+
+def probe_legacy_fee_db(id_card_no: str = "") -> dict[str, Any]:
+    """Quick connectivity check for ops scripts and debugging."""
+    result: dict[str, Any] = {
+        "configured": legacy_fee_db_configured(),
+        "connected": False,
+        "fee_payment_rows": None,
+        "id_card_rows": None,
+        "error": None,
+    }
+    if not result["configured"]:
+        result["error"] = "LEGACY_FEE_DB_HOST is not set."
+        return result
+
+    normalized = normalize_id_card_no(id_card_no)
+    try:
+        with legacy_fee_connection() as conn:
+            if conn is None:
+                result["error"] = "Connection helper returned no connection."
+                return result
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) AS n FROM fee_payment")
+            result["fee_payment_rows"] = _int((cursor.fetchone() or {}).get("n"))
+            result["connected"] = True
+            if normalized:
+                cursor.execute(
+                    """
+                    SELECT COUNT(*) AS n
+                    FROM fee_payment
+                    WHERE idcard_no = %s AND convert_status = '0'
+                    """,
+                    (normalized,),
+                )
+                result["id_card_rows"] = _int((cursor.fetchone() or {}).get("n"))
+    except Exception as exc:
+        logger.warning("Legacy fee DB probe failed: %s", exc, exc_info=True)
+        result["error"] = str(exc)
+    return result
 
 
 @contextmanager
@@ -430,7 +497,7 @@ def _build_installment_lines(
 
 
 def build_legacy_fee_summary(id_card_no: str) -> dict[str, Any] | None:
-    id_card_no = (id_card_no or "").strip()
+    id_card_no = normalize_id_card_no(id_card_no)
     if not id_card_no:
         return None
 
