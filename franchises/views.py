@@ -58,11 +58,13 @@ class AdminFranchiseLocationViewSet(viewsets.ModelViewSet):
 
 class AdminFranchiseViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAdminUser]
-    queryset = Franchise.objects.select_related("admin", "user")
+    # Do not select_related(admin, user): INNER JOIN drops centres whose login user was removed.
+    queryset = Franchise.objects.all()
+    pagination_class = None  # Admin CMS lists every centre in one response
 
     def get_queryset(self):
         # Single-admin setup: return all franchises for the admin to view/edit/delete
-        return self.queryset
+        return self.queryset.order_by("city", "name")
 
     def get_serializer_class(self):
         if self.action == "create":
