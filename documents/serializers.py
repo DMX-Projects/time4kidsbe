@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from django.db import IntegrityError
 from rest_framework import serializers
 from .models import ParentDocument, FranchiseDocument, FranchiseDocumentCategory, IndentRequest
 from common.fields import RelativeFileField, RelativeImageField
@@ -197,6 +198,25 @@ class AdminFranchiseDocumentSerializer(serializers.ModelSerializer):
             return f"{obj.title} ({obj.academic_year})"
         return obj.title
 
+    def validate_category(self, value: str) -> str:
+        valid = {c[0] for c in FranchiseDocumentCategory.choices}
+        if value not in valid:
+            raise serializers.ValidationError("Invalid category.")
+        return value
+
+    def validate_embed_url(self, value: str | None) -> str:
+        return (value or "").strip()
+
+    def validate_source_path(self, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        if len(cleaned) > 512:
+            raise serializers.ValidationError("Checklist path is too long (max 512 characters).")
+        return cleaned
+
     def validate(self, attrs):
         request = self.context.get("request")
         uploaded = getattr(request, "FILES", None).get("file") if request else None
@@ -249,7 +269,22 @@ class AdminFranchiseDocumentSerializer(serializers.ModelSerializer):
         source_path = self._default_source_path(validated_data)
         if source_path:
             validated_data["source_path"] = source_path
-        return super().create(validated_data)
+            existing = FranchiseDocument.objects.filter(source_path=source_path).first()
+            if existing:
+                return self.update(existing, validated_data)
+        try:
+            return super().create(validated_data)
+        except IntegrityError as exc:
+            if "source_path" in str(exc).lower():
+                raise serializers.ValidationError(
+                    {
+                        "source_path": (
+                            "Another document already uses this checklist path. "
+                            "Delete the old upload or use Edit on that row."
+                        )
+                    }
+                ) from exc
+            raise
 
     def update(self, instance, validated_data):
         self._ensure_file_in_validated(validated_data)
