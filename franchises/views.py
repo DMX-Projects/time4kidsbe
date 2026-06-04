@@ -100,13 +100,27 @@ class FranchiseProfileView(generics.RetrieveUpdateAPIView):
 class FranchiseParentViewSet(viewsets.ModelViewSet):
     serializer_class = ParentSerializer
     permission_classes = [IsFranchiseUser]
+    pagination_class = None  # Centre parent list + search must see all rows (not first page of 20)
     queryset = ParentProfile.objects.select_related("user", "franchise")
 
     def get_queryset(self):
+        from django.db.models import Q
+
         franchise = franchise_profile_for_user(self.request.user)
         if not franchise:
             return ParentProfile.objects.none()
-        return self.queryset.filter(franchise=franchise)
+        qs = self.queryset.filter(franchise=franchise)
+        search = (self.request.query_params.get("search") or "").strip()
+        if search:
+            qs = qs.filter(
+                Q(user__email__icontains=search)
+                | Q(user__full_name__icontains=search)
+                | Q(child_name__icontains=search)
+                | Q(phone__icontains=search)
+                | Q(notes__icontains=search)
+                | Q(Emailid__icontains=search)
+            )
+        return qs.order_by("user__full_name", "id")
 
     def get_serializer_context(self):
         context = super().get_serializer_context()

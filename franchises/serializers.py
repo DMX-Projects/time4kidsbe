@@ -265,7 +265,19 @@ class ParentSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = ParentProfile
-        fields = ["id", "user", "email", "full_name", "password", "franchise", "child_name", "notes", "created_at"]
+        fields = [
+            "id",
+            "user",
+            "email",
+            "full_name",
+            "password",
+            "franchise",
+            "child_name",
+            "phone",
+            "notes",
+            "Emailid",
+            "created_at",
+        ]
         read_only_fields = ["id", "user", "franchise", "created_at"]
 
     def create(self, validated_data):

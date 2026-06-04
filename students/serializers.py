@@ -595,6 +595,7 @@ class TransportRouteSerializer(serializers.ModelSerializer):
                 "full_name": obj.driver_profile.user.full_name,
                 "email": obj.driver_profile.user.email,
                 "phone": obj.driver_profile.phone,
+                "service_number": (obj.driver_profile.service_number or "").strip(),
             }
         return None
 
@@ -604,6 +605,67 @@ class TransportRouteSerializer(serializers.ModelSerializer):
         if str(getattr(user, "role", "") or "").strip().upper() == "FRANCHISE":
             return str(obj.driver_token)
         return ""
+
+
+class ParentTransportRouteSerializer(serializers.ModelSerializer):
+    """Slim route payload for parent apps — only fields the centre actually configures."""
+
+    driver_info = serializers.SerializerMethodField()
+
+    class Meta:
+        model = TransportRoute
+        fields = ["id", "route_name", "driver_info"]
+
+    def get_driver_info(self, obj):
+        if not obj.driver_profile_id:
+            return None
+        profile = obj.driver_profile
+        return {
+            "id": profile.id,
+            "full_name": profile.user.full_name,
+            "email": profile.user.email,
+            "phone": profile.phone,
+            "service_number": (profile.service_number or "").strip(),
+        }
+
+
+def serialize_parent_trip_location(location):
+    if not location:
+        return None
+    payload = {
+        "latitude": float(location.latitude),
+        "longitude": float(location.longitude),
+        "recorded_at": location.recorded_at,
+    }
+    if location.heading is not None:
+        payload["heading"] = float(location.heading)
+    return payload
+
+
+def serialize_parent_live_trip(trip):
+    locations = list(trip.locations.order_by("-recorded_at")[:50])
+    return {
+        "id": trip.id,
+        "trip_type": trip.trip_type,
+        "status": trip.status,
+        "started_at": trip.started_at,
+        "recent_locations": [
+            {"latitude": float(loc.latitude), "longitude": float(loc.longitude)}
+            for loc in locations
+        ],
+    }
+
+
+def serialize_parent_trip_student_status(student_status):
+    if not student_status:
+        return None
+    return {
+        "student_id": student_status.student_id,
+        "student_name": student_status.student.full_name,
+        "status": student_status.status,
+        "note": student_status.note or "",
+        "updated_at": student_status.updated_at,
+    }
 
 
 class StudentTransportAssignmentSerializer(serializers.ModelSerializer):
