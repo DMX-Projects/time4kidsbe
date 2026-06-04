@@ -56,10 +56,40 @@ from .serializers import (
     SupportTicketFranchiseSerializer,
     SupportTicketParentSerializer,
     StudentTransportAssignmentSerializer,
+    ParentTransportRouteSerializer,
+    serialize_parent_live_trip,
+    serialize_parent_trip_location,
+    serialize_parent_trip_student_status,
     TransportRouteSerializer,
     TransportTripLocationSerializer,
     TransportTripSerializer,
 )
+
+
+def _parent_transport_my_students(route, student_ids):
+    assignments = route.student_assignments.filter(
+        student_id__in=student_ids,
+        is_active=True,
+    ).select_related("student")
+    return [
+        {
+            "student_id": a.student_id,
+            "student_name": a.student.full_name,
+            "class_name": a.student.class_name,
+            "pickup_stop": a.pickup_stop or "",
+            "drop_stop": a.drop_stop or "",
+            "pickup_time": a.pickup_time.isoformat() if a.pickup_time else None,
+            "drop_time": a.drop_time.isoformat() if a.drop_time else None,
+        }
+        for a in assignments
+    ]
+
+
+def _parent_transport_route_row(route, request, student_ids=None):
+    row = ParentTransportRouteSerializer(route, context={"request": request}).data
+    if student_ids is not None:
+        row["my_students"] = _parent_transport_my_students(route, student_ids)
+    return row
 
 
 def _homework_visible_q(parent_profile):
@@ -290,25 +320,43 @@ class ParentGradeListView(generics.ListAPIView):
             .order_by("-exam_date", "subject")
         )
 
+def _parent_transport_routes_queryset(pp):
+    """All transport routes published at the parent's centre (not only assigned routes)."""
+    return (
+        TransportRoute.objects.filter(franchise=pp.franchise)
+        .select_related("driver_profile__user")
+        .order_by("sort_order", "route_name")
+    )
+
+
 class ParentTransportListView(generics.ListAPIView):
     permission_classes = [IsParentUser]
-    serializer_class = TransportRouteSerializer
+    serializer_class = ParentTransportRouteSerializer
     pagination_class = None
 
     def get_queryset(self):
         pp = resolved_parent_profile_for_user(self.request.user)
         if not pp:
             return TransportRoute.objects.none()
-        return TransportRoute.objects.filter(franchise=pp.franchise).order_by("sort_order", "route_name")
+        return _parent_transport_routes_queryset(pp)
+
+    def list(self, request, *args, **kwargs):
+        pp = resolved_parent_profile_for_user(request.user)
+        if not pp:
+            return Response([])
+        routes = list(self.get_queryset())
+        student_ids = set(
+            StudentProfile.objects.filter(parent=pp, is_active=True).values_list("id", flat=True)
+        )
+        payload = [
+            _parent_transport_route_row(route, request, student_ids=student_ids)
+            for route in routes
+        ]
+        return Response(payload)
 
 
 class ParentLiveTransportView(APIView):
-    """Latest live transport trip for this parent's assigned route.
-
-    If no student assignment exists yet, falls back to the newest live trip at
-    the parent's centre so early centres can trial live tracking before full
-    route assignment data is entered.
-    """
+    """Live trips for any route at the parent's centre (parent picks a route in the app)."""
 
     permission_classes = [IsParentUser]
 
@@ -325,19 +373,18 @@ class ParentLiveTransportView(APIView):
             }
 
         students = StudentProfile.objects.filter(parent=pp, is_active=True)
-        assigned_routes = TransportRoute.objects.filter(
-            student_assignments__student__in=students,
-            student_assignments__is_active=True,
-        ).distinct()
-
-        routes = assigned_routes if assigned_routes.exists() else TransportRoute.objects.filter(franchise=pp.franchise)
+        routes = _parent_transport_routes_queryset(pp)
         trips_qs = (
-            TransportTrip.objects.filter(route__in=routes, status=TransportTrip.Status.LIVE)
-            .select_related("route")
+            TransportTrip.objects.filter(
+                route__in=routes,
+                status=TransportTrip.Status.LIVE,
+                is_gps_active=True,
+            )
+            .select_related("route", "route__driver_profile__user")
             .prefetch_related("locations")
             .order_by("-started_at", "-created_at")
         )
-        
+
         trips_data = []
         for trip in trips_qs:
             latest_location = trip.locations.order_by("-recorded_at").first()
@@ -347,36 +394,21 @@ class ParentLiveTransportView(APIView):
                 .order_by("-updated_at")
                 .first()
             )
-            
-            trips_data.append({
+            entry = {
                 "live": latest_location is not None,
-                "route": TransportRouteSerializer(trip.route).data,
-                "trip": TransportTripSerializer(trip).data,
-                "latest_location": TransportTripSerializer(trip).data.get("latest_location"),
-                "student_status": {
-                    "student_id": student_status.student_id,
-                    "student_name": student_status.student.full_name,
-                    "status": student_status.status,
-                    "note": student_status.note,
-                    "updated_at": student_status.updated_at,
-                } if student_status else None,
-            })
-
-        # For backward compatibility, also return the first one as "default" fields
-        first_trip = trips_data[0] if trips_data else None
-
-        return Response(
-            {
-                "live": len(trips_data) > 0,
-                "trips": trips_data,
-                # Legacy fields for existing frontend versions:
-                "route": first_trip["route"] if first_trip else (TransportRouteSerializer(routes.order_by("sort_order", "route_name").first()).data if routes.exists() else None),
-                "trip": first_trip["trip"] if first_trip else None,
-                "latest_location": first_trip["latest_location"] if first_trip else None,
-                "student_status": first_trip["student_status"] if first_trip else None,
-                "school_location": school_location,
+                "route": ParentTransportRouteSerializer(trip.route, context={"request": request}).data,
+                "trip": serialize_parent_live_trip(trip),
+                "latest_location": serialize_parent_trip_location(latest_location),
             }
-        )
+            status_payload = serialize_parent_trip_student_status(student_status)
+            if status_payload is not None:
+                entry["student_status"] = status_payload
+            trips_data.append(entry)
+
+        payload = {"live": len(trips_data) > 0, "trips": trips_data}
+        if school_location:
+            payload["school_location"] = school_location
+        return Response(payload)
 
 
 class ParentSupportTicketListCreateView(generics.ListCreateAPIView):
@@ -594,7 +626,7 @@ class ParentNotificationsView(APIView):
                 "announcements": AnnouncementSerializer(announcements_qs, many=True).data,
                 "homework": HomeworkAssignmentSerializer(homework_qs, many=True).data,
                 "fees": FeeRecordSerializer(fees_qs, many=True).data,
-                "transport": TransportRouteSerializer(transport_qs, many=True).data,
+                "transport": ParentTransportRouteSerializer(transport_qs, many=True).data,
                 "events": EventSerializer(events_qs, many=True).data,
                 "achievements": ParentStudentAchievementSerializer(achievements_qs, many=True).data,
                 "attendance": AttendanceRecordSerializer(attendance_qs, many=True).data,
@@ -1023,7 +1055,8 @@ def driver_complete_trip(request, token):
         return Response({"detail": "No live trip found."}, status=404)
     trip.status = TransportTrip.Status.COMPLETED
     trip.completed_at = timezone.now()
-    trip.save(update_fields=["status", "completed_at", "updated_at"])
+    trip.is_gps_active = False
+    trip.save(update_fields=["status", "completed_at", "is_gps_active", "updated_at"])
     return Response(TransportTripSerializer(trip).data)
 
 
@@ -1228,7 +1261,8 @@ def auth_driver_start_trip(request):
         route=route,
         trip_type=trip_type,
         status=TransportTrip.Status.LIVE,
-        started_at=timezone.now()
+        started_at=timezone.now(),
+        is_gps_active=True,
     )
     print(f"DEBUG: auth_driver_start_trip - Driver: {dp.user.email}, Route: {route.route_name}, Type: {trip_type}")
     return Response(TransportTripSerializer(trip).data)
@@ -1252,7 +1286,9 @@ def auth_driver_post_location(request):
     trip = route.trips.filter(status=TransportTrip.Status.LIVE).order_by("-started_at", "-created_at").first()
     if not trip:
         return Response({"detail": "No live trip found"}, status=400)
-    
+    if not trip.is_gps_active:
+        return Response({"detail": "GPS sharing is off for this trip."}, status=400)
+
     serializer = TransportTripLocationSerializer(data=request.data)
     if serializer.is_valid():
         location = serializer.save(trip=trip)
@@ -1330,7 +1366,8 @@ def auth_driver_complete_trip(request):
     
     trip.status = TransportTrip.Status.COMPLETED
     trip.completed_at = timezone.now()
-    trip.save()
+    trip.is_gps_active = False
+    trip.save(update_fields=["status", "completed_at", "is_gps_active", "updated_at"])
     return Response(TransportTripSerializer(trip).data)
 
 @api_view(["POST"])
