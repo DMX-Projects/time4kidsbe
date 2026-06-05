@@ -11,7 +11,7 @@ class DocumentCategory(models.TextChoices):
     PARENTING_TIPS = "PARENTING_TIPS", "Parenting Tips & Articles"
     HOLIDAY_LISTS = "HOLIDAY_LISTS", "Holiday Lists"
     PRESCHOOL_POLICIES = "PRESCHOOL_POLICIES", "Preschool Policies (PDF)"
-    CLASS_TIMETABLE = "CLASS_TIMETABLE", "Class Timetable (PDF)"
+    CLASS_TIMETABLE = "CLASS_TIMETABLE", "Newsletter"
 
 
 class ParentDocument(models.Model):
@@ -50,11 +50,26 @@ class ParentDocument(models.Model):
     category = models.CharField(max_length=50, choices=DocumentCategory.choices)
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True)
-    file = models.FileField(upload_to="parent_documents/", help_text="Upload document, audio, or video file")
+    file = models.FileField(upload_to="parent_documents/", blank=True, help_text="Upload document, audio, or video file")
     thumbnail = models.ImageField(upload_to="parent_documents/thumbnails/", null=True, blank=True)
     # Holiday-specific fields (only used when category is HOLIDAY_LISTS)
     state = models.CharField(max_length=2, choices=State.choices, null=True, blank=True, help_text="Required for Holiday Lists")
     academic_year = models.CharField(max_length=20, blank=True, help_text="e.g., AY 2025-26 (Required for Holiday Lists)")
+    holiday_entries = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="Manual holiday rows: city, name, date (HOLIDAY_LISTS only).",
+    )
+    period_start = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Newsletter academic block start date",
+    )
+    period_end = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Newsletter academic block end date",
+    )
     is_active = models.BooleanField(default=True)
     order = models.PositiveIntegerField(default=0, help_text="Display order")
     created_at = models.DateTimeField(auto_now_add=True)

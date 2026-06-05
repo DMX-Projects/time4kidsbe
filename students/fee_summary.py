@@ -54,6 +54,7 @@ def build_fee_summary_from_records(student: StudentProfile, centre_name: str = "
         lines.append(
             {
                 "serial": idx,
+                "fee_record_id": row.id,
                 "fee_type": row.title,
                 "total_fee": amount,
                 "discount": discount,
@@ -73,19 +74,6 @@ def build_fee_summary_from_records(student: StudentProfile, centre_name: str = "
         "balance": sum(_money(l["balance"]) for l in lines),
     }
 
-    payments = []
-    for row in rows:
-        if row.paid_on and _money(row.amount_paid) > 0:
-            payments.append(
-                {
-                    "amount_paid": _money(row.amount_paid),
-                    "payment_type": row.title,
-                    "mode_of_payment": "—",
-                    "date_of_payment": _format_date(row.paid_on),
-                    "fee_structure_name": row.fee_structure_name or "",
-                }
-            )
-
     return {
         "source": "records",
         "student": {
@@ -103,5 +91,4 @@ def build_fee_summary_from_records(student: StudentProfile, centre_name: str = "
         },
         "lines": lines,
         "totals": totals,
-        "payments": payments,
     }

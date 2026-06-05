@@ -25,6 +25,7 @@ from .models import ParentDocument, DocumentCategory, FranchiseDocument, Franchi
 from .serializers import (
     ParentDocumentSerializer,
     AdminParentDocumentSerializer,
+    FranchiseParentDocumentWriteSerializer,
     FranchiseDocumentSerializer,
     FranchiseCentreDocumentCreateSerializer,
     AdminFranchiseDocumentSerializer,
@@ -41,6 +42,11 @@ class ParentDocumentListView(generics.ListAPIView):
     def get_queryset(self):
         return _parent_documents_visible_queryset(self.request.user)
 
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx["merge_holiday_for_parent"] = True
+        return ctx
+
 
 @api_view(['GET'])
 @permission_classes([IsParentUser])
@@ -54,7 +60,11 @@ def parent_documents_by_category(request, category):
 
     documents = _parent_documents_visible_queryset(request.user).filter(category=category)
 
-    serializer = ParentDocumentSerializer(documents, many=True)
+    serializer = ParentDocumentSerializer(
+        documents,
+        many=True,
+        context={"request": request, "merge_holiday_for_parent": True},
+    )
     return Response(serializer.data)
 
 
@@ -70,9 +80,30 @@ def _parent_documents_visible_queryset(user):
         profile = parent_profile_for_user(user)
         if profile and profile.franchise_id:
             qs = qs.filter(Q(franchise__isnull=True) | Q(franchise_id=profile.franchise_id))
+            qs = _apply_holiday_centre_overrides(qs, profile.franchise_id)
         else:
             qs = qs.filter(franchise__isnull=True)
     return qs.order_by("category", "order", "-created_at")
+
+
+def _apply_holiday_centre_overrides(qs, franchise_id):
+    """Parents see centre holiday PDF instead of head-office global for the same state + year."""
+    centre_holidays = ParentDocument.objects.filter(
+        is_active=True,
+        category=DocumentCategory.HOLIDAY_LISTS,
+        franchise_id=franchise_id,
+    )
+    exclude_global = Q()
+    for holiday in centre_holidays:
+        exclude_global |= Q(
+            category=DocumentCategory.HOLIDAY_LISTS,
+            franchise__isnull=True,
+            state=holiday.state,
+            academic_year=holiday.academic_year,
+        )
+    if exclude_global:
+        qs = qs.exclude(exclude_global)
+    return qs
 
 
 def _user_can_stream_parent_document(user, doc: ParentDocument) -> bool:
@@ -252,23 +283,117 @@ def admin_franchise_documents_summary(request):
     return Response(out)
 
 
-class FranchiseParentDocumentListView(generics.ListAPIView):
-    """Franchise: read-only list of parent-app documents (global + this centre). Uploads are admin-only."""
+class FranchiseParentDocumentListCreateView(generics.ListCreateAPIView):
+    """Franchise: list parent-app documents; upload Newsletter and centre holiday PDFs."""
 
-    serializer_class = ParentDocumentSerializer
     permission_classes = [IsFranchiseUser]
     pagination_class = None
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def get_serializer_class(self):
+        if self.request.method == "POST":
+            return FranchiseParentDocumentWriteSerializer
+        return ParentDocumentSerializer
 
     def get_queryset(self):
         franchise_profile = franchise_profile_for_user(self.request.user)
         if not franchise_profile:
             return ParentDocument.objects.none()
+        manage = (self.request.query_params.get("manage") or "").strip().lower()
+        if manage == "holidays":
+            qs = ParentDocument.objects.filter(
+                is_active=True,
+                category=DocumentCategory.HOLIDAY_LISTS,
+            ).filter(Q(franchise__isnull=True) | Q(franchise=franchise_profile))
+            state = (self.request.query_params.get("state") or "").strip()
+            if state:
+                qs = qs.filter(state=state)
+            return qs.select_related("franchise").order_by("-academic_year", "state", "-created_at")
+        if manage == "newsletter":
+            qs = ParentDocument.objects.filter(
+                is_active=True,
+                category=DocumentCategory.CLASS_TIMETABLE,
+                franchise=franchise_profile,
+            )
+            track_date = (self.request.query_params.get("date") or "").strip()[:10]
+            from_date = (self.request.query_params.get("from") or "").strip()[:10]
+            to_date = (self.request.query_params.get("to") or "").strip()[:10]
+            if track_date:
+                qs = qs.filter(
+                    Q(
+                        period_start__isnull=False,
+                        period_end__isnull=False,
+                        period_start__lte=track_date,
+                        period_end__gte=track_date,
+                    )
+                    | Q(
+                        period_start__isnull=True,
+                        period_end__isnull=True,
+                        created_at__date=track_date,
+                    )
+                )
+            elif from_date and to_date:
+                qs = qs.filter(
+                    Q(period_start__isnull=False, period_end__isnull=False, period_start__lte=to_date, period_end__gte=from_date)
+                    | Q(
+                        period_start__isnull=True,
+                        period_end__isnull=True,
+                        created_at__date__gte=from_date,
+                        created_at__date__lte=to_date,
+                    )
+                )
+            return qs.select_related("franchise").order_by("-period_start", "-created_at")
         return (
             ParentDocument.objects.filter(is_active=True)
             .filter(Q(franchise__isnull=True) | Q(franchise=franchise_profile))
             .select_related("franchise")
             .order_by("category", "order", "-created_at")
         )
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx["request"] = self.request
+        return ctx
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        doc = serializer.save()
+        out = ParentDocumentSerializer(doc, context=self.get_serializer_context())
+        return Response(out.data, status=status.HTTP_201_CREATED)
+
+
+class FranchiseParentDocumentDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """Franchise: manage this centre's Newsletter and holiday list uploads."""
+
+    permission_classes = [IsFranchiseUser]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def get_serializer_class(self):
+        if self.request.method in ("PUT", "PATCH"):
+            return FranchiseParentDocumentWriteSerializer
+        return ParentDocumentSerializer
+
+    def get_queryset(self):
+        franchise_profile = franchise_profile_for_user(self.request.user)
+        if not franchise_profile:
+            return ParentDocument.objects.none()
+        return ParentDocument.objects.filter(
+            franchise=franchise_profile,
+            category__in=[DocumentCategory.CLASS_TIMETABLE, DocumentCategory.HOLIDAY_LISTS],
+        ).select_related("franchise")
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx["request"] = self.request
+        return ctx
+
+    def perform_destroy(self, instance):
+        if instance.file:
+            instance.file.delete(save=False)
+        if instance.thumbnail:
+            instance.thumbnail.delete(save=False)
+        super().perform_destroy(instance)
 
 
 class AdminParentDocumentListCreateView(generics.ListCreateAPIView):

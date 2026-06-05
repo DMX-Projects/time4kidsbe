@@ -289,6 +289,14 @@ LOGGING = {
     },
 }
 
+# Parent app fee payment — UPI QR (scan & pay, then parent taps confirm in app)
+PARENT_FEE_UPI_VPA = os.getenv("PARENT_FEE_UPI_VPA", "").strip()
+PARENT_FEE_UPI_PAYEE_NAME = os.getenv("PARENT_FEE_UPI_PAYEE_NAME", "T.I.M.E. Kids").strip()
+# Optional static QR image URL (e.g. https://yoursite.com/fees/payment-qr.png). If set, shown instead of generated QR.
+PARENT_FEE_QR_IMAGE_URL = os.getenv("PARENT_FEE_QR_IMAGE_URL", "").strip()
+# When using a static QR image, set the exact amount encoded in that QR (e.g. 1 for ₹1 test payments).
+PARENT_FEE_QR_FIXED_AMOUNT = os.getenv("PARENT_FEE_QR_FIXED_AMOUNT", "").strip()
+
 # Add file handler if enabled
 if ENABLE_FILE_LOGGING:
     (BASE_DIR / "logs").mkdir(exist_ok=True)

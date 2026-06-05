@@ -259,9 +259,9 @@ class FranchiseProfileSerializer(FranchiseSerializer):
 
 class ParentSerializer(serializers.ModelSerializer):
     user = UserSerializer(read_only=True)
-    email = serializers.EmailField(write_only=True)
-    password = serializers.CharField(write_only=True, min_length=8)
-    full_name = serializers.CharField(write_only=True)
+    email = serializers.EmailField(write_only=True, required=False)
+    password = serializers.CharField(write_only=True, min_length=8, required=False)
+    full_name = serializers.CharField(write_only=True, required=False)
 
     class Meta:
         model = ParentProfile
@@ -279,6 +279,16 @@ class ParentSerializer(serializers.ModelSerializer):
             "created_at",
         ]
         read_only_fields = ["id", "user", "franchise", "created_at"]
+
+    def validate(self, attrs):
+        if self.instance is None:
+            if not (attrs.get("email") or "").strip():
+                raise serializers.ValidationError({"email": "Email is required."})
+            if not (attrs.get("password") or "").strip():
+                raise serializers.ValidationError({"password": "Password is required (min 8 characters)."})
+            if not (attrs.get("full_name") or "").strip():
+                raise serializers.ValidationError({"full_name": "Parent name is required."})
+        return attrs
 
     def create(self, validated_data):
         franchise = self.context.get("franchise")
