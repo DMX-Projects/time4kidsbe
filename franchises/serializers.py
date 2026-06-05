@@ -253,12 +253,49 @@ class FranchiseUpdateSerializer(FranchiseSerializer):
 
 
 class FranchiseProfileSerializer(FranchiseSerializer):
+    centre_access = serializers.SerializerMethodField()
+
     class Meta(FranchiseSerializer.Meta):
-        read_only_fields = ["id", "slug", "created_at", "updated_at", "admin", "user", "is_active"]
+        read_only_fields = ["id", "slug", "created_at", "updated_at", "admin", "user", "is_active", "centre_access"]
+
+    def get_centre_access(self, obj):
+        from accounts.profile_access import franchise_centre_diagnostics
+
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        return franchise_centre_diagnostics(user)
+
+
+class ParentListSerializer(serializers.ModelSerializer):
+    """Light list payload for centre parent grid (avoids huge live responses)."""
+
+    name = serializers.SerializerMethodField()
+    email = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ParentProfile
+        fields = ["id", "name", "email", "child_name", "phone", "notes", "Emailid", "created_at"]
+        read_only_fields = fields
+
+    def get_name(self, obj: ParentProfile) -> str:
+        if not obj.user_id:
+            return ""
+        try:
+            return (obj.user.full_name or "").strip() or obj.user.email
+        except User.DoesNotExist:
+            return obj.Emailid or ""
+
+    def get_email(self, obj: ParentProfile) -> str:
+        if not obj.user_id:
+            return obj.Emailid or ""
+        try:
+            return obj.user.email or obj.Emailid or ""
+        except User.DoesNotExist:
+            return obj.Emailid or ""
 
 
 class ParentSerializer(serializers.ModelSerializer):
-    user = UserSerializer(read_only=True)
+    user = serializers.SerializerMethodField()
     email = serializers.EmailField(write_only=True, required=False)
     password = serializers.CharField(write_only=True, min_length=8, required=False)
     full_name = serializers.CharField(write_only=True, required=False)
@@ -279,6 +316,21 @@ class ParentSerializer(serializers.ModelSerializer):
             "created_at",
         ]
         read_only_fields = ["id", "user", "franchise", "created_at"]
+
+    def get_user(self, obj: ParentProfile):
+        if not obj.user_id:
+            return None
+        try:
+            return UserSerializer(obj.user).data
+        except User.DoesNotExist:
+            return {
+                "id": obj.user_id,
+                "email": obj.Emailid or "",
+                "username": None,
+                "full_name": f"(missing user #{obj.user_id})",
+                "role": None,
+                "is_active": False,
+            }
 
     def validate(self, attrs):
         if self.instance is None:

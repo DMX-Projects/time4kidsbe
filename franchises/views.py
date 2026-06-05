@@ -22,6 +22,7 @@ from .serializers import (
     FranchiseProfileSerializer,
     FranchiseSerializer,
     FranchiseUpdateSerializer,
+    ParentListSerializer,
     ParentSerializer,
     PublicFranchiseSerializer,
     FranchiseHeroSlideSerializer,
@@ -102,6 +103,11 @@ class FranchiseParentViewSet(viewsets.ModelViewSet):
     permission_classes = [IsFranchiseUser]
     pagination_class = None  # Centre parent list + search must see all rows (not first page of 20)
     queryset = ParentProfile.objects.select_related("user", "franchise")
+
+    def get_serializer_class(self):
+        if self.action == "list":
+            return ParentListSerializer
+        return ParentSerializer
 
     def get_queryset(self):
         from django.db.models import Q

@@ -113,6 +113,52 @@ def franchise_profile_for_user(user):
     return franchise_for_centre_login(user)
 
 
+def franchise_centre_diagnostics(user) -> dict:
+    """Help debug live vs local: is this login tied to a centre, and how many rows exist?"""
+    from franchises.models import Franchise, ParentProfile
+    from students.models import StudentProfile
+
+    if not user or not getattr(user, "is_authenticated", False):
+        return {
+            "linked": False,
+            "resolve_method": None,
+            "franchise_id": None,
+            "franchise_name": "",
+            "parents_count": 0,
+            "students_count": 0,
+            "hint": "Not authenticated.",
+        }
+
+    direct = Franchise.objects.filter(user_id=user.pk).order_by("id").first()
+    franchise = direct or franchise_for_centre_login(user)
+    if not franchise:
+        return {
+            "linked": False,
+            "resolve_method": None,
+            "franchise_id": None,
+            "franchise_name": "",
+            "parents_count": 0,
+            "students_count": 0,
+            "hint": (
+                "This centre login is not linked to a franchise row. "
+                "On the server run: python manage.py link_franchise_centre_logins"
+            ),
+        }
+
+    resolve_method = "user_id" if direct else "slug_login"
+    parents_count = ParentProfile.objects.filter(franchise=franchise).count()
+    students_count = StudentProfile.objects.filter(parent__franchise=franchise).count()
+    return {
+        "linked": True,
+        "resolve_method": resolve_method,
+        "franchise_id": franchise.id,
+        "franchise_name": franchise.name,
+        "parents_count": parents_count,
+        "students_count": students_count,
+        "hint": "",
+    }
+
+
 def _login_identifiers_for_user(user) -> list[str]:
     keys: list[str] = []
 
