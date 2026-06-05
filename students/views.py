@@ -1,7 +1,7 @@
 from datetime import date
 
 from django.db.models import Q
-from rest_framework import generics
+from rest_framework import generics, status
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -178,6 +178,20 @@ class FranchiseStudentListCreateView(generics.ListCreateAPIView):
         if not franchise:
             return StudentProfile.objects.none()
         return StudentProfile.objects.filter(parent__franchise=franchise).select_related("parent")
+
+    def list(self, request, *args, **kwargs):
+        franchise = franchise_profile_for_user(request.user)
+        if not franchise:
+            return Response(
+                {
+                    "detail": (
+                        "This login is not linked to a centre (franchise). "
+                        "Use your centre login, or contact support to link the account."
+                    )
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        return super().list(request, *args, **kwargs)
 
     def get_serializer_context(self):
         ctx = super().get_serializer_context()
