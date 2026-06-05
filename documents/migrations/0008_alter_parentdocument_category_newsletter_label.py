@@ -1,0 +1,28 @@
+from django.db import migrations, models
+
+
+class Migration(migrations.Migration):
+
+    dependencies = [
+        ("documents", "0007_franchisedocument_embed_url"),
+    ]
+
+    operations = [
+        migrations.AlterField(
+            model_name="parentdocument",
+            name="category",
+            field=models.CharField(
+                choices=[
+                    ("AUDIO_RHYMES", "Audio Rhymes"),
+                    ("VIDEOS", "Watch • Hear • Learn"),
+                    ("NEWSLETTERS", "Newsletters"),
+                    ("STUDENTS_KIT", "Students Kit"),
+                    ("PARENTING_TIPS", "Parenting Tips & Articles"),
+                    ("HOLIDAY_LISTS", "Holiday Lists"),
+                    ("PRESCHOOL_POLICIES", "Preschool Policies (PDF)"),
+                    ("CLASS_TIMETABLE", "Newsletter"),
+                ],
+                max_length=50,
+            ),
+        ),
+    ]

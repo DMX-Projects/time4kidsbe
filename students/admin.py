@@ -8,6 +8,7 @@ from .models import (
     FeeRecord,
     Grade,
     HomeworkAssignment,
+    ParentFeePayment,
     StudentAchievement,
     StudentProfile,
     StudentTransportAssignment,
@@ -219,6 +220,14 @@ class AttendanceRecordAdmin(admin.ModelAdmin):
             return f"(missing student #{obj.student_id})"
 
     display_student.short_description = "Student"
+
+
+@admin.register(ParentFeePayment)
+class ParentFeePaymentAdmin(admin.ModelAdmin):
+    list_display = ("fee_type", "amount", "status", "parent", "student", "paid_at", "created_at")
+    list_filter = ("status", "parent__franchise")
+    search_fields = ("fee_type", "transaction_ref", "student__first_name", "parent__user__email")
+    raw_id_fields = ("parent", "student", "fee_record")
 
 
 @admin.register(FeeRecord)

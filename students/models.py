@@ -179,6 +179,20 @@ class Announcement(models.Model):
     franchise = models.ForeignKey(Franchise, on_delete=models.CASCADE, related_name="portal_announcements")
     title = models.CharField(max_length=255)
     body = models.TextField(blank=True)
+    student = models.ForeignKey(
+        StudentProfile,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="announcements",
+        help_text="When set, only this student's parent sees the notification.",
+    )
+    class_name = models.CharField(
+        max_length=120,
+        blank=True,
+        default="",
+        help_text="When student is empty, limits to parents with a child in this class. Empty = all parents.",
+    )
     published_at = models.DateTimeField(default=timezone.now)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -270,6 +284,40 @@ class FeeRecord(models.Model):
             except StudentProfile.DoesNotExist:
                 who = f"missing student #{self.student_id}"
         return f"{t} - {who}"
+
+
+class ParentFeePayment(models.Model):
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        PAID = "PAID", "Paid"
+        CANCELLED = "CANCELLED", "Cancelled"
+
+    parent = models.ForeignKey(ParentProfile, on_delete=models.CASCADE, related_name="fee_payments")
+    student = models.ForeignKey(StudentProfile, on_delete=models.CASCADE, related_name="fee_payments")
+    fee_record = models.ForeignKey(
+        FeeRecord,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="parent_payments",
+    )
+    line_serial = models.PositiveIntegerField(default=0)
+    fee_type = models.CharField(max_length=255)
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+    mode_of_payment = models.CharField(max_length=64, default="UPI QR")
+    transaction_ref = models.CharField(max_length=64, blank=True, db_index=True)
+    paid_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "Parent fee payment"
+        verbose_name_plural = "Parent fee payments"
+
+    def __str__(self) -> str:
+        return f"{self.fee_type} ₹{self.amount} ({self.status})"
 
 
 class SupportTicket(models.Model):

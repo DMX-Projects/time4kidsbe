@@ -21,7 +21,7 @@ def notify_parents_new_announcement(announcement: Announcement) -> int:
     Email each parent at this franchise (except those with notifications_muted).
     Returns number of successfully queued SendGrid sends (202).
     """
-    from franchises.models import ParentProfile
+    from students.portal_views import parent_profiles_for_announcement
 
     if not announcement.is_active:
         return 0
@@ -31,10 +31,7 @@ def notify_parents_new_announcement(announcement: Announcement) -> int:
         logger.warning("SENDGRID_API_KEY not set; skipping parent announcement emails")
         return 0
 
-    parents = ParentProfile.objects.filter(
-        franchise=announcement.franchise,
-        notifications_muted=False,
-    ).select_related("user")
+    parents = parent_profiles_for_announcement(announcement).filter(notifications_muted=False)
 
     base_url = getattr(settings, "PUBLIC_SITE_URL", "http://localhost:3000").rstrip("/")
     notifications_url = f"{base_url}/dashboard/parent/notifications"
@@ -117,7 +114,7 @@ def notify_parents_new_announcement_by_id(announcement_id: int) -> None:
     from students.models import Announcement
 
     try:
-        ann = Announcement.objects.select_related("franchise").get(pk=announcement_id)
+        ann = Announcement.objects.select_related("franchise", "student", "student__parent").get(pk=announcement_id)
     except Announcement.DoesNotExist:
         logger.warning("notify_parents_new_announcement_by_id: Announcement %s missing", announcement_id)
         return

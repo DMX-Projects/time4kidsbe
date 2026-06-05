@@ -1,13 +1,30 @@
+import json
 from pathlib import Path
 
 from django.db import IntegrityError
 from rest_framework import serializers
-from .models import ParentDocument, FranchiseDocument, FranchiseDocumentCategory, IndentRequest
+from .holiday_entries import merge_holiday_entries, normalize_holiday_entries
+from .models import ParentDocument, FranchiseDocument, FranchiseDocumentCategory, DocumentCategory, IndentRequest
+from .newsletter_files import is_newsletter_upload_file
 from common.fields import RelativeFileField, RelativeImageField
 
 
+class FlexibleHolidayEntriesField(serializers.JSONField):
+    def to_internal_value(self, data):
+        if isinstance(data, str):
+            text = data.strip()
+            if not text:
+                return []
+            try:
+                data = json.loads(text)
+            except json.JSONDecodeError as exc:
+                raise serializers.ValidationError("Invalid holiday list data.") from exc
+        return super().to_internal_value(data)
+
+
 class ParentDocumentSerializer(serializers.ModelSerializer):
-    file = RelativeFileField()
+    file = RelativeFileField(required=False, allow_null=True)
+    holiday_entries = serializers.SerializerMethodField()
     thumbnail = RelativeImageField(required=False, allow_null=True)
     category_display = serializers.CharField(source='get_category_display', read_only=True)
     franchise_name = serializers.CharField(source='franchise.name', read_only=True, allow_null=True)
@@ -20,10 +37,35 @@ class ParentDocumentSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'category', 'category_display', 'title', 'description',
             'file', 'file_view_path', 'thumbnail', 'franchise', 'franchise_name', 'is_active',
-            'order', 'state', 'state_display', 'academic_year', 'display_title',
+            'order', 'state', 'state_display', 'academic_year', 'holiday_entries',
+            'period_start', 'period_end', 'display_title',
             'created_at', 'updated_at',
         ]
         read_only_fields = ['id', 'franchise', 'is_active', 'created_at', 'updated_at', 'file_view_path']
+
+    def get_holiday_entries(self, obj: ParentDocument) -> list:
+        entries = obj.holiday_entries or []
+        if obj.category != DocumentCategory.HOLIDAY_LISTS:
+            return entries
+        if not obj.franchise_id:
+            return entries
+        if not self.context.get("merge_holiday_for_parent"):
+            return entries
+        global_doc = (
+            ParentDocument.objects.filter(
+                is_active=True,
+                category=DocumentCategory.HOLIDAY_LISTS,
+                franchise__isnull=True,
+                state=obj.state,
+                academic_year=obj.academic_year,
+            )
+            .order_by("-updated_at")
+            .first()
+        )
+        return merge_holiday_entries(
+            global_doc.holiday_entries if global_doc else [],
+            entries,
+        )
 
     def get_file_view_path(self, obj: ParentDocument) -> str | None:
         if not obj.pk or not obj.file:
@@ -41,25 +83,165 @@ class ParentDocumentSerializer(serializers.ModelSerializer):
         return obj.title
 
 
+class FranchiseParentDocumentWriteSerializer(serializers.ModelSerializer):
+    """Franchise centre: upload Newsletter and centre-specific holiday PDFs for their parents."""
+
+    file = RelativeFileField(required=False, allow_null=True)
+    category = serializers.ChoiceField(
+        choices=[DocumentCategory.CLASS_TIMETABLE, DocumentCategory.HOLIDAY_LISTS],
+        required=False,
+        default=DocumentCategory.CLASS_TIMETABLE,
+    )
+
+    class Meta:
+        model = ParentDocument
+        fields = [
+            "id",
+            "category",
+            "title",
+            "description",
+            "file",
+            "state",
+            "academic_year",
+            "holiday_entries",
+            "period_start",
+            "period_end",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at"]
+    holiday_entries = FlexibleHolidayEntriesField(required=False)
+
+    def _incoming_file(self):
+        request = self.context.get("request")
+        if not request:
+            return None
+        return getattr(request, "FILES", None).get("file")
+
+    def _resolved_category(self, attrs):
+        if attrs.get("category"):
+            return attrs["category"]
+        if self.instance is not None:
+            return self.instance.category
+        return DocumentCategory.CLASS_TIMETABLE
+
+    def _resolved_holiday_entries(self, attrs):
+        if "holiday_entries" in attrs:
+            return normalize_holiday_entries(attrs["holiday_entries"])
+        if self.instance is not None:
+            return normalize_holiday_entries(self.instance.holiday_entries or [])
+        return []
+
+    def validate(self, attrs):
+        uploaded = self._incoming_file()
+        file_obj = attrs.get("file") or uploaded
+        category = self._resolved_category(attrs)
+        holiday_entries = self._resolved_holiday_entries(attrs)
+        if "holiday_entries" in attrs or category == DocumentCategory.HOLIDAY_LISTS:
+            attrs["holiday_entries"] = holiday_entries
+
+        if category == DocumentCategory.HOLIDAY_LISTS:
+            state = attrs.get("state") or (self.instance.state if self.instance else None)
+            if not state:
+                raise serializers.ValidationError({"state": "State is required for holiday lists."})
+            if file_obj is not None:
+                raise serializers.ValidationError({"file": "Holiday lists use manual entries only."})
+            if self.instance is None and len(holiday_entries) == 0:
+                raise serializers.ValidationError(
+                    {"holiday_entries": "Add at least one holiday for your centre, or update an existing date."}
+                )
+            title = (attrs.get("title") or "").strip()
+            if self.instance is None and not title:
+                attrs["title"] = "Holiday list"
+            if self.instance is None and not attrs.get("academic_year"):
+                attrs["academic_year"] = "AY 2026-27"
+            if self.instance is not None:
+                attrs.pop("state", None)
+        elif self.instance is None and not file_obj:
+            raise serializers.ValidationError({"file": "Choose a file to upload."})
+        elif category == DocumentCategory.CLASS_TIMETABLE:
+            if file_obj is not None and not is_newsletter_upload_file(file_obj):
+                raise serializers.ValidationError({"file": "Newsletter must be a PDF or Word document."})
+            title = (attrs.get("title") or "").strip()
+            if self.instance is None and not title and file_obj is not None:
+                attrs["title"] = Path(getattr(file_obj, "name", "")).stem or "Newsletter"
+            period_start = attrs.get("period_start")
+            period_end = attrs.get("period_end")
+            if self.instance is not None:
+                if period_start is None:
+                    period_start = self.instance.period_start
+                if period_end is None:
+                    period_end = self.instance.period_end
+            if period_start and period_end and period_end < period_start:
+                raise serializers.ValidationError({"period_end": "End date must be on or after start date."})
+        else:
+            raise serializers.ValidationError({"category": "Invalid document category for centre upload."})
+
+        return attrs
+
+    def create(self, validated_data):
+        request = self.context.get("request")
+        from accounts.profile_access import franchise_profile_for_user
+
+        franchise = franchise_profile_for_user(request.user) if request else None
+        if franchise is None:
+            raise serializers.ValidationError({"detail": "Franchise profile not found."})
+        uploaded = self._incoming_file()
+        if uploaded and not validated_data.get("file"):
+            validated_data["file"] = uploaded
+        category = validated_data.pop("category", DocumentCategory.CLASS_TIMETABLE)
+        validated_data["franchise"] = franchise
+        validated_data["category"] = category
+        validated_data["is_active"] = True
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        uploaded = self._incoming_file()
+        if uploaded and not validated_data.get("file"):
+            validated_data["file"] = uploaded
+        validated_data.pop("category", None)
+        return super().update(instance, validated_data)
+
+
 class AdminParentDocumentSerializer(ParentDocumentSerializer):
     """Head office: CRUD parent app documents (global or per-centre)."""
 
     file = RelativeFileField(required=False, allow_null=True)
     thumbnail = RelativeImageField(required=False, allow_null=True)
+    holiday_entries = FlexibleHolidayEntriesField(required=False)
 
     class Meta(ParentDocumentSerializer.Meta):
         read_only_fields = ['id', 'created_at', 'updated_at', 'file_view_path']
 
+    def _resolved_holiday_entries(self, attrs):
+        if "holiday_entries" in attrs:
+            return normalize_holiday_entries(attrs["holiday_entries"])
+        if self.instance is not None:
+            return normalize_holiday_entries(self.instance.holiday_entries or [])
+        return []
+
     def validate(self, attrs):
         request = self.context.get("request")
         uploaded = getattr(request, "FILES", None).get("file") if request else None
-        has_file = bool(attrs.get("file") or uploaded)
-        if self.instance is None and not has_file:
-            raise serializers.ValidationError({"file": "Choose a file to upload."})
+        has_upload = bool(attrs.get("file") or uploaded)
         category = attrs.get("category") or (self.instance.category if self.instance else None)
         state = attrs.get("state")
         if category == "HOLIDAY_LISTS" and not state and not (self.instance and self.instance.state):
             raise serializers.ValidationError({"state": "State is required for holiday lists."})
+        file_obj = attrs.get("file") or uploaded
+        if category == "CLASS_TIMETABLE" and file_obj is not None and not is_newsletter_upload_file(file_obj):
+            raise serializers.ValidationError({"file": "Newsletter must be a PDF or Word document."})
+        if category == "HOLIDAY_LISTS":
+            holiday_entries = self._resolved_holiday_entries(attrs)
+            attrs["holiday_entries"] = holiday_entries
+            if file_obj is not None:
+                raise serializers.ValidationError({"file": "Holiday lists use manual entries only."})
+            if len(holiday_entries) == 0:
+                raise serializers.ValidationError(
+                    {"holiday_entries": "Add at least one holiday with a date."}
+                )
+        elif self.instance is None and not has_upload:
+            raise serializers.ValidationError({"file": "Choose a file to upload."})
         return attrs
 
 

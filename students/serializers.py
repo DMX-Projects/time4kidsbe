@@ -427,6 +427,9 @@ class HomeworkAssignmentSerializer(serializers.ModelSerializer):
 
 
 class AnnouncementSerializer(serializers.ModelSerializer):
+    student_name = serializers.SerializerMethodField()
+    audience_label = serializers.SerializerMethodField()
+
     class Meta:
         model = Announcement
         fields = [
@@ -434,12 +437,55 @@ class AnnouncementSerializer(serializers.ModelSerializer):
             "franchise",
             "title",
             "body",
+            "student",
+            "student_name",
+            "class_name",
+            "audience_label",
             "published_at",
             "is_active",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "franchise", "created_at", "updated_at"]
+        read_only_fields = ["id", "franchise", "student_name", "audience_label", "created_at", "updated_at"]
+
+    def get_student_name(self, obj):
+        try:
+            st = obj.student
+        except ObjectDoesNotExist:
+            return ""
+        return getattr(st, "full_name", "") or ""
+
+    def get_audience_label(self, obj):
+        if obj.student_id:
+            name = self.get_student_name(obj)
+            return name or f"Student #{obj.student_id}"
+        target_class = (obj.class_name or "").strip()
+        if target_class:
+            return target_class
+        return "All parents"
+
+    def validate_student(self, value):
+        if value is None:
+            return value
+        request = self.context.get("request")
+        franchise = franchise_profile_for_user(getattr(request, "user", None))
+        if not franchise or value.parent.franchise_id != franchise.id:
+            raise serializers.ValidationError("Student is not enrolled at your centre.")
+        return value
+
+    def validate(self, attrs):
+        student = attrs.get("student")
+        if student is None and self.instance is not None and "student" not in attrs:
+            student = self.instance.student
+        class_name = attrs.get("class_name")
+        if class_name is None and self.instance is not None and "class_name" not in attrs:
+            class_name = self.instance.class_name
+        class_name = (class_name or "").strip()
+        if "class_name" in attrs or self.instance is None:
+            attrs["class_name"] = class_name
+        if student and class_name:
+            raise serializers.ValidationError("Choose either a class or a student, not both.")
+        return attrs
 
 
 class AttendanceRecordSerializer(serializers.ModelSerializer):
@@ -472,6 +518,31 @@ class AttendanceRecordSerializer(serializers.ModelSerializer):
         if not franchise or value.parent.franchise_id != franchise.id:
             raise serializers.ValidationError("Student is not enrolled at your centre.")
         return value
+
+
+class FranchiseAttendanceUpsertSerializer(AttendanceRecordSerializer):
+    """Franchise save updates existing student+date rows; skip create-time unique checks."""
+
+    class Meta(AttendanceRecordSerializer.Meta):
+        validators = []
+
+
+class FranchiseAttendanceBulkItemSerializer(serializers.Serializer):
+    student = serializers.PrimaryKeyRelatedField(queryset=StudentProfile.objects.all())
+    date = serializers.DateField()
+    status = serializers.ChoiceField(choices=AttendanceRecord.Status.choices)
+    note = serializers.CharField(required=False, allow_blank=True, default="")
+
+    def validate_student(self, value):
+        request = self.context.get("request")
+        franchise = franchise_profile_for_user(getattr(request, "user", None))
+        if not franchise or value.parent.franchise_id != franchise.id:
+            raise serializers.ValidationError("Student is not enrolled at your centre.")
+        return value
+
+
+class FranchiseAttendanceBulkSerializer(serializers.Serializer):
+    records = FranchiseAttendanceBulkItemSerializer(many=True, allow_empty=False)
 
 
 class FeeRecordSerializer(serializers.ModelSerializer):

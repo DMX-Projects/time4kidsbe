@@ -1,5 +1,5 @@
 from django.db.models import Q
-from rest_framework import generics, permissions, viewsets
+from rest_framework import generics, permissions, status, viewsets
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
@@ -126,6 +126,20 @@ class FranchiseParentViewSet(viewsets.ModelViewSet):
         context = super().get_serializer_context()
         context["franchise"] = franchise_profile_for_user(self.request.user)
         return context
+
+    def list(self, request, *args, **kwargs):
+        franchise = franchise_profile_for_user(request.user)
+        if not franchise:
+            return Response(
+                {
+                    "detail": (
+                        "This login is not linked to a centre (franchise). "
+                        "Use your centre login, or contact support to link the account."
+                    )
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        return super().list(request, *args, **kwargs)
 
     def perform_destroy(self, instance):
         franchise = franchise_profile_for_user(self.request.user)

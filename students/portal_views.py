@@ -36,6 +36,7 @@ from .models import (
     FeeRecord,
     Grade,
     HomeworkAssignment,
+    ParentFeePayment,
     ParentNotificationRead,
     StudentAchievement,
     StudentProfile,
@@ -49,6 +50,8 @@ from .models import (
 from .serializers import (
     AnnouncementSerializer,
     AttendanceRecordSerializer,
+    FranchiseAttendanceBulkSerializer,
+    FranchiseAttendanceUpsertSerializer,
     FeeRecordSerializer,
     GradeSerializer,
     HomeworkAssignmentSerializer,
@@ -92,15 +95,94 @@ def _parent_transport_route_row(route, request, student_ids=None):
     return row
 
 
+HOMEWORK_CLASS_LABELS = (
+    "Play Group",
+    "Nursery",
+    "PP-1 / Junior KG / LKG",
+    "PP-2 / Senior KG / UKG",
+    "Summer Programs / Day Care",
+)
+
+
 def _homework_visible_q(parent_profile):
+    """Centre-wide homework plus class rows matching each child's class_name (fuzzy label match)."""
     kids = StudentProfile.objects.filter(parent=parent_profile, is_active=True)
     vis = Q(student__isnull=True, class_name="")
     for k in kids:
         vis |= Q(student=k)
         cn = (k.class_name or "").strip()
-        if cn:
-            vis |= Q(student__isnull=True, class_name=cn)
+        if not cn:
+            continue
+        vis |= Q(student__isnull=True, class_name=cn)
+        cn_lower = cn.lower()
+        for label in HOMEWORK_CLASS_LABELS:
+            label_lower = label.lower()
+            if label_lower in cn_lower or cn_lower in label_lower:
+                vis |= Q(student__isnull=True, class_name=label)
     return vis
+
+
+def _class_label_matches(student_class: str, target_class: str) -> bool:
+    """True when a child's class should receive centre content aimed at target_class."""
+    sc = (student_class or "").strip()
+    tc = (target_class or "").strip()
+    if not sc or not tc:
+        return False
+    if sc == tc:
+        return True
+    sc_lower = sc.lower()
+    tc_lower = tc.lower()
+    if sc_lower == tc_lower or sc_lower in tc_lower or tc_lower in sc_lower:
+        return True
+    for label in HOMEWORK_CLASS_LABELS:
+        label_lower = label.lower()
+        sc_match = label_lower in sc_lower or sc_lower in label_lower
+        tc_match = label_lower in tc_lower or tc_lower in label_lower
+        if sc_match and tc_match:
+            return True
+        if sc_match and label == tc:
+            return True
+        if tc_match and label == sc:
+            return True
+    return False
+
+
+def _announcement_visible_q(parent_profile):
+    """Centre-wide, class-targeted, or student-specific announcements for this parent."""
+    kids = StudentProfile.objects.filter(parent=parent_profile, is_active=True)
+    vis = Q(student__isnull=True, class_name="")
+    for k in kids:
+        vis |= Q(student=k)
+        cn = (k.class_name or "").strip()
+        if not cn:
+            continue
+        vis |= Q(student__isnull=True, class_name=cn)
+        cn_lower = cn.lower()
+        for label in HOMEWORK_CLASS_LABELS:
+            label_lower = label.lower()
+            if label_lower in cn_lower or cn_lower in label_lower:
+                vis |= Q(student__isnull=True, class_name=label)
+    return vis
+
+
+def parent_profiles_for_announcement(announcement):
+    """Parents who should receive an announcement (in-app and email)."""
+    from franchises.models import ParentProfile
+
+    base = ParentProfile.objects.filter(franchise=announcement.franchise).select_related("user")
+    if announcement.student_id:
+        return base.filter(pk=announcement.student.parent_id)
+    target_class = (announcement.class_name or "").strip()
+    if target_class:
+        parent_ids: set[int] = set()
+        for student in StudentProfile.objects.filter(
+            parent__franchise=announcement.franchise,
+            is_active=True,
+        ).only("parent_id", "class_name"):
+            if _class_label_matches(student.class_name, target_class):
+                parent_ids.add(student.parent_id)
+        return base.filter(pk__in=parent_ids)
+    return base
 
 
 # ----- Parent (read-only / limited write) -----
@@ -133,7 +215,13 @@ class ParentAnnouncementListView(generics.ListAPIView):
         pp = resolved_parent_profile_for_user(self.request.user)
         if not pp:
             return Announcement.objects.none()
-        return Announcement.objects.filter(franchise=pp.franchise, is_active=True).order_by("-published_at")
+        return (
+            Announcement.objects.filter(franchise=pp.franchise, is_active=True)
+            .filter(_announcement_visible_q(pp))
+            .select_related("student")
+            .distinct()
+            .order_by("-published_at")
+        )
 
 
 class ParentAttendanceListView(generics.ListAPIView):
@@ -305,6 +393,223 @@ class ParentFeeSummaryView(APIView):
         return Response(summary)
 
 
+class ParentFeePaymentConfigView(APIView):
+    permission_classes = [IsParentUser]
+
+    def get(self, request):
+        from students.fee_payment import parent_fee_upi_settings
+
+        cfg = parent_fee_upi_settings()
+        return Response(
+            {
+                "configured": bool(cfg["upi_vpa"] or cfg["qr_image_url"]),
+                "payee_name": cfg["payee_name"],
+                "qr_image_url": cfg["qr_image_url"],
+            }
+        )
+
+
+class ParentFeePayInitView(APIView):
+    """Start UPI QR payment for one fee line."""
+
+    permission_classes = [IsParentUser]
+
+    def post(self, request):
+        import uuid
+        from decimal import Decimal
+
+        from students.fee_payment import (
+            build_upi_pay_uri,
+            parent_fee_upi_settings,
+            resolve_payable_line,
+        )
+        from students.fee_summary import build_fee_summary_from_records
+        from students.legacy_fee_service import fetch_legacy_fee_summary, legacy_fee_db_configured
+
+        cfg = parent_fee_upi_settings()
+        if not cfg["upi_vpa"] and not cfg["qr_image_url"]:
+            return Response(
+                {"detail": "Fee payment QR is not configured yet. Ask your centre to set PARENT_FEE_UPI_VPA."},
+                status=503,
+            )
+
+        pp = resolved_parent_profile_for_user(request.user)
+        if not pp:
+            return Response({"detail": "Parent profile not found"}, status=404)
+
+        from accounts.profile_access import primary_student_for_parent_user
+
+        student, _ = primary_student_for_parent_user(request.user)
+        if not student:
+            return Response({"detail": "No student linked to this account"}, status=400)
+
+        fee_record_id = request.data.get("fee_record_id")
+        line_serial = request.data.get("line_serial")
+        fee_type = (request.data.get("fee_type") or "").strip()
+
+        id_card_no = (student.Idcardno or "").strip() or (request.user.username or "").strip()
+        centre_name = (pp.franchise.name or "").strip() if pp.franchise_id else (student.Centre or "").strip()
+        summary = None
+        if id_card_no and legacy_fee_db_configured():
+            summary, _err = fetch_legacy_fee_summary(id_card_no)
+        if not summary or not summary.get("lines"):
+            summary = build_fee_summary_from_records(student, centre_name=centre_name)
+
+        from students.fee_payment import apply_paid_payments_to_summary
+
+        summary = apply_paid_payments_to_summary(summary, student, pp)
+
+        try:
+            fr_id = int(fee_record_id) if fee_record_id is not None else None
+        except (TypeError, ValueError):
+            fr_id = None
+        try:
+            serial = int(line_serial) if line_serial is not None else None
+        except (TypeError, ValueError):
+            serial = None
+
+        line, err = resolve_payable_line(
+            student=student,
+            parent=pp,
+            summary=summary,
+            fee_record_id=fr_id,
+            line_serial=serial,
+            fee_type=fee_type,
+        )
+        if not line:
+            return Response({"detail": err or "Cannot pay this fee"}, status=400)
+
+        balance = Decimal(str(line.get("balance") or 0)).quantize(Decimal("0.01"))
+        if balance <= 0:
+            return Response({"detail": "Nothing to pay for this line"}, status=400)
+
+        fixed_qr_amount = cfg.get("qr_fixed_amount")
+        if fixed_qr_amount is not None:
+            amount = fixed_qr_amount
+        else:
+            amount = balance
+
+        fee_record = None
+        if line.get("fee_record_id"):
+            fee_record = FeeRecord.objects.filter(pk=line["fee_record_id"], student=student).first()
+
+        payment = ParentFeePayment.objects.create(
+            parent=pp,
+            student=student,
+            fee_record=fee_record,
+            line_serial=int(line.get("serial") or serial or 0),
+            fee_type=(line.get("fee_type") or fee_type or "Fee")[:255],
+            amount=amount,
+            transaction_ref=uuid.uuid4().hex[:16].upper(),
+        )
+
+        note = f"Fee {payment.fee_type} {student.full_name}"[:80]
+        upi_uri = ""
+        if cfg["upi_vpa"]:
+            upi_uri = build_upi_pay_uri(
+                vpa=cfg["upi_vpa"],
+                payee_name=cfg["payee_name"],
+                amount=amount,
+                note=note,
+            )
+
+        return Response(
+            {
+                "payment_id": payment.id,
+                "amount": float(amount),
+                "fee_type": payment.fee_type,
+                "transaction_ref": payment.transaction_ref,
+                "upi_uri": upi_uri,
+                "payee_name": cfg["payee_name"],
+                "qr_image_url": cfg["qr_image_url"],
+            }
+        )
+
+
+class ParentFeePayConfirmView(APIView):
+    """Confirm UPI payment after parent pays via QR (manual confirm until gateway webhook)."""
+
+    permission_classes = [IsParentUser]
+
+    def post(self, request):
+        from decimal import Decimal
+
+        from students.fee_payment import mark_fee_record_paid
+
+        pp = resolved_parent_profile_for_user(request.user)
+        if not pp:
+            return Response({"detail": "Parent profile not found"}, status=404)
+
+        try:
+            payment_id = int(request.data.get("payment_id"))
+        except (TypeError, ValueError):
+            return Response({"detail": "payment_id is required"}, status=400)
+
+        payment = (
+            ParentFeePayment.objects.filter(pk=payment_id, parent=pp)
+            .select_related("fee_record", "student")
+            .first()
+        )
+        if not payment:
+            return Response({"detail": "Payment not found"}, status=404)
+        if payment.status == ParentFeePayment.Status.PAID:
+            return Response(
+                {
+                    "success": True,
+                    "payment_id": payment.id,
+                    "amount": float(payment.amount),
+                    "fee_type": payment.fee_type,
+                    "already_paid": True,
+                }
+            )
+
+        payment.status = ParentFeePayment.Status.PAID
+        payment.paid_at = timezone.now()
+        payment.mode_of_payment = "UPI QR"
+        payment.save(update_fields=["status", "paid_at", "mode_of_payment", "updated_at"])
+
+        if payment.fee_record_id:
+            mark_fee_record_paid(payment.fee_record, Decimal(str(payment.amount)))
+
+        return Response(
+            {
+                "success": True,
+                "payment_id": payment.id,
+                "amount": float(payment.amount),
+                "fee_type": payment.fee_type,
+                "student_name": payment.student.full_name,
+            }
+        )
+
+
+class ParentFeePaymentReceiptView(APIView):
+    """Payment receipt for a confirmed parent fee payment."""
+
+    permission_classes = [IsParentUser]
+
+    def get(self, request):
+        from students.fee_payment import build_parent_fee_receipt
+
+        pp = resolved_parent_profile_for_user(request.user)
+        if not pp:
+            return Response({"detail": "Parent profile not found"}, status=404)
+
+        try:
+            payment_id = int(request.query_params.get("payment_id"))
+        except (TypeError, ValueError):
+            return Response({"detail": "payment_id is required"}, status=400)
+
+        payment = (
+            ParentFeePayment.objects.filter(pk=payment_id, parent=pp, status=ParentFeePayment.Status.PAID)
+            .select_related("student", "parent__franchise", "parent__user")
+            .first()
+        )
+        if not payment:
+            return Response({"detail": "Receipt not found"}, status=404)
+
+        return Response(build_parent_fee_receipt(payment, pp))
+
+
 class ParentGradeListView(generics.ListAPIView):
     permission_classes = [IsParentUser]
     serializer_class = GradeSerializer
@@ -457,7 +762,13 @@ class ParentNotificationsView(APIView):
                 }
             )
 
-        announcements_qs = Announcement.objects.filter(franchise=pp.franchise, is_active=True).order_by("-published_at")
+        announcements_qs = (
+            Announcement.objects.filter(franchise=pp.franchise, is_active=True)
+            .filter(_announcement_visible_q(pp))
+            .select_related("student")
+            .distinct()
+            .order_by("-published_at")
+        )
         homework_qs = (
             HomeworkAssignment.objects.filter(franchise=pp.franchise)
             .filter(_homework_visible_q(pp))
@@ -700,7 +1011,15 @@ class FranchiseHomeworkListCreateView(generics.ListCreateAPIView):
         f = franchise_profile_for_user(self.request.user)
         if not f:
             return HomeworkAssignment.objects.none()
-        return HomeworkAssignment.objects.filter(franchise=f).select_related("student").order_by("-assigned_date")
+        qs = HomeworkAssignment.objects.filter(franchise=f).select_related("student").order_by("-assigned_date")
+        date_str = (self.request.query_params.get("assigned_date") or "").strip()
+        if date_str:
+            parsed = parse_date(date_str)
+            if parsed is not None:
+                qs = qs.filter(assigned_date=parsed)
+            else:
+                qs = qs.none()
+        return qs
 
     def get_serializer_context(self):
         c = super().get_serializer_context()
@@ -740,7 +1059,20 @@ class FranchiseAnnouncementListCreateView(generics.ListCreateAPIView):
         f = franchise_profile_for_user(self.request.user)
         if not f:
             return Announcement.objects.none()
-        return Announcement.objects.filter(franchise=f).order_by("-published_at")
+        qs = Announcement.objects.filter(franchise=f).select_related("student").order_by("-published_at")
+        date_str = (self.request.query_params.get("published_date") or "").strip()
+        if date_str:
+            parsed = parse_date(date_str)
+            if parsed is not None:
+                qs = qs.filter(published_at__date=parsed)
+            else:
+                qs = qs.none()
+        return qs
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx["request"] = self.request
+        return ctx
 
     def perform_create(self, serializer):
         f = franchise_profile_for_user(self.request.user)
@@ -765,13 +1097,23 @@ class FranchiseAnnouncementDetailView(generics.RetrieveUpdateDestroyAPIView):
         f = franchise_profile_for_user(self.request.user)
         if not f:
             return Announcement.objects.none()
-        return Announcement.objects.filter(franchise=f)
+        return Announcement.objects.filter(franchise=f).select_related("student")
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx["request"] = self.request
+        return ctx
 
 
 class FranchiseAttendanceListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsFranchiseUser]
     serializer_class = AttendanceRecordSerializer
     pagination_class = None
+
+    def get_serializer_class(self):
+        if self.request.method == "POST":
+            return FranchiseAttendanceUpsertSerializer
+        return AttendanceRecordSerializer
 
     def create(self, request, *args, **kwargs):
         """Create or update attendance for student+date (franchise save is idempotent)."""
@@ -812,6 +1154,82 @@ class FranchiseAttendanceListCreateView(generics.ListCreateAPIView):
         c = super().get_serializer_context()
         c["request"] = self.request
         return c
+
+
+class FranchiseAttendanceBulkUpsertView(APIView):
+    """Save many attendance rows in one request (create or update by student+date)."""
+
+    permission_classes = [IsFranchiseUser]
+
+    def post(self, request):
+        serializer = FranchiseAttendanceBulkSerializer(
+            data=request.data,
+            context={"request": request},
+        )
+        serializer.is_valid(raise_exception=True)
+        rows = serializer.validated_data["records"]
+        if not rows:
+            return Response({"saved": 0}, status=status.HTTP_200_OK)
+
+        student_ids = [row["student"].pk for row in rows]
+        dates = {row["date"] for row in rows}
+        existing_map: dict[tuple[int, object], AttendanceRecord] = {}
+        if len(dates) == 1:
+            only_date = next(iter(dates))
+            for record in AttendanceRecord.objects.filter(student_id__in=student_ids, date=only_date):
+                existing_map[(record.student_id, record.date)] = record
+
+        to_update: list[AttendanceRecord] = []
+        to_create: list[AttendanceRecord] = []
+        for row in rows:
+            student = row["student"]
+            date = row["date"]
+            status_value = row["status"]
+            note = row.get("note") or ""
+            key = (student.pk, date)
+            existing = existing_map.get(key)
+            if existing is not None:
+                existing.status = status_value
+                existing.note = note
+                to_update.append(existing)
+            else:
+                to_create.append(
+                    AttendanceRecord(
+                        student=student,
+                        date=date,
+                        status=status_value,
+                        note=note,
+                    )
+                )
+
+        with transaction.atomic():
+            if to_update:
+                AttendanceRecord.objects.bulk_update(to_update, ["status", "note"])
+            if to_create:
+                AttendanceRecord.objects.bulk_create(to_create, ignore_conflicts=True)
+
+        return Response({"saved": len(rows)}, status=status.HTTP_200_OK)
+
+
+class FranchiseAttendanceClearDateView(APIView):
+    """Remove all saved attendance rows at this centre for one date."""
+
+    permission_classes = [IsFranchiseUser]
+
+    def delete(self, request):
+        franchise = franchise_profile_for_user(request.user)
+        if not franchise:
+            return Response({"detail": "Franchise profile not found"}, status=404)
+
+        date_str = (request.query_params.get("date") or "").strip()
+        parsed = parse_date(date_str)
+        if parsed is None:
+            return Response({"detail": "A valid date query param is required (YYYY-MM-DD)."}, status=400)
+
+        deleted, _details = (
+            AttendanceRecord.objects.filter(student__parent__franchise=franchise, date=parsed).delete()
+        )
+        return Response({"deleted": deleted, "date": date_str}, status=status.HTTP_200_OK)
 
 
 class FranchiseAttendanceDetailView(generics.RetrieveUpdateDestroyAPIView):
