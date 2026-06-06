@@ -16,6 +16,18 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _parent_notification_email(parent_profile) -> str:
+    """Best deliverable email for a parent (user login email, then profile/student Emailid)."""
+    user_email = (getattr(getattr(parent_profile, "user", None), "email", None) or "").strip()
+    profile_email = (getattr(parent_profile, "Emailid", None) or "").strip()
+    if profile_email and "@" in profile_email:
+        if not user_email or user_email.lower().endswith("@time4kids.local"):
+            return profile_email
+    if user_email and "@" in user_email:
+        return user_email
+    return profile_email if profile_email and "@" in profile_email else ""
+
+
 def notify_parents_new_announcement(announcement: Announcement) -> int:
     """
     Email each parent at this franchise (except those with notifications_muted).
@@ -76,7 +88,7 @@ def notify_parents_new_announcement(announcement: Announcement) -> int:
     sg = SendGridAPIClient(api_key)
 
     for pp in parents:
-        addr = (pp.user.email or "").strip()
+        addr = _parent_notification_email(pp)
         if not addr or addr.lower() in seen:
             continue
         seen.add(addr.lower())
