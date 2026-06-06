@@ -4,6 +4,7 @@ from franchises.models import DriverProfile
 from franchises.serializers import DriverProfileSerializer, DriverCreateSerializer
 """Parent portal: homework, announcements, attendance, fees, transport, support tickets."""
 
+import re
 import threading
 import json
 from datetime import timedelta
@@ -23,8 +24,12 @@ from rest_framework.views import APIView
 
 from accounts.permissions import IsFranchiseUser, IsParentUser
 from accounts.profile_access import (
+    effective_franchise_for_parent,
+    find_student_for_parent_user,
     franchise_profile_for_user,
+    parents_at_franchise,
     resolved_parent_profile_for_user,
+    user_owns_legacy_student,
 )
 from events.calendar_filters import exclude_showcase_placeholder_events
 from events.models import Event
@@ -103,23 +108,90 @@ HOMEWORK_CLASS_LABELS = (
     "Summer Programs / Day Care",
 )
 
+_LEGACY_CLASS_YEAR_SUFFIX = re.compile(r"\s+\d{2}-\d{2}$")
 
-def _homework_visible_q(parent_profile):
-    """Centre-wide homework plus class rows matching each child's class_name (fuzzy label match)."""
-    kids = StudentProfile.objects.filter(parent=parent_profile, is_active=True)
-    vis = Q(student__isnull=True, class_name="")
-    for k in kids:
-        vis |= Q(student=k)
-        cn = (k.class_name or "").strip()
+
+def _strip_legacy_class_year(class_name: str) -> str:
+    return _LEGACY_CLASS_YEAR_SUFFIX.sub("", (class_name or "").strip())
+
+
+def _canonical_class_label(class_name: str) -> str | None:
+    """Map legacy/import class strings (e.g. ``PP1 25-26``) to portal class labels."""
+    raw = (class_name or "").strip()
+    if not raw:
+        return None
+    if raw in HOMEWORK_CLASS_LABELS:
+        return raw
+
+    core = _strip_legacy_class_year(raw)
+    norm = core.lower().replace("_", " ").replace("-", " ").strip()
+    compact = re.sub(r"[^a-z0-9]", "", norm)
+
+    if norm.startswith("play group") or compact.startswith("playgroup"):
+        return "Play Group"
+    if norm.startswith("nursery") or norm.startswith("refresher course nur"):
+        return "Nursery"
+    if re.search(r"pp\s*1", norm) or compact.startswith("pp1") or norm in ("junior kg", "lkg"):
+        return "PP-1 / Junior KG / LKG"
+    if re.search(r"pp\s*2", norm) or compact.startswith("pp2") or norm in ("senior kg", "ukg"):
+        return "PP-2 / Senior KG / UKG"
+    if (
+        norm.startswith("summer camp")
+        or norm.startswith("summer program")
+        or "day care" in norm
+        or "daycare" in norm
+    ):
+        return "Summer Programs / Day Care"
+
+    core_lower = core.lower()
+    for label in HOMEWORK_CLASS_LABELS:
+        label_lower = label.lower()
+        if label_lower in core_lower or core_lower in label_lower:
+            return label
+    return None
+
+
+def _parent_class_target_names(parent_profile) -> set[str]:
+    """Legacy and canonical class strings that should match centre-wide rows for this parent."""
+    names: set[str] = set()
+    for cn in StudentProfile.objects.filter(parent=parent_profile, is_active=True).values_list(
+        "class_name", flat=True
+    ):
+        cn = (cn or "").strip()
         if not cn:
             continue
+        names.add(cn)
+        canon = _canonical_class_label(cn)
+        if canon:
+            names.add(canon)
+    return names
+
+
+def _student_ids_visible_to_parent(parent_profile, user=None) -> set[int]:
+    """Active student ids whose homework/announcements this login should see."""
+    ids = set(
+        StudentProfile.objects.filter(parent=parent_profile, is_active=True).values_list("pk", flat=True)
+    )
+    if user:
+        legacy = find_student_for_parent_user(user)
+        if legacy and legacy.is_active and user_owns_legacy_student(user, legacy):
+            ids.add(legacy.pk)
+    return ids
+
+
+def _centre_class_visibility_q(parent_profile, user=None) -> Q:
+    """Centre-wide or class-targeted rows visible to a parent (homework + announcements)."""
+    vis = Q(student__isnull=True, class_name="")
+    for student_id in _student_ids_visible_to_parent(parent_profile, user=user):
+        vis |= Q(student_id=student_id)
+    for cn in _parent_class_target_names(parent_profile):
         vis |= Q(student__isnull=True, class_name=cn)
-        cn_lower = cn.lower()
-        for label in HOMEWORK_CLASS_LABELS:
-            label_lower = label.lower()
-            if label_lower in cn_lower or cn_lower in label_lower:
-                vis |= Q(student__isnull=True, class_name=label)
     return vis
+
+
+def _homework_visible_q(parent_profile, user=None):
+    """Centre-wide homework plus class rows matching each child's class_name."""
+    return _centre_class_visibility_q(parent_profile, user=user)
 
 
 def _class_label_matches(student_class: str, target_class: str) -> bool:
@@ -130,6 +202,16 @@ def _class_label_matches(student_class: str, target_class: str) -> bool:
         return False
     if sc == tc:
         return True
+
+    sc_canon = _canonical_class_label(sc)
+    tc_canon = _canonical_class_label(tc)
+    if sc_canon and tc_canon:
+        return sc_canon == tc_canon
+    if sc_canon and sc_canon == tc:
+        return True
+    if tc_canon and tc_canon == sc:
+        return True
+
     sc_lower = sc.lower()
     tc_lower = tc.lower()
     if sc_lower == tc_lower or sc_lower in tc_lower or tc_lower in sc_lower:
@@ -147,38 +229,38 @@ def _class_label_matches(student_class: str, target_class: str) -> bool:
     return False
 
 
-def _announcement_visible_q(parent_profile):
+def _announcement_visible_q(parent_profile, user=None):
     """Centre-wide, class-targeted, or student-specific announcements for this parent."""
-    kids = StudentProfile.objects.filter(parent=parent_profile, is_active=True)
-    vis = Q(student__isnull=True, class_name="")
-    for k in kids:
-        vis |= Q(student=k)
-        cn = (k.class_name or "").strip()
-        if not cn:
-            continue
-        vis |= Q(student__isnull=True, class_name=cn)
-        cn_lower = cn.lower()
-        for label in HOMEWORK_CLASS_LABELS:
-            label_lower = label.lower()
-            if label_lower in cn_lower or cn_lower in label_lower:
-                vis |= Q(student__isnull=True, class_name=label)
-    return vis
+    return _centre_class_visibility_q(parent_profile, user=user)
+
+
+def _parent_centre(parent_profile):
+    return effective_franchise_for_parent(parent_profile)
 
 
 def parent_profiles_for_announcement(announcement):
     """Parents who should receive an announcement (in-app and email)."""
     from franchises.models import ParentProfile
 
-    base = ParentProfile.objects.filter(franchise=announcement.franchise).select_related("user")
     if announcement.student_id:
-        return base.filter(pk=announcement.student.parent_id)
+        try:
+            student = announcement.student
+        except StudentProfile.DoesNotExist:
+            return ParentProfile.objects.none()
+        parent_id = student.parent_id
+        if not parent_id:
+            return ParentProfile.objects.none()
+        return ParentProfile.objects.filter(pk=parent_id).select_related("user", "franchise")
+
+    base = parents_at_franchise(announcement.franchise)
     target_class = (announcement.class_name or "").strip()
     if target_class:
         parent_ids: set[int] = set()
+        base_parent_ids = list(base.values_list("pk", flat=True))
         for student in StudentProfile.objects.filter(
-            parent__franchise=announcement.franchise,
             is_active=True,
-        ).only("parent_id", "class_name"):
+            parent_id__in=base_parent_ids,
+        ).only("parent_id", "class_name", "Centre", "City"):
             if _class_label_matches(student.class_name, target_class):
                 parent_ids.add(student.parent_id)
         return base.filter(pk__in=parent_ids)
@@ -195,15 +277,44 @@ class ParentHomeworkListView(generics.ListAPIView):
 
     def get_queryset(self):
         pp = resolved_parent_profile_for_user(self.request.user)
-        if not pp:
+        centre = _parent_centre(pp)
+        if not pp or not centre:
             return HomeworkAssignment.objects.none()
         return (
-            HomeworkAssignment.objects.filter(franchise=pp.franchise)
-            .filter(_homework_visible_q(pp))
+            HomeworkAssignment.objects.filter(franchise=centre)
+            .filter(_homework_visible_q(pp, user=self.request.user))
             .select_related("student")
             .distinct()
             .order_by("-assigned_date", "-created_at")
         )
+
+
+def _announcement_notification_rows(rows, read_map=None):
+    """Shape centre announcements for parent app notification feeds."""
+    read_map = read_map or {}
+    notifications = []
+    for row in rows:
+        ann_id = row.get("id")
+        key = f"announcement-{ann_id}"
+        read_at = read_map.get(key)
+        body = row.get("body") or ""
+        notifications.append(
+            {
+                "id": key,
+                "source": "announcement",
+                "source_id": ann_id,
+                "title": row.get("title") or "Announcement",
+                "body": body,
+                "message": body,
+                "description": body,
+                "published_at": row.get("published_at"),
+                "audience_label": row.get("audience_label") or "",
+                "student_name": row.get("student_name") or "",
+                "read": read_at is not None,
+                "read_at": read_at,
+            }
+        )
+    return notifications
 
 
 class ParentAnnouncementListView(generics.ListAPIView):
@@ -213,14 +324,45 @@ class ParentAnnouncementListView(generics.ListAPIView):
 
     def get_queryset(self):
         pp = resolved_parent_profile_for_user(self.request.user)
-        if not pp:
+        centre = _parent_centre(pp)
+        if not pp or not centre:
             return Announcement.objects.none()
         return (
-            Announcement.objects.filter(franchise=pp.franchise, is_active=True)
-            .filter(_announcement_visible_q(pp))
+            Announcement.objects.filter(franchise=centre, is_active=True)
+            .filter(_announcement_visible_q(pp, user=self.request.user))
             .select_related("student")
             .distinct()
             .order_by("-published_at")
+        )
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        rows = self.get_serializer(queryset, many=True).data
+        if (request.query_params.get("format") or "").strip().lower() == "list":
+            return Response(rows)
+
+        read_map = {}
+        pp = resolved_parent_profile_for_user(request.user)
+        if pp:
+            try:
+                read_map = {
+                    row["notification_key"]: row["read_at"]
+                    for row in ParentNotificationRead.objects.filter(parent=pp).values(
+                        "notification_key", "read_at"
+                    )
+                }
+            except (ProgrammingError, OperationalError):
+                read_map = {}
+
+        notifications = _announcement_notification_rows(rows, read_map=read_map)
+        unread_count = sum(1 for n in notifications if not n["read"])
+        return Response(
+            {
+                "announcements": rows,
+                "notifications": notifications,
+                "count": len(rows),
+                "unread_count": unread_count,
+            }
         )
 
 
@@ -247,11 +389,12 @@ class ParentCalendarAttendanceView(APIView):
 
     def get(self, request):
         pp = resolved_parent_profile_for_user(request.user)
-        if not pp:
+        centre = _parent_centre(pp)
+        if not pp or not centre:
             return Response({"calendar_events": [], "attendance": []})
 
         events_qs = exclude_showcase_placeholder_events(
-            Event.objects.filter(franchise=pp.franchise)
+            Event.objects.filter(franchise=centre)
         ).order_by("-start_date", "-created_at")
         attendance_qs = (
             AttendanceRecord.objects.filter(student__parent=pp, student__is_active=True)
@@ -627,8 +770,11 @@ class ParentGradeListView(generics.ListAPIView):
 
 def _parent_transport_routes_queryset(pp):
     """All transport routes published at the parent's centre (not only assigned routes)."""
+    centre = _parent_centre(pp)
+    if not centre:
+        return TransportRoute.objects.none()
     return (
-        TransportRoute.objects.filter(franchise=pp.franchise)
+        TransportRoute.objects.filter(franchise=centre)
         .select_related("driver_profile__user")
         .order_by("sort_order", "route_name")
     )
@@ -667,14 +813,15 @@ class ParentLiveTransportView(APIView):
 
     def get(self, request):
         pp = resolved_parent_profile_for_user(request.user)
-        if not pp:
+        centre = _parent_centre(pp)
+        if not pp or not centre:
             return Response({"live": False, "detail": "Parent profile not found"}, status=404)
 
         school_location = None
-        if pp.franchise.latitude and pp.franchise.longitude:
+        if centre.latitude and centre.longitude:
             school_location = {
-                "latitude": float(pp.franchise.latitude),
-                "longitude": float(pp.franchise.longitude),
+                "latitude": float(centre.latitude),
+                "longitude": float(centre.longitude),
             }
 
         students = StudentProfile.objects.filter(parent=pp, is_active=True)
@@ -747,6 +894,7 @@ class ParentNotificationsView(APIView):
 
     def get(self, request):
         pp = resolved_parent_profile_for_user(request.user)
+        centre = _parent_centre(pp)
         if not pp:
             return Response(
                 {
@@ -763,35 +911,47 @@ class ParentNotificationsView(APIView):
             )
 
         announcements_qs = (
-            Announcement.objects.filter(franchise=pp.franchise, is_active=True)
-            .filter(_announcement_visible_q(pp))
+            Announcement.objects.filter(franchise=centre, is_active=True)
+            .filter(_announcement_visible_q(pp, user=request.user))
             .select_related("student")
             .distinct()
             .order_by("-published_at")
-        )
+        ) if centre else Announcement.objects.none()
         homework_qs = (
-            HomeworkAssignment.objects.filter(franchise=pp.franchise)
-            .filter(_homework_visible_q(pp))
+            HomeworkAssignment.objects.filter(franchise=centre)
+            .filter(_homework_visible_q(pp, user=request.user))
             .select_related("student")
             .distinct()
             .order_by("-assigned_date", "-created_at")
-        )
+        ) if centre else HomeworkAssignment.objects.none()
         fees_qs = (
             FeeRecord.objects.filter(student__parent=pp, student__is_active=True)
             .select_related("student")
             .order_by("-due_date", "-created_at")
         )
-        transport_qs = TransportRoute.objects.filter(franchise=pp.franchise).order_by("sort_order", "route_name")
-        events_qs = exclude_showcase_placeholder_events(
-            Event.objects.filter(franchise=pp.franchise)
-        ).order_by("-start_date", "-created_at")
+        transport_qs = (
+            TransportRoute.objects.filter(franchise=centre).order_by("sort_order", "route_name")
+            if centre
+            else TransportRoute.objects.none()
+        )
+        events_qs = (
+            exclude_showcase_placeholder_events(Event.objects.filter(franchise=centre)).order_by(
+                "-start_date", "-created_at"
+            )
+            if centre
+            else Event.objects.none()
+        )
         kids = StudentProfile.objects.filter(parent=pp, is_active=True)
         achievements_qs = (
-            StudentAchievement.objects.filter(franchise=pp.franchise)
-            .filter(Q(student__in=kids) | Q(student__isnull=True))
-            .select_related("student")
-            .distinct()
-            .order_by("-achieved_date", "-created_at")
+            (
+                StudentAchievement.objects.filter(franchise=centre)
+                .filter(Q(student__in=kids) | Q(student__isnull=True))
+                .select_related("student")
+                .distinct()
+                .order_by("-achieved_date", "-created_at")
+            )
+            if centre
+            else StudentAchievement.objects.none()
         )
         attendance_qs = (
             AttendanceRecord.objects.filter(student__parent=pp, student__is_active=True)

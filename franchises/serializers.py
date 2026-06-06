@@ -256,6 +256,7 @@ class FranchiseProfileSerializer(FranchiseSerializer):
     centre_access = serializers.SerializerMethodField()
 
     class Meta(FranchiseSerializer.Meta):
+        fields = FranchiseSerializer.Meta.fields + ["centre_access"]
         read_only_fields = ["id", "slug", "created_at", "updated_at", "admin", "user", "is_active", "centre_access"]
 
     def get_centre_access(self, obj):

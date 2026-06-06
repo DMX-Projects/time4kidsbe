@@ -315,19 +315,27 @@ def parent_profile_for_user(user):
 
     from franchises.models import ParentProfile
 
+    student = find_student_for_parent_user(user)
+    if student and student.parent_id and user_owns_legacy_student(user, student):
+        synced = _sync_parent_profile_user(student.parent, user, student=student)
+        if synced:
+            return synced
+
     try:
         profile = user.parent_profile
-        return _sync_parent_profile_user(profile, user)
+        if student and student.parent_id and profile.pk != student.parent_id:
+            student_franchise = _franchise_for_legacy_student(student)
+            profile_franchise_id = profile.franchise_id
+            if student_franchise and profile_franchise_id == student_franchise.id:
+                student.parent = profile
+                student.save(update_fields=["parent_id"])
+        return _sync_parent_profile_user(profile, user, student=student)
     except ObjectDoesNotExist:
         pass
 
     profile = ParentProfile.objects.filter(user_id=user.pk).select_related("franchise", "user").first()
     if profile:
         return profile
-
-    student = find_student_for_parent_user(user)
-    if student and student.parent_id and user_owns_legacy_student(user, student):
-        return _sync_parent_profile_user(student.parent, user, student=student)
 
     for key in _login_identifiers_for_user(user):
         if "@" not in key:
@@ -382,6 +390,10 @@ def _franchise_for_legacy_student(student):
     """Best-effort franchise for an imported student row."""
     from franchises.models import Franchise
 
+    franchise = _franchise_for_student_centre(student.Centre or "")
+    if franchise:
+        return franchise
+
     if student.parent_id:
         try:
             franchise = student.parent.franchise
@@ -389,10 +401,6 @@ def _franchise_for_legacy_student(student):
                 return franchise
         except ObjectDoesNotExist:
             pass
-
-    franchise = _franchise_for_student_centre(student.Centre or "")
-    if franchise:
-        return franchise
 
     city = (getattr(student, "City", None) or "").strip()
     if city:
@@ -403,6 +411,61 @@ def _franchise_for_legacy_student(student):
             return matches[0]
 
     return None
+
+
+def effective_franchise_for_parent(parent_profile):
+    """
+    Centre used for parent portal content (announcements, homework, events).
+    Prefers the enrolled child's centre when ``ParentProfile.franchise`` is missing or stale.
+    """
+    if not parent_profile:
+        return None
+
+    from franchises.models import Franchise, ParentProfile
+    from students.models import StudentProfile
+
+    franchise = None
+    if parent_profile.franchise_id:
+        try:
+            franchise = parent_profile.franchise
+        except ObjectDoesNotExist:
+            franchise = None
+
+    for student in StudentProfile.objects.filter(parent=parent_profile, is_active=True).order_by(
+        "-updated_at", "id"
+    )[:8]:
+        resolved = _franchise_for_legacy_student(student)
+        if not resolved:
+            continue
+        franchise = resolved
+        if parent_profile.franchise_id != resolved.id:
+            ParentProfile.objects.filter(pk=parent_profile.pk).update(franchise_id=resolved.id)
+            parent_profile.franchise_id = resolved.id
+        break
+
+    return franchise
+
+
+def parents_at_franchise(franchise):
+    """All parent profiles tied to a centre (profile row and/or enrolled children)."""
+    from franchises.models import ParentProfile
+    from students.models import StudentProfile
+
+    if not franchise:
+        return ParentProfile.objects.none()
+
+    parent_ids = set(
+        ParentProfile.objects.filter(franchise=franchise).values_list("pk", flat=True)
+    )
+    for student in (
+        StudentProfile.objects.filter(is_active=True, parent_id__isnull=False)
+        .exclude(parent__franchise=franchise)
+        .only("parent_id", "Centre", "City")
+    ):
+        if _franchise_for_legacy_student(student) == franchise:
+            parent_ids.add(student.parent_id)
+
+    return ParentProfile.objects.filter(pk__in=parent_ids).select_related("user", "franchise")
 
 
 def ensure_parent_profile_for_user(user):
@@ -448,6 +511,9 @@ def ensure_parent_profile_for_user(user):
             "phone": re.sub(r"\D", "", (student.Mobileno or ""))[-10:],
         },
     )
+    if not _created and franchise and profile.franchise_id != franchise.id:
+        profile.franchise = franchise
+        profile.save(update_fields=["franchise_id"])
     if not student.parent_id:
         student.parent = profile
         student.save(update_fields=["parent_id"])

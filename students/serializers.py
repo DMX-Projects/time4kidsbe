@@ -469,9 +469,15 @@ class AnnouncementSerializer(serializers.ModelSerializer):
             return value
         request = self.context.get("request")
         franchise = franchise_profile_for_user(getattr(request, "user", None))
-        if not franchise or value.parent.franchise_id != franchise.id:
+        if not franchise:
             raise serializers.ValidationError("Student is not enrolled at your centre.")
-        return value
+        if value.parent.franchise_id == franchise.id:
+            return value
+        from accounts.profile_access import _franchise_for_legacy_student
+
+        if _franchise_for_legacy_student(value) == franchise:
+            return value
+        raise serializers.ValidationError("Student is not enrolled at your centre.")
 
     def validate(self, attrs):
         student = attrs.get("student")

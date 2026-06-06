@@ -5,7 +5,7 @@ from django.db import IntegrityError
 from rest_framework import serializers
 from .holiday_entries import merge_holiday_entries, normalize_holiday_entries
 from .models import ParentDocument, FranchiseDocument, FranchiseDocumentCategory, DocumentCategory, IndentRequest
-from .newsletter_files import is_newsletter_upload_file
+from .newsletter_files import is_newsletter_upload_file, is_pdf_upload_file
 from common.fields import RelativeFileField, RelativeImageField
 
 
@@ -234,11 +234,25 @@ class AdminParentDocumentSerializer(ParentDocumentSerializer):
         if category == "HOLIDAY_LISTS":
             holiday_entries = self._resolved_holiday_entries(attrs)
             attrs["holiday_entries"] = holiday_entries
-            if file_obj is not None:
-                raise serializers.ValidationError({"file": "Holiday lists use manual entries only."})
-            if len(holiday_entries) == 0:
+            if file_obj is not None and not is_pdf_upload_file(file_obj):
+                raise serializers.ValidationError({"file": "Holiday lists must be a PDF file."})
+            has_existing_file = bool(self.instance and self.instance.file)
+            if (
+                self.instance is None
+                and not has_upload
+                and len(holiday_entries) == 0
+            ):
                 raise serializers.ValidationError(
-                    {"holiday_entries": "Add at least one holiday with a date."}
+                    {"file": "Upload a PDF or add at least one holiday with a date."}
+                )
+            if (
+                self.instance is not None
+                and not has_upload
+                and not has_existing_file
+                and len(holiday_entries) == 0
+            ):
+                raise serializers.ValidationError(
+                    {"file": "Upload a PDF or add at least one holiday with a date."}
                 )
         elif self.instance is None and not has_upload:
             raise serializers.ValidationError({"file": "Choose a file to upload."})
