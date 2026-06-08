@@ -74,6 +74,8 @@ def _norm_user_role(user) -> str:
 
 def _parent_documents_visible_queryset(user):
     """Active parent-app documents: global + parent's centre (when linked)."""
+    from .parent_document_media import filter_parent_documents_by_media_type
+
     qs = ParentDocument.objects.filter(is_active=True).select_related("franchise")
     role = _norm_user_role(user)
     if role == UserRole.PARENT.value:
@@ -83,23 +85,48 @@ def _parent_documents_visible_queryset(user):
             qs = _apply_holiday_centre_overrides(qs, profile.franchise_id)
         else:
             qs = qs.filter(franchise__isnull=True)
+    qs = filter_parent_documents_by_media_type(qs)
     return qs.order_by("category", "order", "-created_at")
 
 
 def _apply_holiday_centre_overrides(qs, franchise_id):
-    """Parents see centre holiday PDF instead of head-office global for the same state + year."""
-    centre_holidays = ParentDocument.objects.filter(
-        is_active=True,
-        category=DocumentCategory.HOLIDAY_LISTS,
-        franchise_id=franchise_id,
+    """
+    Parents see centre holiday PDF instead of head-office global for the same state + year.
+    Centre rows with manual entries only (no PDF) must not hide the head-office PDF.
+    """
+    from .state_utils import effective_holiday_academic_year, effective_holiday_state
+
+    centre_holidays = (
+        ParentDocument.objects.filter(
+            is_active=True,
+            category=DocumentCategory.HOLIDAY_LISTS,
+            franchise_id=franchise_id,
+        )
+        .exclude(file="")
+        .exclude(file__isnull=True)
+        .select_related("franchise")
     )
     exclude_global = Q()
+
     for holiday in centre_holidays:
+        if not holiday.file:
+            continue
+        stored_name = getattr(holiday.file, "name", "") or ""
+        if not stored_name.strip():
+            continue
+        try:
+            if not holiday.file.storage.exists(stored_name):
+                continue
+        except Exception:
+            pass
+        eff_state = effective_holiday_state(holiday)
+        if not eff_state:
+            continue
         exclude_global |= Q(
             category=DocumentCategory.HOLIDAY_LISTS,
             franchise__isnull=True,
-            state=holiday.state,
-            academic_year=holiday.academic_year,
+            state=eff_state,
+            academic_year=effective_holiday_academic_year(holiday),
         )
     if exclude_global:
         qs = qs.exclude(exclude_global)
