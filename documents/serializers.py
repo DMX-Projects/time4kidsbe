@@ -110,6 +110,10 @@ class ParentDocumentSerializer(serializers.ModelSerializer):
             year = effective_holiday_academic_year(instance)
             if not (data.get("academic_year") or "").strip():
                 data["academic_year"] = year
+        # Remove franchise/franchise_name when null — no meaning to the parent
+        if data.get("franchise") is None:
+            data.pop("franchise", None)
+            data.pop("franchise_name", None)
         return data
 
 
