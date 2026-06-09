@@ -75,6 +75,7 @@ def _norm_user_role(user) -> str:
 def _parent_documents_visible_queryset(user):
     """Active parent-app documents: global + parent's centre (when linked)."""
     from .parent_document_media import filter_parent_documents_by_media_type
+    from .state_utils import franchise_state_code
 
     qs = ParentDocument.objects.filter(is_active=True).select_related("franchise")
     role = _norm_user_role(user)
@@ -83,8 +84,26 @@ def _parent_documents_visible_queryset(user):
         if profile and profile.franchise_id:
             qs = qs.filter(Q(franchise__isnull=True) | Q(franchise_id=profile.franchise_id))
             qs = _apply_holiday_centre_overrides(qs, profile.franchise_id)
+            
+            # Restrict global holiday lists to the parent's franchise state
+            eff_state = franchise_state_code(profile.franchise)
+            if eff_state:
+                qs = qs.exclude(
+                    Q(category=DocumentCategory.HOLIDAY_LISTS) &
+                    Q(franchise__isnull=True) &
+                    ~Q(state=eff_state)
+                )
+            else:
+                # If centre has no valid state, hide all global holiday lists
+                qs = qs.exclude(
+                    Q(category=DocumentCategory.HOLIDAY_LISTS) &
+                    Q(franchise__isnull=True)
+                )
         else:
             qs = qs.filter(franchise__isnull=True)
+            # Unlinked parents cannot see any state-specific global holiday lists
+            qs = qs.exclude(category=DocumentCategory.HOLIDAY_LISTS)
+            
     qs = filter_parent_documents_by_media_type(qs)
     return qs.order_by("category", "order", "-created_at")
 
