@@ -3,6 +3,7 @@ from .views import (
     ParentDocumentListView,
     parent_documents_by_category,
     parent_document_file,
+    parent_document_audio_file,
     franchise_document_file,
     franchise_documents_all,
     franchise_documents_by_category,
@@ -24,6 +25,7 @@ from .views import (
 urlpatterns = [
     path('parent/documents/', ParentDocumentListView.as_view(), name='parent-documents'),
     path('parent/documents/<int:pk>/file/', parent_document_file, name='parent-document-file'),
+    path('parent/documents/<int:pk>/audio/', parent_document_audio_file, name='parent-document-audio-file'),
     path('parent/documents/category/<str:category>/', parent_documents_by_category, name='parent-documents-category'),
     path('franchise/documents/', franchise_documents_all, name='franchise-documents-all'),
     path('franchise/documents/<int:pk>/file/', franchise_document_file, name='franchise-document-file'),

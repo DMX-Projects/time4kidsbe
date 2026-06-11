@@ -12,7 +12,7 @@ from .permissions import can_view_landing_leads
 from accounts.profile_access import franchise_profile_for_user
 
 from .landing_submit import handle_landing_enquiry_post
-from .models import Enquiry, FranchiseEnquiry, KidsEnquiry
+from .models import Enquiry, FranchiseEnquiry, KidsEnquiry, OTPVerification
 from .serializers import (
     EnquirySerializer,
     FranchiseEnquiryCreateSerializer,
@@ -61,6 +61,20 @@ def _distinct_kids_enquiry_cities() -> list[str]:
         .distinct()
     )
     return sorted({c.strip() for c in cities if c and c.strip()}, key=str.casefold)
+
+
+def _sync_enquiry_status_siblings(instance, status: str) -> None:
+    """One public submit can create several rows (global + per-centre). Keep status in sync."""
+    phone = (getattr(instance, "phone", None) or "").strip()
+    if not phone:
+        return
+    type(instance).objects.filter(phone=phone).exclude(pk=instance.pk).update(status=status)
+
+
+class EnquiryStatusSyncMixin:
+    def perform_update(self, serializer):
+        instance = serializer.save()
+        _sync_enquiry_status_siblings(instance, instance.status)
 
 
 def _merge_enquiry_rows(
@@ -202,14 +216,19 @@ class AdminAllEnquiryListView(APIView):
         return Response(data)
 
 
-class EnquiryUpdateView(generics.UpdateAPIView):
+class EnquiryUpdateView(EnquiryStatusSyncMixin, generics.UpdateAPIView):
     serializer_class = EnquirySerializer
     permission_classes = [IsAdminUser]
-    queryset = Enquiry.objects.all()
     lookup_field = "pk"
 
+    def get_queryset(self):
+        admin_user = self.request.user
+        return Enquiry.objects.filter(
+            Q(franchise__isnull=True) | Q(franchise__admin=admin_user)
+        ).select_related("franchise")
 
-class FranchiseEnquiryUpdateView(generics.UpdateAPIView):
+
+class FranchiseEnquiryUpdateView(EnquiryStatusSyncMixin, generics.UpdateAPIView):
     serializer_class = EnquirySerializer
     permission_classes = [IsFranchiseUser]
     lookup_field = "pk"
@@ -221,7 +240,7 @@ class FranchiseEnquiryUpdateView(generics.UpdateAPIView):
         return Enquiry.objects.filter(franchise=franchise)
 
 
-class FranchiseLeadAdminUpdateView(generics.UpdateAPIView):
+class FranchiseLeadAdminUpdateView(EnquiryStatusSyncMixin, generics.UpdateAPIView):
     serializer_class = FranchiseEnquiryStatusSerializer
     permission_classes = [IsAdminUser]
     lookup_field = "pk"
@@ -234,7 +253,7 @@ class FranchiseLeadAdminUpdateView(generics.UpdateAPIView):
         ).select_related("franchise")
 
 
-class FranchiseLeadPartnerUpdateView(generics.UpdateAPIView):
+class FranchiseLeadPartnerUpdateView(EnquiryStatusSyncMixin, generics.UpdateAPIView):
     serializer_class = FranchiseEnquiryStatusSerializer
     permission_classes = [IsFranchiseUser]
     lookup_field = "pk"
@@ -281,3 +300,81 @@ class LandingKidsEnquiryListView(APIView):
                 "results": data,
             }
         )
+
+
+import os
+import random
+from django.http import JsonResponse
+
+class SendOTPView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        phone = request.data.get("phone", "").strip()
+        if not phone:
+            return JsonResponse({"detail": "Phone number is required."}, status=400)
+
+        # Generate 6-digit OTP
+        code = str(random.randint(100000, 999999))
+
+        # Save to database
+        OTPVerification.objects.update_or_create(
+            phone=phone,
+            defaults={"code": code}
+        )
+
+        # Get Twilio credentials from settings
+        account_sid = os.getenv("TWILIO_ACCOUNT_SID", "").strip()
+        auth_token = os.getenv("TWILIO_AUTH_TOKEN", "").strip()
+        twilio_phone = os.getenv("TWILIO_PHONE_NUMBER", "").strip()
+
+        # Format phone number for Twilio (prefix with +91 if needed and doesn't start with +)
+        twilio_to_phone = phone
+        if not twilio_to_phone.startswith("+"):
+            twilio_to_phone = f"+91{twilio_to_phone}"
+
+        success = False
+        error_msg = ""
+
+        if account_sid and auth_token and twilio_phone:
+            try:
+                import requests
+                from requests.auth import HTTPBasicAuth
+                url = f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages.json"
+                data = {
+                    "To": twilio_to_phone,
+                    "From": twilio_phone,
+                    "Body": f"Your TimeKids verification code is: {code}"
+                }
+                response = requests.post(url, data=data, auth=HTTPBasicAuth(account_sid, auth_token), timeout=10)
+                if response.status_code in [200, 201]:
+                    success = True
+                else:
+                    error_msg = f"Twilio API returned status {response.status_code}: {response.text}"
+            except Exception as e:
+                error_msg = str(e)
+        else:
+            success = True
+            error_msg = "TWILIO_NOT_CONFIGURED"
+
+        return JsonResponse({
+            "success": success,
+            "detail": "OTP sent successfully." if success else "Failed to send OTP.",
+            "error": error_msg,
+            "code": code if not account_sid else None
+        })
+
+
+class VerifyOTPView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        phone = request.data.get("phone", "").strip()
+        code = request.data.get("code", "").strip()
+        if not phone or not code:
+            return JsonResponse({"detail": "Phone and code are required."}, status=400)
+
+        otp_record = OTPVerification.objects.filter(phone=phone).first()
+        if otp_record and otp_record.code == code:
+            return JsonResponse({"valid": True})
+        return JsonResponse({"valid": False, "detail": "Invalid OTP code."}, status=400)

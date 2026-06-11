@@ -23,9 +23,15 @@ AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".ogg", ".aac", ".flac", ".wma"}
 PDF_ONLY_CATEGORIES = {
     DocumentCategory.PRESCHOOL_POLICIES,
     DocumentCategory.HOLIDAY_LISTS,
+    DocumentCategory.STUDENT_TRANSFER_POLICY,
+    DocumentCategory.CONTACT_US,
+    DocumentCategory.GENERAL_RHYMES,
+    DocumentCategory.PARENTING_TIPS,
 }
 MIXED_MEDIA_CATEGORIES = {DocumentCategory.VIDEOS}
-AUDIO_ONLY_CATEGORIES = {DocumentCategory.AUDIO_RHYMES}
+AUDIO_ONLY_CATEGORIES = {
+    DocumentCategory.AUDIO_RHYMES,
+}
 
 
 def _extension(file_name: str) -> str:
@@ -65,6 +71,24 @@ def parent_document_media_kind(file_name: str) -> str:
     return "unknown"
 
 
+def _parent_document_has_stored_file(field) -> bool:
+    name = getattr(field, "name", "") or ""
+    if not name.strip():
+        return False
+    try:
+        return field.storage.exists(name)
+    except Exception:
+        return True
+
+
+def parent_document_has_newsletter_video_embed(doc: ParentDocument) -> bool:
+    return bool((doc.video_embed_url or "").strip())
+
+
+def parent_document_has_newsletter_audio(doc: ParentDocument) -> bool:
+    return _parent_document_has_stored_file(doc.audio_file)
+
+
 def parent_document_has_listable_file(doc: ParentDocument) -> bool:
     name = getattr(doc.file, "name", "") or ""
     if not name.strip():
@@ -86,6 +110,14 @@ def parent_document_matches_category_media(doc: ParentDocument) -> bool:
             return True
         entries = doc.holiday_entries or []
         return bool(entries)
+
+    if category == DocumentCategory.CLASS_TIMETABLE:
+        if parent_document_has_newsletter_video_embed(doc) or parent_document_has_newsletter_audio(doc):
+            return True
+        if not parent_document_has_listable_file(doc):
+            return False
+        kind = parent_document_media_kind(doc.file.name)
+        return kind not in ("video", "audio")
 
     if not parent_document_has_listable_file(doc):
         return False

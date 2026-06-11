@@ -348,6 +348,11 @@ class HomeworkAssignmentSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Only image or PDF attachments are allowed.")
         return value
 
+    def validate_class_name(self, value):
+        from students.portal_views import normalize_portal_class_name
+
+        return normalize_portal_class_name(value or "")
+
     def validate(self, attrs):
         # Auto-fill attachment metadata when a new file is posted.
         attachment = attrs.get("attachment")
@@ -429,6 +434,8 @@ class HomeworkAssignmentSerializer(serializers.ModelSerializer):
 class AnnouncementSerializer(serializers.ModelSerializer):
     student_name = serializers.SerializerMethodField()
     audience_label = serializers.SerializerMethodField()
+    schedule_date = serializers.DateField(required=False, allow_null=True, write_only=True)
+    is_scheduled = serializers.SerializerMethodField()
 
     class Meta:
         model = Announcement
@@ -442,11 +449,21 @@ class AnnouncementSerializer(serializers.ModelSerializer):
             "class_name",
             "audience_label",
             "published_at",
+            "schedule_date",
+            "is_scheduled",
             "is_active",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "franchise", "student_name", "audience_label", "created_at", "updated_at"]
+        read_only_fields = [
+            "id",
+            "franchise",
+            "student_name",
+            "audience_label",
+            "is_scheduled",
+            "created_at",
+            "updated_at",
+        ]
 
     def get_student_name(self, obj):
         try:
@@ -464,6 +481,11 @@ class AnnouncementSerializer(serializers.ModelSerializer):
             return target_class
         return "All parents"
 
+    def get_is_scheduled(self, obj) -> bool:
+        from django.utils import timezone
+
+        return bool(obj.published_at and obj.published_at > timezone.now())
+
     def validate_student(self, value):
         if value is None:
             return value
@@ -479,7 +501,15 @@ class AnnouncementSerializer(serializers.ModelSerializer):
             return value
         raise serializers.ValidationError("Student is not enrolled at your centre.")
 
+    def validate_class_name(self, value):
+        from students.portal_views import normalize_portal_class_name
+
+        return normalize_portal_class_name(value or "")
+
     def validate(self, attrs):
+        from students.portal_schedule import published_at_from_schedule_date
+
+        schedule_date = attrs.pop("schedule_date", serializers.empty)
         student = attrs.get("student")
         if student is None and self.instance is not None and "student" not in attrs:
             student = self.instance.student
@@ -491,6 +521,10 @@ class AnnouncementSerializer(serializers.ModelSerializer):
             attrs["class_name"] = class_name
         if student and class_name:
             raise serializers.ValidationError("Choose either a class or a student, not both.")
+
+        if schedule_date is not serializers.empty:
+            attrs["published_at"] = published_at_from_schedule_date(schedule_date)
+
         return attrs
 
 

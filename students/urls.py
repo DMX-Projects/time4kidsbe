@@ -2,6 +2,7 @@ from django.urls import path
 
 from .portal_views import (
     FranchiseAnnouncementDetailView,
+    cron_dispatch_scheduled_announcements,
     FranchiseAnnouncementListCreateView,
     FranchiseAttendanceBulkUpsertView,
     FranchiseAttendanceClearDateView,
@@ -101,6 +102,7 @@ urlpatterns = [
     path("franchise/homework/<int:pk>/", FranchiseHomeworkDetailView.as_view(), name="franchise-homework-detail"),
     path("franchise/announcements/", FranchiseAnnouncementListCreateView.as_view(), name="franchise-announcements"),
     path("franchise/announcements/<int:pk>/", FranchiseAnnouncementDetailView.as_view(), name="franchise-announcement-detail"),
+    path("cron/dispatch-announcements/", cron_dispatch_scheduled_announcements, name="cron-dispatch-announcements"),
     path("franchise/attendance/", FranchiseAttendanceListCreateView.as_view(), name="franchise-attendance"),
     path("franchise/attendance/bulk/", FranchiseAttendanceBulkUpsertView.as_view(), name="franchise-attendance-bulk"),
     path("franchise/attendance/clear/", FranchiseAttendanceClearDateView.as_view(), name="franchise-attendance-clear"),

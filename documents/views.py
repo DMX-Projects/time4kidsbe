@@ -200,6 +200,34 @@ def parent_document_file(request, pk: int):
     )
 
 
+@api_view(["GET"])
+@authentication_classes([QueryJWTAuthentication])
+@permission_classes([IsAuthenticated])
+def parent_document_audio_file(request, pk: int):
+    """Stream newsletter audio upload with JWT auth (header or ?access=)."""
+    doc = get_object_or_404(ParentDocument, pk=pk)
+    if not _user_can_stream_parent_document(request.user, doc):
+        raise PermissionDenied("You do not have access to this document.")
+    if not doc.audio_file:
+        raise Http404("No audio file on this record.")
+    try:
+        file_handle = doc.audio_file.open("rb")
+    except FileNotFoundError:
+        raise Http404("Audio file missing on server.") from None
+    stored_name = getattr(doc.audio_file, "name", "") or ""
+    content_type, _encoding = mimetypes.guess_type(stored_name)
+    if not content_type:
+        content_type = "audio/mpeg"
+    fallback = parent_document_download_filename(doc)
+    filename = safe_disposition_filename(request.GET.get("name"), fallback)
+    return FileResponse(
+        file_handle,
+        as_attachment=False,
+        content_type=content_type,
+        filename=filename,
+    )
+
+
 def _franchise_hub_documents_queryset(franchise):
     """Active global + centre-specific franchise resource documents."""
     return (
@@ -437,6 +465,8 @@ class FranchiseParentDocumentDetailView(generics.RetrieveUpdateDestroyAPIView):
     def perform_destroy(self, instance):
         if instance.file:
             instance.file.delete(save=False)
+        if instance.audio_file:
+            instance.audio_file.delete(save=False)
         if instance.thumbnail:
             instance.thumbnail.delete(save=False)
         super().perform_destroy(instance)

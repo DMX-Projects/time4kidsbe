@@ -109,3 +109,15 @@ class KidsEnquiry(models.Model):
 
     def __str__(self) -> str:
         return f"{self.name} ({self.enquiry_type})"
+
+
+class OTPVerification(models.Model):
+    phone = models.CharField(max_length=20, unique=True)
+    code = models.CharField(max_length=6)
+    created_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "otp_verification"
+
+    def __str__(self) -> str:
+        return f"OTP for {self.phone}: {self.code}"
