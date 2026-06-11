@@ -2,6 +2,7 @@ import mimetypes
 import re
 from pathlib import Path
 
+from django.db.models import Q
 from django.http import FileResponse, Http404
 from django.shortcuts import get_object_or_404
 from rest_framework import generics, permissions, viewsets
@@ -17,6 +18,7 @@ from documents.download_names import safe_disposition_filename
 from franchises.models import Franchise
 from .models import Event, EventMedia
 from .serializers import EventMediaSerializer, EventSerializer
+from .visibility import parent_events_queryset
 
 
 def _norm_user_role(user) -> str:
@@ -195,17 +197,32 @@ class ParentEventListView(generics.ListAPIView):
     serializer_class = EventSerializer
     permission_classes = [IsParentUser]
 
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx["omit_video_links"] = True
+        return ctx
+
     def get_queryset(self):
         parent_profile = parent_profile_for_user(self.request.user)
-        if not parent_profile:
-            return Event.objects.none()
-        return Event.objects.filter(franchise=parent_profile.franchise).prefetch_related("media")
+        return parent_events_queryset(parent_profile)
 
 
 class PublicEventListView(generics.ListAPIView):
     serializer_class = EventSerializer
     permission_classes = [permissions.AllowAny]
 
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx["omit_video_links"] = True
+        return ctx
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx["omit_video_links"] = True
+        return ctx
+
     def get_queryset(self):
         franchise = get_object_or_404(Franchise, slug=self.kwargs["slug"], is_active=True)
-        return Event.objects.filter(franchise=franchise).prefetch_related("media")
+        return Event.objects.filter(franchise=franchise).prefetch_related("media").order_by(
+            "-start_date", "-created_at"
+        )

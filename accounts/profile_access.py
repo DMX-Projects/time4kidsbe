@@ -457,11 +457,11 @@ def parents_at_franchise(franchise):
     parent_ids = set(
         ParentProfile.objects.filter(franchise=franchise).values_list("pk", flat=True)
     )
-    for student in (
-        StudentProfile.objects.filter(is_active=True, parent_id__isnull=False)
-        .exclude(parent__franchise=franchise)
-        .only("parent_id", "Centre", "City")
+    for student in StudentProfile.objects.filter(is_active=True, parent_id__isnull=False).only(
+        "parent_id", "Centre", "City"
     ):
+        if student.parent_id in parent_ids:
+            continue
         if _franchise_for_legacy_student(student) == franchise:
             parent_ids.add(student.parent_id)
 

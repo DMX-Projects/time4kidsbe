@@ -27,6 +27,49 @@ def is_pdf_upload_file(file_obj) -> bool:
 VIDEO_EXTENSIONS = {".mp4", ".webm", ".mov", ".m4v", ".avi", ".mkv", ".mpeg", ".mpg", ".3gp"}
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".ogg", ".aac", ".flac", ".wma"}
 
+# Newsletter audio — phones often export .mp4 / .m4a / .amr with video/* or octet-stream MIME.
+NEWSLETTER_AUDIO_EXTENSIONS = {
+    ".mp3",
+    ".wav",
+    ".m4a",
+    ".ogg",
+    ".aac",
+    ".flac",
+    ".wma",
+    ".mp4",
+    ".amr",
+    ".opus",
+    ".caf",
+    ".aiff",
+    ".aif",
+    ".mpeg",
+    ".mpg",
+    ".3gp",
+    ".weba",
+    ".webm",
+}
+
+NEWSLETTER_AUDIO_CONTENT_TYPES = {
+    "audio/mpeg",
+    "audio/mp3",
+    "audio/wav",
+    "audio/x-wav",
+    "audio/mp4",
+    "audio/m4a",
+    "audio/x-m4a",
+    "audio/ogg",
+    "audio/aac",
+    "audio/flac",
+    "audio/x-ms-wma",
+    "audio/amr",
+    "audio/opus",
+    "audio/webm",
+    "audio/aiff",
+    "audio/x-caf",
+    "video/mp4",
+    "application/octet-stream",
+}
+
 
 def is_video_upload_file(file_obj) -> bool:
     name = (getattr(file_obj, "name", "") or "").lower()
@@ -42,3 +85,17 @@ def is_audio_upload_file(file_obj) -> bool:
         return True
     content_type = (getattr(file_obj, "content_type", "") or "").lower()
     return content_type.startswith("audio/")
+
+
+def is_newsletter_audio_upload_file(file_obj) -> bool:
+    """Permissive audio check for newsletter uploads (MP4/M4A/AMR media from phones)."""
+    name = (getattr(file_obj, "name", "") or "").lower()
+    ext = Path(name).suffix
+    if ext in NEWSLETTER_AUDIO_EXTENSIONS:
+        return True
+    content_type = (getattr(file_obj, "content_type", "") or "").lower()
+    if content_type.startswith("audio/"):
+        return True
+    if content_type in NEWSLETTER_AUDIO_CONTENT_TYPES and ext in NEWSLETTER_AUDIO_EXTENSIONS | {""}:
+        return True
+    return False

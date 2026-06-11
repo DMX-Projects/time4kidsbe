@@ -12,11 +12,15 @@ from .views import (
     FranchiseLeadPartnerUpdateView,
     LandingEnquirySubmitView,
     LandingKidsEnquiryListView,
+    SendOTPView,
+    VerifyOTPView,
 )
 
 urlpatterns = [
     path("landing-submit/", LandingEnquirySubmitView.as_view(), name="landing-enquiry-submit"),
     path("landing-leads/", LandingKidsEnquiryListView.as_view(), name="landing-kids-enquiry-list"),
+    path("send-otp/", SendOTPView.as_view(), name="send-otp"),
+    path("verify-otp/", VerifyOTPView.as_view(), name="verify-otp"),
     path("submit/", EnquiryCreateView.as_view(), name="enquiry-create"),
     path("franchise-submit/", FranchiseEnquiryCreateView.as_view(), name="franchise-enquiry-create"),
     path("admin/", AdminEnquiryListView.as_view(), name="enquiry-admin-list"),

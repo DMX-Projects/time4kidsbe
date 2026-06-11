@@ -33,11 +33,13 @@ class EventMediaSerializer(serializers.ModelSerializer):
 
 
 class EventSerializer(serializers.ModelSerializer):
-    media = EventMediaSerializer(many=True, read_only=True)
+    media = serializers.SerializerMethodField()
+    video_links = serializers.SerializerMethodField()
     franchise = serializers.SerializerMethodField()
     franchise_city = serializers.SerializerMethodField()
     franchise_name = serializers.SerializerMethodField()
     year = serializers.SerializerMethodField()
+    audience_label = serializers.SerializerMethodField()
 
     class Meta:
         model = Event
@@ -51,12 +53,62 @@ class EventSerializer(serializers.ModelSerializer):
             "start_date",
             "end_date",
             "location",
+            "class_name",
+            "audience_label",
             "year",
             "created_at",
             "updated_at",
             "media",
+            "video_links",
         ]
-        read_only_fields = ["id", "franchise", "created_at", "updated_at", "media", "franchise_name", "franchise_city", "year"]
+        read_only_fields = [
+            "id",
+            "franchise",
+            "created_at",
+            "updated_at",
+            "media",
+            "video_links",
+            "franchise_name",
+            "franchise_city",
+            "year",
+            "audience_label",
+        ]
+
+    def get_audience_label(self, obj: Event) -> str:
+        target_class = (obj.class_name or "").strip()
+        if target_class:
+            return target_class
+        return "All classes"
+
+    def get_video_links(self, obj: Event):
+        if self.context.get("omit_video_links"):
+            return []
+        from events.video_links import parse_event_video_links
+
+        return parse_event_video_links(obj.description)
+
+    def get_media(self, obj: Event):
+        from events.video_links import video_link_media_rows
+
+        uploaded = EventMediaSerializer(obj.media.all(), many=True).data
+        return list(uploaded) + video_link_media_rows(obj.description)
+
+    def to_representation(self, instance):
+        from events.video_links import strip_event_video_links
+
+        data = super().to_representation(instance)
+        data["description"] = strip_event_video_links(instance.description)
+        if not (data.get("class_name") or "").strip():
+            data["class_name"] = "All classes"
+        return data
+
+    def validate_class_name(self, value):
+        from students.portal_views import normalize_portal_class_name
+
+        raw = (value or "").strip()
+        if raw.lower() in ("all classes", "all"):
+            return ""
+        return normalize_portal_class_name(raw)
 
     def get_year(self, obj: Event):
         if obj.start_date:

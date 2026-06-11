@@ -34,6 +34,8 @@ from accounts.profile_access import (
 from events.calendar_filters import exclude_showcase_placeholder_events
 from events.models import Event
 from events.serializers import EventSerializer
+from events.video_links import strip_event_video_links
+from events.visibility import parent_events_queryset
 
 from .models import (
     Announcement,
@@ -51,6 +53,13 @@ from .models import (
     TransportRoute,
     TransportTrip,
     TransportTripLocation,
+)
+from .portal_schedule import (
+    announcement_on_schedule_date_q,
+    parent_visible_announcement_q,
+    parent_visible_homework_q,
+    portal_today,
+    published_at_from_schedule_date,
 )
 from .serializers import (
     AnnouncementSerializer,
@@ -161,10 +170,48 @@ def _parent_class_target_names(parent_profile) -> set[str]:
         if not cn:
             continue
         names.add(cn)
+        stripped = _strip_legacy_class_year(cn)
+        if stripped:
+            names.add(stripped)
         canon = _canonical_class_label(cn)
         if canon:
             names.add(canon)
     return names
+
+
+def normalize_portal_class_name(class_name: str) -> str:
+    """Store franchise portal class targets using canonical labels when possible."""
+    raw = (class_name or "").strip()
+    if not raw:
+        return ""
+    return _canonical_class_label(raw) or raw
+
+
+def _matching_target_class_names(parent_profile) -> set[str]:
+    """
+    Announcement/homework ``class_name`` values visible to this parent.
+    Uses the same fuzzy rules as ``_class_label_matches`` (not exact DB equality).
+    """
+    names: set[str] = set()
+    for cn in _parent_class_target_names(parent_profile):
+        candidates: set[str] = {cn}
+        stripped = _strip_legacy_class_year(cn)
+        if stripped:
+            candidates.add(stripped)
+        canon = _canonical_class_label(cn)
+        if canon:
+            candidates.add(canon)
+        candidates.update(HOMEWORK_CLASS_LABELS)
+
+        for candidate in candidates:
+            candidate = (candidate or "").strip()
+            if not candidate:
+                continue
+            if _class_label_matches(cn, candidate):
+                names.add(candidate)
+            if _class_label_matches(candidate, cn):
+                names.add(candidate)
+    return {n for n in names if n}
 
 
 def _student_ids_visible_to_parent(parent_profile, user=None) -> set[int]:
@@ -184,8 +231,9 @@ def _centre_class_visibility_q(parent_profile, user=None) -> Q:
     vis = Q(student__isnull=True, class_name="")
     for student_id in _student_ids_visible_to_parent(parent_profile, user=user):
         vis |= Q(student_id=student_id)
-    for cn in _parent_class_target_names(parent_profile):
-        vis |= Q(student__isnull=True, class_name=cn)
+    matching_classes = _matching_target_class_names(parent_profile)
+    if matching_classes:
+        vis |= Q(student__isnull=True, class_name__in=matching_classes)
     return vis
 
 
@@ -253,14 +301,14 @@ def parent_profiles_for_announcement(announcement):
         return ParentProfile.objects.filter(pk=parent_id).select_related("user", "franchise")
 
     base = parents_at_franchise(announcement.franchise)
-    target_class = (announcement.class_name or "").strip()
+    target_class = normalize_portal_class_name(announcement.class_name or "")
     if target_class:
         parent_ids: set[int] = set()
         base_parent_ids = list(base.values_list("pk", flat=True))
         for student in StudentProfile.objects.filter(
             is_active=True,
             parent_id__in=base_parent_ids,
-        ).only("parent_id", "class_name", "Centre", "City"):
+        ).only("parent_id", "class_name"):
             if _class_label_matches(student.class_name, target_class):
                 parent_ids.add(student.parent_id)
         return base.filter(pk__in=parent_ids)
@@ -283,6 +331,7 @@ class ParentHomeworkListView(generics.ListAPIView):
         return (
             HomeworkAssignment.objects.filter(franchise=centre)
             .filter(_homework_visible_q(pp, user=self.request.user))
+            .filter(parent_visible_homework_q())
             .select_related("student")
             .distinct()
             .order_by("-assigned_date", "-created_at")
@@ -330,6 +379,7 @@ class ParentAnnouncementListView(generics.ListAPIView):
         return (
             Announcement.objects.filter(franchise=centre, is_active=True)
             .filter(_announcement_visible_q(pp, user=self.request.user))
+            .filter(parent_visible_announcement_q())
             .select_related("student")
             .distinct()
             .order_by("-published_at")
@@ -393,9 +443,7 @@ class ParentCalendarAttendanceView(APIView):
         if not pp or not centre:
             return Response({"calendar_events": [], "attendance": []})
 
-        events_qs = exclude_showcase_placeholder_events(
-            Event.objects.filter(franchise=centre)
-        ).order_by("-start_date", "-created_at")
+        events_qs = exclude_showcase_placeholder_events(parent_events_queryset(pp, centre=centre))
         attendance_qs = (
             AttendanceRecord.objects.filter(student__parent=pp, student__is_active=True)
             .select_related("student")
@@ -913,6 +961,7 @@ class ParentNotificationsView(APIView):
         announcements_qs = (
             Announcement.objects.filter(franchise=centre, is_active=True)
             .filter(_announcement_visible_q(pp, user=request.user))
+            .filter(parent_visible_announcement_q())
             .select_related("student")
             .distinct()
             .order_by("-published_at")
@@ -920,6 +969,7 @@ class ParentNotificationsView(APIView):
         homework_qs = (
             HomeworkAssignment.objects.filter(franchise=centre)
             .filter(_homework_visible_q(pp, user=request.user))
+            .filter(parent_visible_homework_q())
             .select_related("student")
             .distinct()
             .order_by("-assigned_date", "-created_at")
@@ -935,9 +985,7 @@ class ParentNotificationsView(APIView):
             else TransportRoute.objects.none()
         )
         events_qs = (
-            exclude_showcase_placeholder_events(Event.objects.filter(franchise=centre)).order_by(
-                "-start_date", "-created_at"
-            )
+            exclude_showcase_placeholder_events(parent_events_queryset(pp, centre=centre))
             if centre
             else Event.objects.none()
         )
@@ -1044,7 +1092,7 @@ class ParentNotificationsView(APIView):
                     "source": "event",
                     "source_id": item.id,
                     "title": item.title or "New event",
-                    "body": item.description or "",
+                    "body": strip_event_video_links(item.description) or "",
                     "published_at": item.start_date or item.end_date,
                     "read": read_at is not None,
                     "read_at": read_at,
@@ -1210,6 +1258,24 @@ class FranchiseHomeworkDetailView(generics.RetrieveUpdateDestroyAPIView):
         return c
 
 
+def _after_announcement_saved(announcement: Announcement) -> None:
+    """Reset or dispatch parent emails after create/update."""
+    if announcement.published_at > timezone.now():
+        Announcement.objects.filter(pk=announcement.pk).update(email_dispatched_at=None)
+        return
+    if announcement.email_dispatched_at:
+        return
+
+    pk = announcement.pk
+
+    def _email_parents() -> None:
+        from students.emails import notify_parents_new_announcement_by_id
+
+        notify_parents_new_announcement_by_id(pk)
+
+    transaction.on_commit(lambda: threading.Thread(target=_email_parents, daemon=True).start())
+
+
 class FranchiseAnnouncementListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsFranchiseUser]
     serializer_class = AnnouncementSerializer
@@ -1224,7 +1290,7 @@ class FranchiseAnnouncementListCreateView(generics.ListCreateAPIView):
         if date_str:
             parsed = parse_date(date_str)
             if parsed is not None:
-                qs = qs.filter(published_at__date=parsed)
+                qs = qs.filter(announcement_on_schedule_date_q(parsed))
             else:
                 qs = qs.none()
         return qs
@@ -1239,14 +1305,7 @@ class FranchiseAnnouncementListCreateView(generics.ListCreateAPIView):
         if not f:
             raise PermissionDenied("Franchise profile not found")
         announcement = serializer.save(franchise=f)
-        pk = announcement.pk
-
-        def _email_parents() -> None:
-            from students.emails import notify_parents_new_announcement_by_id
-
-            notify_parents_new_announcement_by_id(pk)
-
-        transaction.on_commit(lambda: threading.Thread(target=_email_parents, daemon=True).start())
+        _after_announcement_saved(announcement)
 
 
 class FranchiseAnnouncementDetailView(generics.RetrieveUpdateDestroyAPIView):
@@ -1263,6 +1322,30 @@ class FranchiseAnnouncementDetailView(generics.RetrieveUpdateDestroyAPIView):
         ctx = super().get_serializer_context()
         ctx["request"] = self.request
         return ctx
+
+    def perform_update(self, serializer):
+        announcement = serializer.save()
+        _after_announcement_saved(announcement)
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def cron_dispatch_scheduled_announcements(request):
+    """Send emails for announcements whose scheduled publish time has arrived."""
+    import os
+
+    cron_secret = (os.getenv("CRON_SECRET") or "").strip()
+    auth_header = (request.headers.get("Authorization") or "").strip()
+    if cron_secret:
+        if auth_header != f"Bearer {cron_secret}":
+            return Response({"detail": "Unauthorized"}, status=status.HTTP_401_UNAUTHORIZED)
+    elif os.getenv("DJANGO_DEBUG", "").lower() not in ("1", "true", "yes"):
+        return Response({"detail": "CRON_SECRET not configured"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+    from students.emails import dispatch_due_announcement_emails
+
+    sent = dispatch_due_announcement_emails()
+    return Response({"ok": True, "emails_sent": sent})
 
 
 class FranchiseAttendanceListCreateView(generics.ListCreateAPIView):

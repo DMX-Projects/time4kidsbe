@@ -11,8 +11,10 @@ from .state_utils import (
     effective_holiday_state,
     franchise_state_code,
 )
+from .embed_urls import is_audio_media_url, is_usable_embed_url, normalize_parent_embed_url
 from .newsletter_files import (
     is_audio_upload_file,
+    is_newsletter_audio_upload_file,
     is_newsletter_upload_file,
     is_pdf_upload_file,
 )
@@ -34,6 +36,7 @@ class FlexibleHolidayEntriesField(serializers.JSONField):
 
 class ParentDocumentSerializer(serializers.ModelSerializer):
     file = RelativeFileField(required=False, allow_null=True)
+    audio_file = RelativeFileField(required=False, allow_null=True)
     holiday_entries = serializers.SerializerMethodField()
     thumbnail = RelativeImageField(required=False, allow_null=True)
     category_display = serializers.CharField(source='get_category_display', read_only=True)
@@ -47,7 +50,8 @@ class ParentDocumentSerializer(serializers.ModelSerializer):
             'id', 'category', 'category_display', 'title', 'description',
             'file', 'thumbnail', 'franchise', 'franchise_name', 'is_active',
             'order', 'state', 'state_display', 'academic_year', 'holiday_entries',
-            'period_start', 'period_end', 'display_title',
+            'period_start', 'period_end', 'video_embed_url', 'audio_file',
+            'display_title',
             'created_at', 'updated_at',
         ]
         read_only_fields = ['id', 'franchise', 'is_active', 'created_at', 'updated_at']
@@ -98,10 +102,23 @@ class ParentDocumentSerializer(serializers.ModelSerializer):
             return f"{state_display} ({year})" if state_display else obj.title
         return obj.title
 
+    def _audio_file_available(self, obj: ParentDocument) -> bool:
+        if not obj.audio_file:
+            return False
+        name = getattr(obj.audio_file, "name", "") or ""
+        if not name.strip():
+            return False
+        try:
+            return obj.audio_file.storage.exists(name)
+        except Exception:
+            return True
+
     def to_representation(self, instance):
         data = super().to_representation(instance)
         if not self._file_available(instance):
             data["file"] = ""
+        if not self._audio_file_available(instance):
+            data["audio_file"] = ""
         if instance.category == DocumentCategory.HOLIDAY_LISTS:
             state_code = effective_holiday_state(instance)
             if state_code and not data.get("state"):
@@ -121,6 +138,7 @@ class FranchiseParentDocumentWriteSerializer(serializers.ModelSerializer):
     """Franchise centre: upload Newsletter and centre-specific holiday PDFs for their parents."""
 
     file = RelativeFileField(required=False, allow_null=True)
+    audio_file = RelativeFileField(required=False, allow_null=True)
     category = serializers.ChoiceField(
         choices=[DocumentCategory.CLASS_TIMETABLE, DocumentCategory.HOLIDAY_LISTS],
         required=False,
@@ -135,22 +153,41 @@ class FranchiseParentDocumentWriteSerializer(serializers.ModelSerializer):
             "title",
             "description",
             "file",
+            "audio_file",
             "state",
             "academic_year",
             "holiday_entries",
             "period_start",
             "period_end",
+            "video_embed_url",
             "created_at",
             "updated_at",
         ]
         read_only_fields = ["id", "created_at", "updated_at"]
     holiday_entries = FlexibleHolidayEntriesField(required=False)
 
+    def _normalize_embed_field(self, value: str | None) -> str:
+        return normalize_parent_embed_url(value)
+
+    def validate_video_embed_url(self, value: str | None) -> str:
+        cleaned = self._normalize_embed_field(value)
+        if cleaned and is_audio_media_url(cleaned):
+            raise serializers.ValidationError("That link looks like audio. Use Audio upload, not Video link.")
+        if cleaned and not is_usable_embed_url(cleaned):
+            raise serializers.ValidationError("Paste a valid video iframe or embed URL.")
+        return cleaned
+
     def _incoming_file(self):
         request = self.context.get("request")
         if not request:
             return None
         return getattr(request, "FILES", None).get("file")
+
+    def _incoming_audio_file(self):
+        request = self.context.get("request")
+        if not request:
+            return None
+        return getattr(request, "FILES", None).get("audio_file")
 
     def _resolved_category(self, attrs):
         if attrs.get("category"):
@@ -168,7 +205,9 @@ class FranchiseParentDocumentWriteSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         uploaded = self._incoming_file()
+        uploaded_audio = self._incoming_audio_file()
         file_obj = attrs.get("file") or uploaded
+        audio_obj = attrs.get("audio_file") or uploaded_audio
         category = self._resolved_category(attrs)
         holiday_entries = self._resolved_holiday_entries(attrs)
         if "holiday_entries" in attrs or category == DocumentCategory.HOLIDAY_LISTS:
@@ -196,6 +235,10 @@ class FranchiseParentDocumentWriteSerializer(serializers.ModelSerializer):
         elif category == DocumentCategory.CLASS_TIMETABLE:
             if file_obj is not None and not is_newsletter_upload_file(file_obj):
                 raise serializers.ValidationError({"file": "Newsletter must be a PDF or Word document."})
+            if audio_obj is not None and not is_newsletter_audio_upload_file(audio_obj):
+                raise serializers.ValidationError(
+                    {"audio_file": "Audio must be MP3, M4A, MP4 (audio), WAV, AMR, or another common audio format."}
+                )
             title = (attrs.get("title") or "").strip()
             if self.instance is None and not title and file_obj is not None:
                 attrs["title"] = Path(getattr(file_obj, "name", "")).stem or "Newsletter"
@@ -221,8 +264,11 @@ class FranchiseParentDocumentWriteSerializer(serializers.ModelSerializer):
         if franchise is None:
             raise serializers.ValidationError({"detail": "Franchise profile not found."})
         uploaded = self._incoming_file()
+        uploaded_audio = self._incoming_audio_file()
         if uploaded and not validated_data.get("file"):
             validated_data["file"] = uploaded
+        if uploaded_audio and not validated_data.get("audio_file"):
+            validated_data["audio_file"] = uploaded_audio
         category = validated_data.pop("category", DocumentCategory.CLASS_TIMETABLE)
         validated_data["franchise"] = franchise
         validated_data["category"] = category
@@ -231,8 +277,11 @@ class FranchiseParentDocumentWriteSerializer(serializers.ModelSerializer):
 
     def update(self, instance, validated_data):
         uploaded = self._incoming_file()
+        uploaded_audio = self._incoming_audio_file()
         if uploaded and not validated_data.get("file"):
             validated_data["file"] = uploaded
+        if uploaded_audio and not validated_data.get("audio_file"):
+            validated_data["audio_file"] = uploaded_audio
         validated_data.pop("category", None)
         return super().update(instance, validated_data)
 
@@ -282,6 +331,13 @@ class AdminParentDocumentSerializer(ParentDocumentSerializer):
                 raise serializers.ValidationError({"file": "Preschool policies must be a PDF file."})
             if category == DocumentCategory.AUDIO_RHYMES and not is_audio_upload_file(file_obj):
                 raise serializers.ValidationError({"file": "Audio Rhymes accepts audio files only."})
+            if category in (
+                DocumentCategory.STUDENT_TRANSFER_POLICY,
+                DocumentCategory.CONTACT_US,
+                DocumentCategory.GENERAL_RHYMES,
+                DocumentCategory.PARENTING_TIPS,
+            ) and not is_pdf_upload_file(file_obj):
+                raise serializers.ValidationError({"file": "This section accepts PDF files only."})
         if category == "CLASS_TIMETABLE" and file_obj is not None and not is_newsletter_upload_file(file_obj):
             raise serializers.ValidationError({"file": "Newsletter must be a PDF or Word document."})
         if category == "HOLIDAY_LISTS":

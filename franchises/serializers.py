@@ -28,7 +28,7 @@ class FranchiseGalleryItemSerializer(serializers.ModelSerializer):
 
 
 class PublicFranchiseSerializer(serializers.ModelSerializer):
-    events = EventSerializer(many=True, read_only=True)
+    events = serializers.SerializerMethodField()
     hero_slides = serializers.SerializerMethodField()
     gallery_items = serializers.SerializerMethodField()
 
@@ -63,6 +63,10 @@ class PublicFranchiseSerializer(serializers.ModelSerializer):
             "gallery_items",
         ]
         read_only_fields = fields
+
+    def get_events(self, obj):
+        rows = obj.events.prefetch_related("media").order_by("-start_date", "-created_at")
+        return EventSerializer(rows, many=True, context={"omit_video_links": True}).data
 
     def get_hero_slides(self, obj):
         slides = obj.hero_slides.filter(is_active=True).order_by('order', '-created_at')

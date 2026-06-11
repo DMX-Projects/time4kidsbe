@@ -4,10 +4,13 @@ from franchises.models import Franchise
 
 
 class DocumentCategory(models.TextChoices):
-    AUDIO_RHYMES = "AUDIO_RHYMES", "Audio Rhymes"
-    VIDEOS = "VIDEOS", "Watch • Hear • Learn"
+    AUDIO_RHYMES = "AUDIO_RHYMES", "Audio Rhymes (AY 2026-27)"
+    VIDEOS = "VIDEOS", "Watch Hear and Learn (AY 2026-27)"
     NEWSLETTERS = "NEWSLETTERS", "Newsletters"
-    STUDENTS_KIT = "STUDENTS_KIT", "Students Kit"
+    STUDENTS_KIT = "STUDENTS_KIT", "Students Kit AY 2026-27"
+    CONTACT_US = "CONTACT_US", "Contact Us"
+    GENERAL_RHYMES = "GENERAL_RHYMES", "General Rhymes"
+    STUDENT_TRANSFER_POLICY = "STUDENT_TRANSFER_POLICY", "Student Transfer Policy"
     PARENTING_TIPS = "PARENTING_TIPS", "Parenting Tips & Articles"
     HOLIDAY_LISTS = "HOLIDAY_LISTS", "Holiday Lists"
     PRESCHOOL_POLICIES = "PRESCHOOL_POLICIES", "Preschool Policies (PDF)"
@@ -69,6 +72,21 @@ class ParentDocument(models.Model):
         null=True,
         blank=True,
         help_text="Newsletter academic block end date",
+    )
+    video_embed_url = models.URLField(
+        max_length=1024,
+        blank=True,
+        help_text="Optional newsletter video embed (YouTube, Bunny iframe, etc.).",
+    )
+    audio_embed_url = models.URLField(
+        max_length=1024,
+        blank=True,
+        help_text="Legacy newsletter audio embed iframe URL.",
+    )
+    audio_file = models.FileField(
+        upload_to="parent_documents/newsletter_audio/",
+        blank=True,
+        help_text="Optional newsletter audio upload (MP3, WAV, etc.).",
     )
     is_active = models.BooleanField(default=True)
     order = models.PositiveIntegerField(default=0, help_text="Display order")

@@ -11,6 +11,12 @@ class Event(models.Model):
     start_date = models.DateField()
     end_date = models.DateField(null=True, blank=True)
     location = models.CharField(max_length=255, blank=True)
+    class_name = models.CharField(
+        max_length=120,
+        blank=True,
+        default="",
+        help_text="Empty = all classes (public centre page + all parents). Set to limit parent app visibility.",
+    )
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="events_created"
     )

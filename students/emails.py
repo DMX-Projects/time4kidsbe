@@ -7,6 +7,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from django.conf import settings
+from django.utils import timezone
 from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import Mail
 
@@ -36,6 +37,12 @@ def notify_parents_new_announcement(announcement: Announcement) -> int:
     from students.portal_views import parent_profiles_for_announcement
 
     if not announcement.is_active:
+        return 0
+
+    if announcement.email_dispatched_at:
+        return 0
+
+    if announcement.published_at and announcement.published_at > timezone.now():
         return 0
 
     api_key = getattr(settings, "SENDGRID_API_KEY", None) or ""
@@ -118,7 +125,32 @@ def notify_parents_new_announcement(announcement: Announcement) -> int:
         sent,
         franchise_name,
     )
+
+    parent_count = parents.count()
+    if sent > 0 or parent_count == 0:
+        from students.models import Announcement
+
+        Announcement.objects.filter(pk=announcement.pk, email_dispatched_at__isnull=True).update(
+            email_dispatched_at=timezone.now()
+        )
+
     return sent
+
+
+def dispatch_due_announcement_emails() -> int:
+    """Send emails for scheduled announcements whose publish time has arrived."""
+    from students.models import Announcement
+
+    due = Announcement.objects.filter(
+        is_active=True,
+        email_dispatched_at__isnull=True,
+        published_at__lte=timezone.now(),
+    ).select_related("franchise", "student", "student__parent")
+
+    total = 0
+    for announcement in due:
+        total += notify_parents_new_announcement(announcement)
+    return total
 
 
 def notify_parents_new_announcement_by_id(announcement_id: int) -> None:

@@ -194,6 +194,11 @@ class Announcement(models.Model):
         help_text="When student is empty, limits to parents with a child in this class. Empty = all parents.",
     )
     published_at = models.DateTimeField(default=timezone.now)
+    email_dispatched_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Set when parent notification emails have been sent for this announcement.",
+    )
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
