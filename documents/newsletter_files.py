@@ -87,6 +87,17 @@ def is_audio_upload_file(file_obj) -> bool:
     return content_type.startswith("audio/")
 
 
+def is_audio_rhymes_upload_file(file_obj) -> bool:
+    """Audio Rhymes — standard audio plus MP4 (rhyme files are often saved as .mp4)."""
+    if is_audio_upload_file(file_obj):
+        return True
+    name = (getattr(file_obj, "name", "") or "").lower()
+    if Path(name).suffix == ".mp4":
+        return True
+    content_type = (getattr(file_obj, "content_type", "") or "").lower()
+    return content_type == "video/mp4"
+
+
 def is_newsletter_audio_upload_file(file_obj) -> bool:
     """Permissive audio check for newsletter uploads (MP4/M4A/AMR media from phones)."""
     name = (getattr(file_obj, "name", "") or "").lower()
