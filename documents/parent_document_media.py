@@ -128,7 +128,7 @@ def parent_document_matches_category_media(doc: ParentDocument) -> bool:
     if category in MIXED_MEDIA_CATEGORIES:
         return True
     if category in AUDIO_ONLY_CATEGORIES:
-        return kind == "audio"
+        return kind in ("audio", "video")
     return kind not in ("video", "audio")
 
 

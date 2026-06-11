@@ -13,7 +13,7 @@ from .state_utils import (
 )
 from .embed_urls import is_audio_media_url, is_usable_embed_url, normalize_parent_embed_url
 from .newsletter_files import (
-    is_audio_upload_file,
+    is_audio_rhymes_upload_file,
     is_newsletter_audio_upload_file,
     is_newsletter_upload_file,
     is_pdf_upload_file,
@@ -329,8 +329,10 @@ class AdminParentDocumentSerializer(ParentDocumentSerializer):
         if file_obj is not None:
             if category == DocumentCategory.PRESCHOOL_POLICIES and not is_pdf_upload_file(file_obj):
                 raise serializers.ValidationError({"file": "Preschool policies must be a PDF file."})
-            if category == DocumentCategory.AUDIO_RHYMES and not is_audio_upload_file(file_obj):
-                raise serializers.ValidationError({"file": "Audio Rhymes accepts audio files only."})
+            if category == DocumentCategory.AUDIO_RHYMES and not is_audio_rhymes_upload_file(file_obj):
+                raise serializers.ValidationError(
+                    {"file": "Audio Rhymes accepts MP3, WAV, MP4, or other audio/video files."}
+                )
             if category in (
                 DocumentCategory.STUDENT_TRANSFER_POLICY,
                 DocumentCategory.CONTACT_US,
