@@ -86,6 +86,8 @@ def parent_document_has_newsletter_video_embed(doc: ParentDocument) -> bool:
 
 
 def parent_document_has_newsletter_audio(doc: ParentDocument) -> bool:
+    if (doc.audio_embed_url or "").strip():
+        return True
     return _parent_document_has_stored_file(doc.audio_file)
 
 
