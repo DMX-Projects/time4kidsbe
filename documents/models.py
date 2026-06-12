@@ -52,6 +52,12 @@ class ParentDocument(models.Model):
     franchise = models.ForeignKey(Franchise, on_delete=models.CASCADE, related_name="parent_documents", null=True, blank=True, help_text="Leave blank for global documents")
     category = models.CharField(max_length=50, choices=DocumentCategory.choices)
     title = models.CharField(max_length=255)
+    source_path = models.CharField(
+        max_length=512,
+        blank=True,
+        db_index=True,
+        help_text="Stable checklist row key for admin CMS matching (e.g. checklist-row/audio-rhymes-pg-nursery-block-1).",
+    )
     description = models.TextField(blank=True)
     file = models.FileField(upload_to="parent_documents/", blank=True, help_text="Upload document, audio, or video file")
     thumbnail = models.ImageField(upload_to="parent_documents/thumbnails/", null=True, blank=True)

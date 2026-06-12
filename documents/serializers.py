@@ -47,10 +47,10 @@ class ParentDocumentSerializer(serializers.ModelSerializer):
     class Meta:
         model = ParentDocument
         fields = [
-            'id', 'category', 'category_display', 'title', 'description',
+            'id', 'category', 'category_display', 'title', 'description', 'source_path',
             'file', 'thumbnail', 'franchise', 'franchise_name', 'is_active',
             'order', 'state', 'state_display', 'academic_year', 'holiday_entries',
-            'period_start', 'period_end', 'video_embed_url', 'audio_file',
+            'period_start', 'period_end', 'video_embed_url', 'audio_file', 'audio_embed_url',
             'display_title',
             'created_at', 'updated_at',
         ]
@@ -160,6 +160,7 @@ class FranchiseParentDocumentWriteSerializer(serializers.ModelSerializer):
             "period_start",
             "period_end",
             "video_embed_url",
+            "audio_embed_url",
             "created_at",
             "updated_at",
         ]
@@ -172,9 +173,17 @@ class FranchiseParentDocumentWriteSerializer(serializers.ModelSerializer):
     def validate_video_embed_url(self, value: str | None) -> str:
         cleaned = self._normalize_embed_field(value)
         if cleaned and is_audio_media_url(cleaned):
-            raise serializers.ValidationError("That link looks like audio. Use Audio upload, not Video link.")
+            raise serializers.ValidationError("That link looks like audio. Use Audio link, not Video link.")
         if cleaned and not is_usable_embed_url(cleaned):
             raise serializers.ValidationError("Paste a valid video iframe or embed URL.")
+        return cleaned
+
+    def validate_audio_embed_url(self, value: str | None) -> str:
+        cleaned = self._normalize_embed_field(value)
+        if cleaned and not is_audio_media_url(cleaned):
+            raise serializers.ValidationError(
+                "Paste a direct audio link (MP3, M4A, WAV, etc.) — not a video embed."
+            )
         return cleaned
 
     def _incoming_file(self):
@@ -230,9 +239,17 @@ class FranchiseParentDocumentWriteSerializer(serializers.ModelSerializer):
                 attrs["academic_year"] = "AY 2026-27"
             if self.instance is not None:
                 attrs.pop("state", None)
-        elif self.instance is None and not file_obj:
-            raise serializers.ValidationError({"file": "Choose a file to upload."})
         elif category == DocumentCategory.CLASS_TIMETABLE:
+            video_embed = (attrs.get("video_embed_url") or "").strip()
+            if self.instance is not None and "video_embed_url" not in attrs:
+                video_embed = (self.instance.video_embed_url or "").strip()
+            audio_embed = (attrs.get("audio_embed_url") or "").strip()
+            if self.instance is not None and "audio_embed_url" not in attrs:
+                audio_embed = (self.instance.audio_embed_url or "").strip()
+            if self.instance is None and not file_obj and not video_embed and not audio_obj and not audio_embed:
+                raise serializers.ValidationError(
+                    {"file": "Upload a PDF, add a video link, or add audio (file or link)."}
+                )
             if file_obj is not None and not is_newsletter_upload_file(file_obj):
                 raise serializers.ValidationError({"file": "Newsletter must be a PDF or Word document."})
             if audio_obj is not None and not is_newsletter_audio_upload_file(audio_obj):
@@ -240,8 +257,11 @@ class FranchiseParentDocumentWriteSerializer(serializers.ModelSerializer):
                     {"audio_file": "Audio must be MP3, M4A, MP4 (audio), WAV, AMR, or another common audio format."}
                 )
             title = (attrs.get("title") or "").strip()
-            if self.instance is None and not title and file_obj is not None:
-                attrs["title"] = Path(getattr(file_obj, "name", "")).stem or "Newsletter"
+            if self.instance is None and not title:
+                if file_obj is not None:
+                    attrs["title"] = Path(getattr(file_obj, "name", "")).stem or "Newsletter"
+                else:
+                    attrs["title"] = "Newsletter"
             period_start = attrs.get("period_start")
             period_end = attrs.get("period_end")
             if self.instance is not None:
@@ -251,6 +271,8 @@ class FranchiseParentDocumentWriteSerializer(serializers.ModelSerializer):
                     period_end = self.instance.period_end
             if period_start and period_end and period_end < period_start:
                 raise serializers.ValidationError({"period_end": "End date must be on or after start date."})
+        elif self.instance is None and not file_obj:
+            raise serializers.ValidationError({"file": "Choose a file to upload."})
         else:
             raise serializers.ValidationError({"category": "Invalid document category for centre upload."})
 
@@ -296,6 +318,16 @@ class AdminParentDocumentSerializer(ParentDocumentSerializer):
     class Meta(ParentDocumentSerializer.Meta):
         read_only_fields = ['id', 'created_at', 'updated_at']
 
+    def validate_video_embed_url(self, value: str | None) -> str:
+        cleaned = normalize_parent_embed_url(value)
+        if cleaned and is_audio_media_url(cleaned):
+            raise serializers.ValidationError(
+                "That link looks like a direct audio file. Use Upload for audio files."
+            )
+        if cleaned and not is_usable_embed_url(cleaned):
+            raise serializers.ValidationError("Paste a valid video or iframe embed URL.")
+        return cleaned
+
     def _resolved_holiday_entries(self, attrs):
         if "holiday_entries" in attrs:
             return normalize_holiday_entries(attrs["holiday_entries"])
@@ -307,6 +339,14 @@ class AdminParentDocumentSerializer(ParentDocumentSerializer):
         request = self.context.get("request")
         uploaded = getattr(request, "FILES", None).get("file") if request else None
         has_upload = bool(attrs.get("file") or uploaded)
+        embed_raw = (attrs.get("video_embed_url") or "").strip()
+        if not embed_raw and self.instance is not None:
+            embed_raw = (self.instance.video_embed_url or "").strip()
+        has_embed = bool(embed_raw)
+        if has_upload and has_embed:
+            raise serializers.ValidationError(
+                {"detail": "Use either a file upload or a video/embed link, not both."}
+            )
         category = attrs.get("category") or (self.instance.category if self.instance else None)
         state = attrs.get("state")
         franchise = attrs.get("franchise")
@@ -365,8 +405,19 @@ class AdminParentDocumentSerializer(ParentDocumentSerializer):
                 raise serializers.ValidationError(
                     {"file": "Upload a PDF or add at least one holiday with a date."}
                 )
-        elif self.instance is None and not has_upload:
-            raise serializers.ValidationError({"file": "Choose a file to upload."})
+        elif self.instance is None and not has_upload and not has_embed:
+            raise serializers.ValidationError(
+                {"file": "Upload a file or paste a video/embed link."}
+            )
+        elif (
+            self.instance is not None
+            and not has_upload
+            and not has_embed
+            and not (self.instance.file or self.instance.video_embed_url)
+        ):
+            raise serializers.ValidationError(
+                {"file": "Upload a file or paste a video/embed link."}
+            )
         return attrs
 
 
