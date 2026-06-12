@@ -81,12 +81,20 @@ def _parent_document_has_stored_file(field) -> bool:
         return True
 
 
-def parent_document_has_newsletter_video_embed(doc: ParentDocument) -> bool:
+def parent_document_has_video_embed(doc: ParentDocument) -> bool:
     return bool((doc.video_embed_url or "").strip())
 
 
+def parent_document_has_newsletter_video_embed(doc: ParentDocument) -> bool:
+    return parent_document_has_video_embed(doc)
+
+
+def parent_document_has_audio_embed(doc: ParentDocument) -> bool:
+    return bool((doc.audio_embed_url or "").strip())
+
+
 def parent_document_has_newsletter_audio(doc: ParentDocument) -> bool:
-    if (doc.audio_embed_url or "").strip():
+    if parent_document_has_audio_embed(doc):
         return True
     return _parent_document_has_stored_file(doc.audio_file)
 
@@ -113,7 +121,10 @@ def parent_document_matches_category_media(doc: ParentDocument) -> bool:
         entries = doc.holiday_entries or []
         return bool(entries)
 
-    if category == DocumentCategory.CLASS_TIMETABLE:
+    if category in (
+        DocumentCategory.CLASS_TIMETABLE,
+        DocumentCategory.NEWSLETTERS,
+    ):
         if parent_document_has_newsletter_video_embed(doc) or parent_document_has_newsletter_audio(doc):
             return True
         if not parent_document_has_listable_file(doc):
@@ -121,16 +132,31 @@ def parent_document_matches_category_media(doc: ParentDocument) -> bool:
         kind = parent_document_media_kind(doc.file.name)
         return kind not in ("video", "audio")
 
+    if category in MIXED_MEDIA_CATEGORIES:
+        if parent_document_has_video_embed(doc):
+            return True
+        if not parent_document_has_listable_file(doc):
+            return False
+        return True
+
+    if category in AUDIO_ONLY_CATEGORIES:
+        if (
+            parent_document_has_video_embed(doc)
+            or parent_document_has_audio_embed(doc)
+            or _parent_document_has_stored_file(doc.audio_file)
+        ):
+            return True
+        if not parent_document_has_listable_file(doc):
+            return False
+        kind = parent_document_media_kind(doc.file.name)
+        return kind in ("audio", "video")
+
     if not parent_document_has_listable_file(doc):
         return False
 
     kind = parent_document_media_kind(doc.file.name)
     if category in PDF_ONLY_CATEGORIES:
         return kind == "pdf"
-    if category in MIXED_MEDIA_CATEGORIES:
-        return True
-    if category in AUDIO_ONLY_CATEGORIES:
-        return kind in ("audio", "video")
     return kind not in ("video", "audio")
 
 
