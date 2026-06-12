@@ -211,6 +211,8 @@ class PageContentView(APIView):
             return CENTRE_PROGRAM_CARDS_DATA
         if slug == "centre-page-nav-custom":
             return {"customTopSections": [], "staticExtensions": []}
+        if slug == "parent-app-nav-custom":
+            return {"customTopSections": [], "staticExtensions": []}
         return {}
 
     def get(self, request, slug):

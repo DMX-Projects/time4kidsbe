@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
+import re
+
 from documents.models import ParentDocument
+
+
+def _normalize_state_text(value: str) -> str:
+    """Lowercase letters/digits only — matches 'Tamilnadu' to 'Tamil Nadu'."""
+    return re.sub(r"[^a-z0-9]", "", (value or "").lower())
 
 
 def franchise_state_code(franchise) -> str | None:
@@ -14,9 +21,11 @@ def franchise_state_code(franchise) -> str | None:
         return None
     if len(raw) == 2 and raw.upper() in dict(ParentDocument.State.choices):
         return raw.upper()
-    lowered = raw.lower()
+    normalized = _normalize_state_text(raw)
+    if not normalized:
+        return None
     for code, label in ParentDocument.State.choices:
-        if label.lower() == lowered:
+        if _normalize_state_text(label) == normalized:
             return code
     return None
 

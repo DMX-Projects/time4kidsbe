@@ -58,7 +58,8 @@ def parent_documents_by_category(request, category):
     if category not in valid_categories:
         return Response({"error": "Invalid category"}, status=400)
 
-    documents = _parent_documents_visible_queryset(request.user).filter(category=category)
+    category_filter = _parent_document_category_filter(category)
+    documents = _parent_documents_visible_queryset(request.user).filter(category__in=category_filter)
 
     serializer = ParentDocumentSerializer(
         documents,
@@ -70,6 +71,13 @@ def parent_documents_by_category(request, category):
 
 def _norm_user_role(user) -> str:
     return str(getattr(user, "role", "") or "").strip().upper()
+
+
+def _parent_document_category_filter(category: str) -> list[str]:
+    """Legacy NEWSLETTERS rows are shown with CLASS_TIMETABLE (parent newsletter)."""
+    if category == DocumentCategory.CLASS_TIMETABLE:
+        return [DocumentCategory.CLASS_TIMETABLE, DocumentCategory.NEWSLETTERS]
+    return [category]
 
 
 def _parent_documents_visible_queryset(user):
