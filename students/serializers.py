@@ -1,4 +1,5 @@
 from django.core.exceptions import ObjectDoesNotExist
+from django.utils import timezone
 from rest_framework import serializers
 
 from accounts.profile_access import franchise_profile_for_user, parent_profile_for_user
@@ -8,6 +9,7 @@ from .models import (
     Announcement,
     AttendanceRecord,
     FeeRecord,
+    FranchiseNotification,
     Grade,
     HomeworkAssignment,
     ParentNotificationRead,
@@ -528,6 +530,242 @@ class AnnouncementSerializer(serializers.ModelSerializer):
         return attrs
 
 
+class AdminAnnouncementSerializer(serializers.ModelSerializer):
+    """Head office publishes global notifications for centres and parents."""
+
+    franchise_name = serializers.SerializerMethodField()
+    student_name = serializers.SerializerMethodField()
+    audience_label = serializers.SerializerMethodField()
+    publish_target_label = serializers.SerializerMethodField()
+    schedule_date = serializers.DateField(required=False, allow_null=True, write_only=True)
+    broadcast_all = serializers.BooleanField(required=False, default=False, write_only=True)
+    target_scope = serializers.ChoiceField(
+        choices=[
+            ("pan_india", "Pan-India (all centres)"),
+            ("state", "State-wise centres"),
+            ("city", "City-wise centres"),
+            ("franchises", "Multiple selected centres"),
+            ("one_centre", "One centre"),
+        ],
+        required=False,
+        write_only=True,
+    )
+    target_states = serializers.ListField(
+        child=serializers.CharField(max_length=10),
+        required=False,
+        allow_empty=True,
+        write_only=True,
+    )
+    target_cities = serializers.ListField(
+        child=serializers.CharField(max_length=100),
+        required=False,
+        allow_empty=True,
+        write_only=True,
+    )
+    franchise_ids = serializers.ListField(
+        child=serializers.IntegerField(),
+        required=False,
+        allow_empty=True,
+        write_only=True,
+    )
+
+    class Meta:
+        model = Announcement
+        fields = [
+            "id",
+            "franchise",
+            "franchise_name",
+            "title",
+            "body",
+            "student",
+            "student_name",
+            "class_name",
+            "audience_label",
+            "publish_scope",
+            "target_states",
+            "target_cities",
+            "target_franchise_ids",
+            "visible_to_parents",
+            "visible_to_centres",
+            "publish_target_label",
+            "published_at",
+            "schedule_date",
+            "broadcast_all",
+            "target_scope",
+            "franchise_ids",
+            "is_active",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "id",
+            "franchise_name",
+            "student_name",
+            "audience_label",
+            "publish_scope",
+            "target_states",
+            "target_cities",
+            "target_franchise_ids",
+            "publish_target_label",
+            "published_at",
+            "created_at",
+            "updated_at",
+        ]
+
+    def get_franchise_name(self, obj):
+        try:
+            return obj.franchise.name if obj.franchise_id else ""
+        except ObjectDoesNotExist:
+            return ""
+
+    def get_student_name(self, obj):
+        try:
+            st = obj.student
+        except ObjectDoesNotExist:
+            return ""
+        return getattr(st, "full_name", "") or ""
+
+    def get_audience_label(self, obj):
+        if obj.student_id:
+            name = self.get_student_name(obj)
+            return name or f"Student #{obj.student_id}"
+        target_class = (obj.class_name or "").strip()
+        if target_class:
+            return target_class
+        return "All parents"
+
+    def get_publish_target_label(self, obj):
+        from common.cms_targeting import publish_scope_label
+
+        if obj.franchise_id:
+            try:
+                franchise_name = obj.franchise.name
+            except ObjectDoesNotExist:
+                franchise_name = f"Centre #{obj.franchise_id}"
+            return publish_scope_label(
+                "one_centre",
+                franchise_name=franchise_name,
+                class_name=obj.class_name,
+            )
+        return publish_scope_label(
+            obj.publish_scope,
+            target_states=getattr(obj, "target_states", None) or [],
+            target_cities=getattr(obj, "target_cities", None) or [],
+            franchise_count=len(getattr(obj, "target_franchise_ids", None) or []),
+            class_name=obj.class_name,
+        )
+
+    def validate_franchise(self, value):
+        if value is None:
+            return value
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if not user or not getattr(user, "is_admin", False):
+            raise serializers.ValidationError("Invalid franchise.")
+        if value.admin_id != user.id:
+            raise serializers.ValidationError("Franchise is not in your account.")
+        return value
+
+    def validate_student(self, value):
+        if value is None:
+            return value
+        franchise_id = self.initial_data.get("franchise")
+        if not franchise_id:
+            franchise_ids = self.initial_data.get("franchise_ids") or []
+            if isinstance(franchise_ids, list) and len(franchise_ids) == 1:
+                franchise_id = franchise_ids[0]
+        if self.instance and not franchise_id:
+            franchise_id = self.instance.franchise_id
+            if not franchise_id:
+                target_ids = getattr(self.instance, "target_franchise_ids", None) or []
+                if len(target_ids) == 1:
+                    franchise_id = target_ids[0]
+        if franchise_id and value.parent.franchise_id != int(franchise_id):
+            raise serializers.ValidationError("Student is not enrolled at the selected centre.")
+        return value
+
+    def validate_class_name(self, value):
+        from students.portal_views import normalize_portal_class_name
+
+        return normalize_portal_class_name(value or "")
+
+    def validate(self, attrs):
+        from common.cms_targeting import PublishScope
+        from students.portal_schedule import published_at_from_schedule_date
+
+        broadcast_all = bool(attrs.pop("broadcast_all", False))
+        target_scope = (attrs.pop("target_scope", None) or "").strip().lower()
+        target_states = attrs.pop("target_states", None) or []
+        target_cities = attrs.pop("target_cities", None) or []
+        franchise_ids = attrs.pop("franchise_ids", None) or []
+        schedule_date = attrs.pop("schedule_date", serializers.empty)
+        student = attrs.get("student")
+        if student is None and self.instance is not None and "student" not in attrs:
+            student = self.instance.student
+        class_name = attrs.get("class_name")
+        if class_name is None and self.instance is not None and "class_name" not in attrs:
+            class_name = self.instance.class_name
+        class_name = (class_name or "").strip()
+        if "class_name" in attrs or self.instance is None:
+            attrs["class_name"] = class_name
+        if student and class_name:
+            raise serializers.ValidationError("Choose either a class or a student, not both.")
+        franchise = attrs.get("franchise")
+
+        if self.instance is None:
+            if broadcast_all and not target_scope:
+                target_scope = PublishScope.PAN_INDIA
+            if not target_scope:
+                if franchise:
+                    target_scope = PublishScope.ONE_CENTRE
+                else:
+                    raise serializers.ValidationError(
+                        {"target_scope": "Select who should receive this notification."}
+                    )
+            if target_scope == PublishScope.PAN_INDIA:
+                pass
+            elif target_scope == PublishScope.ONE_CENTRE:
+                if franchise:
+                    franchise_ids = [franchise.id]
+                elif len(franchise_ids) != 1:
+                    raise serializers.ValidationError(
+                        {"franchise_ids": "Select exactly one centre."}
+                    )
+            elif target_scope == PublishScope.FRANCHISES:
+                if not franchise_ids:
+                    raise serializers.ValidationError(
+                        {"franchise_ids": "Select at least one centre."}
+                    )
+                if franchise:
+                    attrs.pop("franchise", None)
+            elif target_scope == PublishScope.STATE:
+                if not target_states:
+                    raise serializers.ValidationError(
+                        {"target_states": "Select at least one state."}
+                    )
+                attrs.pop("franchise", None)
+            elif target_scope == PublishScope.CITY:
+                if not target_cities:
+                    raise serializers.ValidationError(
+                        {"target_cities": "Select at least one city."}
+                    )
+                attrs.pop("franchise", None)
+            if target_scope == PublishScope.PAN_INDIA:
+                attrs.pop("franchise", None)
+            if target_scope != PublishScope.ONE_CENTRE and student:
+                raise serializers.ValidationError(
+                    {"student": "Student targeting is only available for one centre."}
+                )
+
+        attrs["publish_scope"] = target_scope or PublishScope.PAN_INDIA
+        attrs["target_states"] = list(target_states or [])
+        attrs["target_cities"] = list(target_cities or [])
+        attrs["target_franchise_ids"] = [int(i) for i in (franchise_ids or []) if str(i).strip().isdigit()]
+        if schedule_date is not serializers.empty:
+            attrs["published_at"] = published_at_from_schedule_date(schedule_date)
+        return attrs
+
+
 class AttendanceRecordSerializer(serializers.ModelSerializer):
     student_name = serializers.SerializerMethodField()
 
@@ -618,11 +856,28 @@ class FeeRecordSerializer(serializers.ModelSerializer):
         return value
 
 
+from .support_ticket_notify import record_ticket_update_for_parent, ticket_status_label
+
+
 class SupportTicketParentSerializer(serializers.ModelSerializer):
+    status_label = serializers.SerializerMethodField()
+
     class Meta:
         model = SupportTicket
-        fields = ["id", "subject", "body", "status", "franchise_reply", "created_at", "updated_at"]
-        read_only_fields = ["status", "franchise_reply", "created_at", "updated_at"]
+        fields = [
+            "id",
+            "subject",
+            "body",
+            "status",
+            "status_label",
+            "franchise_reply",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["status", "status_label", "franchise_reply", "created_at", "updated_at"]
+
+    def get_status_label(self, obj):
+        return ticket_status_label(obj.status)
 
 
 class SupportTicketFranchiseSerializer(serializers.ModelSerializer):
@@ -630,6 +885,7 @@ class SupportTicketFranchiseSerializer(serializers.ModelSerializer):
 
     parent_name = serializers.SerializerMethodField()
     parent_email = serializers.SerializerMethodField()
+    status_label = serializers.SerializerMethodField()
 
     class Meta:
         model = SupportTicket
@@ -641,11 +897,24 @@ class SupportTicketFranchiseSerializer(serializers.ModelSerializer):
             "subject",
             "body",
             "status",
+            "status_label",
             "franchise_reply",
+            "ho_reminder_message",
+            "ho_reminded_at",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["parent", "parent_name", "parent_email", "subject", "body", "created_at"]
+        read_only_fields = [
+            "parent",
+            "parent_name",
+            "parent_email",
+            "subject",
+            "body",
+            "created_at",
+            "status_label",
+            "ho_reminder_message",
+            "ho_reminded_at",
+        ]
 
     def get_parent_name(self, obj):
         try:
@@ -669,6 +938,134 @@ class SupportTicketFranchiseSerializer(serializers.ModelSerializer):
         except ObjectDoesNotExist:
             return ""
         return getattr(user, "email", "") or ""
+
+    def get_status_label(self, obj):
+        return ticket_status_label(obj.status)
+
+    def update(self, instance, validated_data):
+        old_status = instance.status
+        old_reply = instance.franchise_reply or ""
+        instance = super().update(instance, validated_data)
+        status_changed = instance.status != old_status
+        reply_changed = (instance.franchise_reply or "").strip() != old_reply.strip()
+        if status_changed or reply_changed:
+            record_ticket_update_for_parent(
+                instance,
+                old_status=old_status,
+                status_changed=status_changed,
+                reply_changed=reply_changed,
+            )
+        if instance.status == SupportTicket.Status.RESOLVED:
+            instance.ho_reminder_message = ""
+            instance.ho_reminded_at = None
+            instance.save(update_fields=["ho_reminder_message", "ho_reminded_at", "updated_at"])
+            FranchiseNotification.objects.filter(
+                franchise_id=instance.parent.franchise_id,
+                source=FranchiseNotification.Source.SUPPORT_TICKET,
+                source_id=instance.id,
+                read_at__isnull=True,
+            ).update(read_at=timezone.now())
+        return instance
+
+
+class FranchiseNotificationSerializer(serializers.ModelSerializer):
+    read = serializers.SerializerMethodField()
+
+    class Meta:
+        model = FranchiseNotification
+        fields = [
+            "id",
+            "source",
+            "source_id",
+            "title",
+            "body",
+            "action_path",
+            "read",
+            "read_at",
+            "created_at",
+        ]
+        read_only_fields = fields
+
+    def get_read(self, obj) -> bool:
+        return obj.read_at is not None
+
+
+class AdminSupportTicketSerializer(serializers.ModelSerializer):
+    """Head office: view all parent support tickets across centres."""
+
+    franchise = serializers.IntegerField(source="parent.franchise_id", read_only=True)
+    franchise_name = serializers.SerializerMethodField()
+    parent_name = serializers.SerializerMethodField()
+    parent_email = serializers.SerializerMethodField()
+    status_label = serializers.SerializerMethodField()
+    is_unresolved = serializers.SerializerMethodField()
+    days_open = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SupportTicket
+        fields = [
+            "id",
+            "franchise",
+            "franchise_name",
+            "parent",
+            "parent_name",
+            "parent_email",
+            "subject",
+            "body",
+            "status",
+            "status_label",
+            "is_unresolved",
+            "days_open",
+            "franchise_reply",
+            "ho_reminder_message",
+            "ho_reminded_at",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = fields
+
+    def get_franchise_name(self, obj):
+        try:
+            return obj.parent.franchise.name if obj.parent and obj.parent.franchise_id else ""
+        except ObjectDoesNotExist:
+            return ""
+
+    def get_parent_name(self, obj):
+        try:
+            parent = obj.parent
+        except ObjectDoesNotExist:
+            return ""
+        try:
+            user = parent.user
+        except ObjectDoesNotExist:
+            return ""
+        name = (getattr(user, "full_name", None) or "").strip()
+        return name or getattr(parent, "child_name", "") or getattr(user, "email", "") or ""
+
+    def get_parent_email(self, obj):
+        try:
+            parent = obj.parent
+        except ObjectDoesNotExist:
+            return ""
+        try:
+            user = parent.user
+        except ObjectDoesNotExist:
+            return ""
+        return getattr(user, "email", "") or getattr(parent, "Emailid", "") or ""
+
+    def get_status_label(self, obj):
+        return ticket_status_label(obj.status)
+
+    def get_is_unresolved(self, obj) -> bool:
+        return obj.status != SupportTicket.Status.RESOLVED
+
+    def get_days_open(self, obj) -> int:
+        from django.utils import timezone
+
+        if not obj.created_at:
+            return 0
+        delta = timezone.now() - obj.created_at
+        return max(0, delta.days)
 
 
 class TransportRouteSerializer(serializers.ModelSerializer):

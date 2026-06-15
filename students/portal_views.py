@@ -1,6 +1,6 @@
 from accounts.permissions import IsDriverUser
 from accounts.profile_access import driver_profile_for_user
-from franchises.models import DriverProfile
+from franchises.models import DriverProfile, Franchise
 from franchises.serializers import DriverProfileSerializer, DriverCreateSerializer
 """Parent portal: homework, announcements, attendance, fees, transport, support tickets."""
 
@@ -22,7 +22,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from accounts.permissions import IsFranchiseUser, IsParentUser
+from accounts.permissions import IsAdminUser, IsFranchiseUser, IsParentUser
 from accounts.profile_access import (
     effective_franchise_for_parent,
     find_student_for_parent_user,
@@ -45,15 +45,19 @@ from .models import (
     HomeworkAssignment,
     ParentFeePayment,
     ParentNotificationRead,
+    FranchiseNotification,
+    ParentPushDevice,
     StudentAchievement,
     StudentProfile,
     StudentTransportAssignment,
     StudentTripStatus,
     SupportTicket,
+    SupportTicketStatusEvent,
     TransportRoute,
     TransportTrip,
     TransportTripLocation,
 )
+from .support_ticket_notify import ticket_status_label
 from .portal_schedule import (
     announcement_on_schedule_date_q,
     parent_visible_announcement_q,
@@ -62,8 +66,11 @@ from .portal_schedule import (
     published_at_from_schedule_date,
 )
 from .serializers import (
+    AdminAnnouncementSerializer,
+    AdminSupportTicketSerializer,
     AnnouncementSerializer,
     AttendanceRecordSerializer,
+    FranchiseNotificationSerializer,
     FranchiseAttendanceBulkSerializer,
     FranchiseAttendanceUpsertSerializer,
     FeeRecordSerializer,
@@ -289,6 +296,7 @@ def _parent_centre(parent_profile):
 def parent_profiles_for_announcement(announcement):
     """Parents who should receive an announcement (in-app and email)."""
     from franchises.models import ParentProfile
+    from common.cms_targeting import franchises_matching_announcement
 
     if announcement.student_id:
         try:
@@ -300,19 +308,72 @@ def parent_profiles_for_announcement(announcement):
             return ParentProfile.objects.none()
         return ParentProfile.objects.filter(pk=parent_id).select_related("user", "franchise")
 
-    base = parents_at_franchise(announcement.franchise)
+    franchises = franchises_matching_announcement(
+        announcement,
+        admin_user=getattr(announcement, "ho_admin", None),
+    )
+    if not franchises:
+        return ParentProfile.objects.none()
+
     target_class = normalize_portal_class_name(announcement.class_name or "")
-    if target_class:
-        parent_ids: set[int] = set()
-        base_parent_ids = list(base.values_list("pk", flat=True))
-        for student in StudentProfile.objects.filter(
-            is_active=True,
-            parent_id__in=base_parent_ids,
-        ).only("parent_id", "class_name"):
-            if _class_label_matches(student.class_name, target_class):
-                parent_ids.add(student.parent_id)
-        return base.filter(pk__in=parent_ids)
-    return base
+    parent_ids: set[int] = set()
+    for franchise in franchises:
+        base = parents_at_franchise(franchise)
+        if target_class:
+            base_parent_ids = list(base.values_list("pk", flat=True))
+            for student in StudentProfile.objects.filter(
+                is_active=True,
+                parent_id__in=base_parent_ids,
+            ).only("parent_id", "class_name"):
+                if _class_label_matches(student.class_name, target_class):
+                    parent_ids.add(student.parent_id)
+        else:
+            parent_ids.update(base.values_list("pk", flat=True))
+
+    if not parent_ids:
+        return ParentProfile.objects.none()
+    return ParentProfile.objects.filter(pk__in=parent_ids).select_related("user", "franchise")
+
+
+def _announcement_ids_visible_at_franchise(franchise, *, parents_visible=True):
+    """Announcement primary keys visible at a centre (legacy per-centre + global HO rows)."""
+    from common.cms_targeting import announcement_visible_to_franchise
+
+    ids = set(
+        Announcement.objects.filter(franchise=franchise, is_active=True).values_list("pk", flat=True)
+    )
+    global_filter = {"is_active": True, "franchise__isnull": True}
+    if parents_visible:
+        global_filter["visible_to_parents"] = True
+    for announcement in Announcement.objects.filter(**global_filter).only(
+        "id",
+        "franchise_id",
+        "publish_scope",
+        "target_states",
+        "target_cities",
+        "target_franchise_ids",
+        "is_active",
+        "visible_to_parents",
+    ):
+        if announcement_visible_to_franchise(announcement, franchise):
+            ids.add(announcement.id)
+    return ids
+
+
+def _announcements_at_franchise_queryset(franchise, parent_profile=None, user=None):
+    """Active announcements for a centre, optionally narrowed for a parent audience."""
+    ids = _announcement_ids_visible_at_franchise(franchise, parents_visible=True)
+    if not ids:
+        return Announcement.objects.none()
+    qs = (
+        Announcement.objects.filter(pk__in=ids, is_active=True)
+        .select_related("student")
+        .distinct()
+        .order_by("-published_at", "-created_at")
+    )
+    if parent_profile is not None:
+        qs = qs.filter(_announcement_visible_q(parent_profile, user=user))
+    return qs
 
 
 # ----- Parent (read-only / limited write) -----
@@ -377,12 +438,8 @@ class ParentAnnouncementListView(generics.ListAPIView):
         if not pp or not centre:
             return Announcement.objects.none()
         return (
-            Announcement.objects.filter(franchise=centre, is_active=True)
-            .filter(_announcement_visible_q(pp, user=self.request.user))
+            _announcements_at_franchise_queryset(centre, parent_profile=pp, user=self.request.user)
             .filter(parent_visible_announcement_q())
-            .select_related("student")
-            .distinct()
-            .order_by("-published_at")
         )
 
     def list(self, request, *args, **kwargs):
@@ -953,18 +1010,15 @@ class ParentNotificationsView(APIView):
                     "events": [],
                     "achievements": [],
                     "attendance": [],
+                    "tickets": [],
                     "notifications": [],
                     "unread_count": 0,
                 }
             )
 
         announcements_qs = (
-            Announcement.objects.filter(franchise=centre, is_active=True)
-            .filter(_announcement_visible_q(pp, user=request.user))
+            _announcements_at_franchise_queryset(centre, parent_profile=pp, user=request.user)
             .filter(parent_visible_announcement_q())
-            .select_related("student")
-            .distinct()
-            .order_by("-published_at")
         ) if centre else Announcement.objects.none()
         homework_qs = (
             HomeworkAssignment.objects.filter(franchise=centre)
@@ -1005,6 +1059,12 @@ class ParentNotificationsView(APIView):
             AttendanceRecord.objects.filter(student__parent=pp, student__is_active=True)
             .select_related("student")
             .order_by("-date", "student_id")
+        )
+        tickets_qs = SupportTicket.objects.filter(parent=pp).order_by("-updated_at", "-created_at")
+        ticket_events_qs = (
+            SupportTicketStatusEvent.objects.filter(ticket__parent=pp)
+            .select_related("ticket")
+            .order_by("-created_at")
         )
 
         try:
@@ -1131,6 +1191,29 @@ class ParentNotificationsView(APIView):
                 }
             )
 
+        try:
+            for event in ticket_events_qs:
+                key = f"ticket-event-{event.id}"
+                read_at = read_map.get(key)
+                if event.event_type == SupportTicketStatusEvent.EventType.STATUS_CHANGE:
+                    title = f"Support ticket: {ticket_status_label(event.new_status or event.ticket.status)}"
+                else:
+                    title = f"Support ticket reply: {event.ticket.subject}"
+                notifications.append(
+                    {
+                        "id": key,
+                        "source": "support_ticket",
+                        "source_id": event.ticket_id,
+                        "title": title,
+                        "body": event.message or event.ticket.subject,
+                        "published_at": event.created_at,
+                        "read": read_at is not None,
+                        "read_at": read_at,
+                    }
+                )
+        except (ProgrammingError, OperationalError):
+            pass
+
         notifications = [
             n for n in notifications if (not n["read"]) or (n.get("read_at") and n["read_at"] >= hide_read_before)
         ]
@@ -1149,10 +1232,86 @@ class ParentNotificationsView(APIView):
                 "events": EventSerializer(events_qs, many=True).data,
                 "achievements": ParentStudentAchievementSerializer(achievements_qs, many=True).data,
                 "attendance": AttendanceRecordSerializer(attendance_qs, many=True).data,
+                "tickets": SupportTicketParentSerializer(tickets_qs, many=True).data,
                 "notifications": notifications,
                 "unread_count": unread_count,
             }
         )
+
+
+class ParentPushDeviceRegisterView(APIView):
+    """Register or remove an FCM device token for parent push notifications."""
+
+    permission_classes = [IsParentUser]
+
+    def post(self, request):
+        pp = resolved_parent_profile_for_user(request.user)
+        if not pp:
+            return Response({"detail": "Parent profile not found"}, status=404)
+
+        token = ""
+        platform = ""
+        try:
+            if hasattr(request, "data") and isinstance(request.data, dict):
+                token = str(request.data.get("token") or "").strip()
+                platform = str(request.data.get("platform") or "").strip()[:20]
+        except Exception:
+            pass
+        if not token:
+            try:
+                raw = (request.body or b"").decode("utf-8").strip()
+                if raw:
+                    payload = json.loads(raw)
+                    if isinstance(payload, dict):
+                        token = str(payload.get("token") or "").strip()
+                        platform = str(payload.get("platform") or "").strip()[:20]
+            except Exception:
+                pass
+
+        if not token:
+            return Response({"detail": "token is required"}, status=400)
+
+        try:
+            ParentPushDevice.objects.update_or_create(
+                parent=pp,
+                token=token,
+                defaults={"platform": platform},
+            )
+        except (ProgrammingError, OperationalError):
+            return Response({"detail": "Push device table not ready"}, status=503)
+
+        return Response({"ok": True})
+
+    def delete(self, request):
+        pp = resolved_parent_profile_for_user(request.user)
+        if not pp:
+            return Response({"detail": "Parent profile not found"}, status=404)
+
+        token = ""
+        try:
+            if hasattr(request, "data") and isinstance(request.data, dict):
+                token = str(request.data.get("token") or "").strip()
+        except Exception:
+            pass
+        if not token:
+            try:
+                raw = (request.body or b"").decode("utf-8").strip()
+                if raw:
+                    payload = json.loads(raw)
+                    if isinstance(payload, dict):
+                        token = str(payload.get("token") or "").strip()
+            except Exception:
+                pass
+
+        if not token:
+            return Response({"detail": "token is required"}, status=400)
+
+        try:
+            ParentPushDevice.objects.filter(parent=pp, token=token).delete()
+        except (ProgrammingError, OperationalError):
+            return Response({"detail": "Push device table not ready"}, status=503)
+
+        return Response({"ok": True})
 
 
 class ParentNotificationReadView(APIView):
@@ -1260,6 +1419,8 @@ class FranchiseHomeworkDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 def _after_announcement_saved(announcement: Announcement) -> None:
     """Reset or dispatch parent emails after create/update."""
+    if not getattr(announcement, "visible_to_parents", True):
+        return
     if announcement.published_at > timezone.now():
         Announcement.objects.filter(pk=announcement.pk).update(email_dispatched_at=None)
         return
@@ -1276,6 +1437,137 @@ def _after_announcement_saved(announcement: Announcement) -> None:
     transaction.on_commit(lambda: threading.Thread(target=_email_parents, daemon=True).start())
 
 
+class AdminAnnouncementListCreateView(generics.ListCreateAPIView):
+    """Head office: publish global notifications to centres and parents."""
+
+    permission_classes = [IsAdminUser]
+    serializer_class = AdminAnnouncementSerializer
+    pagination_class = None
+
+    def get_queryset(self):
+        from django.db.models import Q
+
+        qs = (
+            Announcement.objects.filter(
+                Q(ho_admin=self.request.user) | Q(franchise__admin=self.request.user)
+            )
+            .select_related("franchise", "student")
+            .order_by("-published_at", "-created_at")
+        )
+        franchise_id = (self.request.query_params.get("franchise") or "").strip()
+        if franchise_id.isdigit():
+            qs = qs.filter(franchise_id=int(franchise_id))
+        global_only = (self.request.query_params.get("global") or "").strip().lower()
+        if global_only in ("1", "true", "yes"):
+            qs = qs.filter(franchise__isnull=True)
+        return qs
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx["request"] = self.request
+        return ctx
+
+    def create(self, request, *args, **kwargs):
+        from common.cms_targeting import PublishScope, resolve_franchises_for_publish
+        from students.franchise_notifications import sync_announcement_centre_notifications
+
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data.copy()
+        target_scope = data.pop("publish_scope", PublishScope.PAN_INDIA)
+        target_states = data.pop("target_states", [])
+        target_cities = data.pop("target_cities", [])
+        franchise_ids = data.pop("target_franchise_ids", [])
+        single_franchise = data.pop("franchise", None)
+        one_centre_id = None
+        if target_scope == PublishScope.ONE_CENTRE:
+            one_centre_id = single_franchise.id if single_franchise else (franchise_ids[0] if franchise_ids else None)
+
+        franchises = resolve_franchises_for_publish(
+            request.user,
+            scope=target_scope,
+            franchise_id=one_centre_id,
+            franchise_ids=franchise_ids,
+            target_states=target_states,
+            target_cities=target_cities,
+        )
+
+        if not franchises:
+            return Response({"detail": "No centres match this publish target."}, status=400)
+
+        data.pop("publish_scope", None)
+        data.pop("target_states", None)
+        data.pop("target_cities", None)
+        data.pop("target_franchise_ids", None)
+        announcement = Announcement.objects.create(
+            franchise=None,
+            ho_admin=request.user,
+            publish_scope=target_scope,
+            target_states=list(target_states or []),
+            target_cities=list(target_cities or []),
+            target_franchise_ids=list(franchise_ids or []),
+            **data,
+        )
+        sync_announcement_centre_notifications(announcement, franchises)
+        if announcement.visible_to_parents:
+            _after_announcement_saved(announcement)
+        out = AdminAnnouncementSerializer(announcement, context=self.get_serializer_context())
+        return Response(out.data, status=status.HTTP_201_CREATED)
+
+
+class AdminAnnouncementDetailView(generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [IsAdminUser]
+    serializer_class = AdminAnnouncementSerializer
+
+    def get_queryset(self):
+        from django.db.models import Q
+
+        return Announcement.objects.filter(
+            Q(ho_admin=self.request.user) | Q(franchise__admin=self.request.user)
+        ).select_related("franchise", "student")
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx["request"] = self.request
+        return ctx
+
+    def perform_update(self, serializer):
+        from common.cms_targeting import PublishScope, resolve_franchises_for_publish
+        from students.franchise_notifications import sync_announcement_centre_notifications
+
+        validated = serializer.validated_data
+        target_scope = validated.get("publish_scope", PublishScope.PAN_INDIA)
+        target_states = validated.get("target_states", [])
+        target_cities = validated.get("target_cities", [])
+        franchise_ids = validated.get("target_franchise_ids", [])
+        one_centre_id = franchise_ids[0] if target_scope == PublishScope.ONE_CENTRE and franchise_ids else None
+        franchises = resolve_franchises_for_publish(
+            self.request.user,
+            scope=target_scope,
+            franchise_id=one_centre_id,
+            franchise_ids=franchise_ids,
+            target_states=target_states,
+            target_cities=target_cities,
+        )
+        announcement = serializer.save()
+        if announcement.franchise_id is None:
+            sync_announcement_centre_notifications(announcement, franchises)
+            if announcement.visible_to_parents:
+                Announcement.objects.filter(pk=announcement.pk).update(email_dispatched_at=None)
+                _after_announcement_saved(announcement)
+        elif announcement.visible_to_parents:
+            _after_announcement_saved(announcement)
+
+    def perform_destroy(self, instance):
+        from students.models import FranchiseNotification
+
+        FranchiseNotification.objects.filter(
+            source=FranchiseNotification.Source.HEAD_OFFICE,
+            source_id=instance.id,
+        ).delete()
+        instance.delete()
+
+
 class FranchiseAnnouncementListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsFranchiseUser]
     serializer_class = AnnouncementSerializer
@@ -1285,7 +1577,8 @@ class FranchiseAnnouncementListCreateView(generics.ListCreateAPIView):
         f = franchise_profile_for_user(self.request.user)
         if not f:
             return Announcement.objects.none()
-        qs = Announcement.objects.filter(franchise=f).select_related("student").order_by("-published_at")
+        ids = _announcement_ids_visible_at_franchise(f, parents_visible=True)
+        qs = Announcement.objects.filter(pk__in=ids, is_active=True).select_related("student").order_by("-published_at")
         date_str = (self.request.query_params.get("published_date") or "").strip()
         if date_str:
             parsed = parse_date(date_str)
@@ -1304,8 +1597,7 @@ class FranchiseAnnouncementListCreateView(generics.ListCreateAPIView):
         f = franchise_profile_for_user(self.request.user)
         if not f:
             raise PermissionDenied("Franchise profile not found")
-        announcement = serializer.save(franchise=f)
-        _after_announcement_saved(announcement)
+        raise PermissionDenied("Notifications are managed by head office.")
 
 
 class FranchiseAnnouncementDetailView(generics.RetrieveUpdateDestroyAPIView):
@@ -1316,7 +1608,8 @@ class FranchiseAnnouncementDetailView(generics.RetrieveUpdateDestroyAPIView):
         f = franchise_profile_for_user(self.request.user)
         if not f:
             return Announcement.objects.none()
-        return Announcement.objects.filter(franchise=f).select_related("student")
+        ids = _announcement_ids_visible_at_franchise(f, parents_visible=True)
+        return Announcement.objects.filter(pk__in=ids).select_related("student")
 
     def get_serializer_context(self):
         ctx = super().get_serializer_context()
@@ -1324,8 +1617,16 @@ class FranchiseAnnouncementDetailView(generics.RetrieveUpdateDestroyAPIView):
         return ctx
 
     def perform_update(self, serializer):
-        announcement = serializer.save()
-        _after_announcement_saved(announcement)
+        raise PermissionDenied("Notifications are managed by head office.")
+
+    def update(self, request, *args, **kwargs):
+        raise PermissionDenied("Notifications are managed by head office.")
+
+    def partial_update(self, request, *args, **kwargs):
+        raise PermissionDenied("Notifications are managed by head office.")
+
+    def destroy(self, request, *args, **kwargs):
+        raise PermissionDenied("Notifications are managed by head office.")
 
 
 @api_view(["GET"])
@@ -1586,6 +1887,163 @@ class FranchiseTransportAssignmentDetailView(generics.RetrieveUpdateDestroyAPIVi
         return c
 
 
+class AdminSupportTicketListView(generics.ListAPIView):
+    """Head office: all parent support tickets across centres."""
+
+    permission_classes = [IsAdminUser]
+    serializer_class = AdminSupportTicketSerializer
+    pagination_class = None
+
+    def get_queryset(self):
+        qs = (
+            SupportTicket.objects.filter(parent__franchise__admin=self.request.user)
+            .select_related("parent", "parent__franchise", "parent__user")
+            .order_by("-created_at")
+        )
+        franchise_id = (self.request.query_params.get("franchise") or "").strip()
+        if franchise_id.isdigit():
+            qs = qs.filter(parent__franchise_id=int(franchise_id))
+        status = (self.request.query_params.get("status") or "").strip().upper()
+        if status in SupportTicket.Status.values:
+            qs = qs.filter(status=status)
+        if (self.request.query_params.get("unresolved") or "").strip().lower() in ("1", "true", "yes"):
+            qs = qs.exclude(status=SupportTicket.Status.RESOLVED)
+        return qs
+
+
+class AdminSupportTicketRemindCentreView(APIView):
+    """Head office: remind a centre to resolve an open parent support ticket."""
+
+    permission_classes = [IsAdminUser]
+
+    def post(self, request, pk: int):
+        ticket = (
+            SupportTicket.objects.filter(
+                pk=pk,
+                parent__franchise__admin=request.user,
+            )
+            .select_related("parent", "parent__franchise", "parent__franchise__user")
+            .first()
+        )
+        if not ticket:
+            return Response({"detail": "Ticket not found"}, status=status.HTTP_404_NOT_FOUND)
+        if ticket.status == SupportTicket.Status.RESOLVED:
+            return Response({"detail": "Ticket is already resolved"}, status=status.HTTP_400_BAD_REQUEST)
+
+        default_message = (
+            f'This parent support ticket "{ticket.subject}" is still {ticket_status_label(ticket.status)}. '
+            "Please reply to the parent and update the ticket status in Parent Support."
+        )
+        message = ""
+        try:
+            if hasattr(request, "data") and isinstance(request.data, dict):
+                message = str(request.data.get("message") or "").strip()
+        except Exception:
+            pass
+        if not message:
+            message = default_message
+
+        ticket.ho_reminder_message = message
+        ticket.ho_reminded_at = timezone.now()
+        ticket.save(update_fields=["ho_reminder_message", "ho_reminded_at", "updated_at"])
+
+        from students.franchise_notifications import create_support_ticket_ho_notification
+
+        create_support_ticket_ho_notification(ticket, message=message)
+
+        from students.emails import notify_franchise_unresolved_ticket
+
+        emailed = notify_franchise_unresolved_ticket(ticket, message=message)
+        out = AdminSupportTicketSerializer(ticket, context={"request": request})
+        return Response(
+            {
+                **out.data,
+                "centre_emailed": emailed,
+                "detail": "Centre notified." if emailed else "Reminder saved; centre will see it on login (email not sent).",
+            }
+        )
+
+
+class FranchiseNotificationsView(APIView):
+    """Centre inbox: head office reminders and other franchise alerts."""
+
+    permission_classes = [IsFranchiseUser]
+
+    def get(self, request):
+        franchise = franchise_profile_for_user(request.user)
+        if not franchise:
+            return Response({"notifications": [], "unread_count": 0})
+
+        from students.franchise_notifications import (
+            sync_announcement_centre_notifications_for_franchise,
+            sync_support_ticket_ho_notifications,
+        )
+
+        try:
+            sync_support_ticket_ho_notifications(franchise)
+            sync_announcement_centre_notifications_for_franchise(franchise)
+            qs = FranchiseNotification.objects.filter(franchise=franchise).order_by("-created_at")
+            notifications = FranchiseNotificationSerializer(qs, many=True).data
+            unread_count = qs.filter(read_at__isnull=True).count()
+        except (ProgrammingError, OperationalError):
+            return Response({"notifications": [], "unread_count": 0})
+
+        return Response({"notifications": notifications, "unread_count": unread_count})
+
+
+class FranchiseNotificationReadView(APIView):
+    permission_classes = [IsFranchiseUser]
+
+    def post(self, request):
+        franchise = franchise_profile_for_user(request.user)
+        if not franchise:
+            return Response({"detail": "Franchise profile not found"}, status=404)
+
+        notification_id = ""
+        try:
+            if hasattr(request, "data") and isinstance(request.data, dict):
+                notification_id = str(request.data.get("notification_id") or "").strip()
+        except Exception:
+            pass
+        if not notification_id:
+            try:
+                raw = (request.body or b"").decode("utf-8").strip()
+                if raw:
+                    payload = json.loads(raw)
+                    if isinstance(payload, dict):
+                        notification_id = str(payload.get("notification_id") or "").strip()
+            except Exception:
+                pass
+
+        if not notification_id:
+            return Response({"detail": "notification_id is required"}, status=400)
+
+        try:
+            notif_id = int(notification_id)
+        except ValueError:
+            return Response({"detail": "Invalid notification_id"}, status=400)
+
+        try:
+            updated = FranchiseNotification.objects.filter(
+                pk=notif_id,
+                franchise=franchise,
+                read_at__isnull=True,
+            ).update(read_at=timezone.now())
+        except (ProgrammingError, OperationalError):
+            return Response({"ok": False, "detail": "Notifications table not ready"}, status=503)
+
+        unread_count = 0
+        try:
+            unread_count = FranchiseNotification.objects.filter(
+                franchise=franchise,
+                read_at__isnull=True,
+            ).count()
+        except (ProgrammingError, OperationalError):
+            pass
+
+        return Response({"ok": True, "marked": updated > 0, "unread_count": unread_count})
+
+
 class FranchiseSupportTicketListView(generics.ListAPIView):
     permission_classes = [IsFranchiseUser]
     serializer_class = SupportTicketFranchiseSerializer
@@ -1595,7 +2053,13 @@ class FranchiseSupportTicketListView(generics.ListAPIView):
         f = franchise_profile_for_user(self.request.user)
         if not f:
             return SupportTicket.objects.none()
-        return SupportTicket.objects.filter(parent__franchise=f).select_related("parent", "parent__user").order_by("-created_at")
+        from django.db.models import F
+
+        return (
+            SupportTicket.objects.filter(parent__franchise=f)
+            .select_related("parent", "parent__user")
+            .order_by(F("ho_reminded_at").desc(nulls_last=True), "-created_at")
+        )
 
 
 class FranchiseSupportTicketDetailView(generics.RetrieveUpdateAPIView):
