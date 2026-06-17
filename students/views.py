@@ -11,7 +11,9 @@ from accounts.profile_access import (
     franchise_profile_for_user,
     parent_profile_for_user,
     resolved_parent_profile_for_user,
+    students_at_franchise,
 )
+from franchises.models import Franchise
 from events.models import Event
 
 from .models import Grade, StudentAchievement, StudentProfile
@@ -145,13 +147,19 @@ class ParentAchievementListView(generics.ListAPIView):
         if not parent_profile:
             return StudentAchievement.objects.none()
         kids = StudentProfile.objects.filter(parent=parent_profile, is_active=True)
-        return (
+        qs = (
             StudentAchievement.objects.filter(franchise=parent_profile.franchise)
             .filter(Q(student__in=kids) | Q(student__isnull=True))
             .select_related("student")
             .distinct()
             .order_by("-achieved_date", "-created_at")
         )
+        from students.portal_views import _parent_student_from_request
+
+        focus = _parent_student_from_request(self.request, parent_profile)
+        if focus is not None:
+            qs = qs.filter(Q(student__isnull=True) | Q(student_id=focus.pk))
+        return qs
 
 
 class FranchiseStudentMiniListView(generics.ListAPIView):
@@ -165,7 +173,7 @@ class FranchiseStudentMiniListView(generics.ListAPIView):
         franchise = franchise_profile_for_user(self.request.user)
         if not franchise:
             return StudentProfile.objects.none()
-        return StudentProfile.objects.filter(parent__franchise=franchise, is_active=True).select_related("parent")
+        return students_at_franchise(franchise)
 
 
 class FranchiseStudentListCreateView(generics.ListCreateAPIView):
@@ -297,11 +305,10 @@ class AdminStudentMiniListView(generics.ListAPIView):
         franchise_id = self.request.query_params.get("franchise")
         if not franchise_id:
             return StudentProfile.objects.none()
-        return (
-            StudentProfile.objects.filter(parent__franchise_id=franchise_id)
-            .select_related("parent")
-            .order_by("full_name")
-        )
+        franchise = Franchise.objects.filter(pk=franchise_id).first()
+        if not franchise:
+            return StudentProfile.objects.none()
+        return students_at_franchise(franchise)
 
 
 class AdminAchievementListCreateView(generics.ListCreateAPIView):

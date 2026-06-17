@@ -35,7 +35,7 @@ def is_usable_embed_url(raw: str | None) -> bool:
 
 
 AUDIO_URL_RE = re.compile(
-    r"\.(mp3|wav|m4a|ogg|aac|flac|wma|amr|opus|caf|aiff|aif|mpeg|mpg|3gp|weba)(\?|#|$)",
+    r"\.(mp3|wav|m4a|mp4|ogg|aac|flac|wma|amr|opus|caf|aiff|aif|mpeg|mpg|3gp|weba)(\?|#|$)",
     re.IGNORECASE,
 )
 
