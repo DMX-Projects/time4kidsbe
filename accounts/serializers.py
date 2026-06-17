@@ -324,7 +324,6 @@ class ParentTokenObtainPairSerializer(TokenObtainPairSerializer):
             "access": str(refresh.access_token),
         }
 
-        parent_profile = parent_profile_for_user(user)
         parent_ctx = parent_login_context(user)
 
         data["user"] = {
@@ -334,20 +333,5 @@ class ParentTokenObtainPairSerializer(TokenObtainPairSerializer):
             "role": user.role,
             **parent_ctx,
         }
-
-        # Add parent profile information if available
-        if parent_profile:
-            data["parent_profile"] = {
-                "id": parent_profile.id,
-                "franchise_id": parent_profile.franchise.id,
-                "franchise_name": parent_profile.franchise.name,
-                "franchise_slug": parent_profile.franchise.slug,
-                "child_name": parent_ctx.get("child_name") or parent_profile.child_name,
-                "class": parent_ctx.get("class") or "",
-                "id_card_no": parent_ctx.get("id_card_no") or "",
-                "academic_year": parent_ctx.get("academic_year") or "",
-                "gender": parent_ctx.get("gender") or "",
-                "gender_label": parent_ctx.get("gender_label") or "",
-            }
 
         return data

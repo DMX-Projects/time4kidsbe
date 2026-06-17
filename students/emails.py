@@ -39,6 +39,9 @@ def notify_parents_new_announcement(announcement: Announcement) -> int:
     if not announcement.is_active:
         return 0
 
+    if not getattr(announcement, "visible_to_parents", True):
+        return 0
+
     if announcement.email_dispatched_at:
         return 0
 
@@ -163,3 +166,140 @@ def notify_parents_new_announcement_by_id(announcement_id: int) -> None:
         logger.warning("notify_parents_new_announcement_by_id: Announcement %s missing", announcement_id)
         return
     notify_parents_new_announcement(ann)
+
+
+def _franchise_notification_emails(franchise) -> list[str]:
+    """Deliverable centre emails (contact + login), deduped."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for raw in (
+        getattr(franchise, "contact_email", None),
+        getattr(getattr(franchise, "user", None), "email", None),
+    ):
+        addr = (raw or "").strip()
+        if not addr or "@" not in addr:
+            continue
+        key = addr.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(addr)
+    return out
+
+
+def send_support_ticket_centre_reminder(ticket) -> bool:
+    """
+    Email the centre about an HO reminder on a parent support ticket.
+    Returns True if at least one SendGrid send succeeded (HTTP 202).
+    """
+    from students.models import SupportTicket
+
+    if not isinstance(ticket, SupportTicket):
+        return False
+
+    try:
+        parent = ticket.parent
+        franchise = parent.franchise
+    except Exception:
+        logger.warning("send_support_ticket_centre_reminder: ticket %s missing parent/franchise", ticket.pk)
+        return False
+
+    recipients = _franchise_notification_emails(franchise)
+    if not recipients:
+        logger.warning(
+            "send_support_ticket_centre_reminder: no centre email for franchise %s (ticket %s)",
+            getattr(franchise, "pk", "?"),
+            ticket.pk,
+        )
+        return False
+
+    api_key = getattr(settings, "SENDGRID_API_KEY", None) or ""
+    if not api_key.strip():
+        logger.warning("SENDGRID_API_KEY not set; skipping support ticket centre reminder")
+        return False
+
+    base_url = getattr(settings, "PUBLIC_SITE_URL", "http://localhost:3000").rstrip("/")
+    tickets_url = f"{base_url}/dashboard/franchise/parent-tickets"
+    from_email = getattr(settings, "MAIL_FROM_ADDRESS", None) or getattr(
+        settings, "DEFAULT_FROM_EMAIL", "info@timekidspreschools.com"
+    )
+
+    franchise_name = (getattr(franchise, "name", None) or "Your centre").strip()
+    safe_franchise = html.escape(franchise_name)
+    safe_subject = html.escape((ticket.subject or "").strip() or "(no subject)")
+    ho_note = (ticket.ho_reminder_message or "").strip()
+    safe_note = html.escape(ho_note).replace("\n", "<br/>") if ho_note else ""
+
+    try:
+        parent_user = parent.user
+        parent_label = html.escape(
+            (getattr(parent_user, "full_name", None) or getattr(parent_user, "email", None) or "Parent").strip()
+        )
+    except Exception:
+        parent_label = "Parent"
+
+    status_label = "Open"
+    if ticket.status == SupportTicket.Status.IN_PROGRESS:
+        status_label = "In progress"
+    elif ticket.status == SupportTicket.Status.CLOSED:
+        status_label = "Resolved"
+
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <style>
+            body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
+            .container {{ max-width: 600px; margin: 0 auto; padding: 24px; }}
+            .btn {{ display: inline-block; margin-top: 16px; padding: 12px 20px;
+                    background: #ea580c; color: #fff !important; text-decoration: none;
+                    border-radius: 8px; font-weight: bold; }}
+            .note {{ margin-top: 16px; padding: 12px; background: #fff7ed; border: 1px solid #fed7aa;
+                     border-radius: 8px; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <p><strong>Time4Kids head office</strong> has asked <strong>{safe_franchise}</strong> to action a parent support ticket.</p>
+            <p><strong>Subject:</strong> {safe_subject}<br/>
+               <strong>Parent:</strong> {parent_label}<br/>
+               <strong>Status:</strong> {html.escape(status_label)}</p>
+            {f'<div class="note"><strong>Message from head office:</strong><br/>{safe_note}</div>' if safe_note else ''}
+            <a class="btn" href="{html.escape(tickets_url)}">Open Parent Support tickets</a>
+        </div>
+    </body>
+    </html>
+    """
+
+    subject = f"Action required: parent support ticket — {franchise_name}"
+    sg = SendGridAPIClient(api_key)
+    sent = 0
+    for addr in recipients:
+        try:
+            message = Mail(
+                from_email=from_email,
+                to_emails=addr,
+                subject=subject,
+                html_content=html_content,
+            )
+            response = sg.send(message)
+            if response.status_code == 202:
+                sent += 1
+            else:
+                logger.warning(
+                    "SendGrid status %s sending ticket reminder to %s (ticket %s)",
+                    response.status_code,
+                    addr,
+                    ticket.pk,
+                )
+        except Exception:
+            logger.exception("Failed to send ticket reminder to %s (ticket %s)", addr, ticket.pk)
+
+    logger.info(
+        "Support ticket id=%s: emailed %s centre address(es) (franchise=%s)",
+        ticket.pk,
+        sent,
+        franchise_name,
+    )
+    return sent > 0

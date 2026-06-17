@@ -251,6 +251,7 @@ def normalize_admission_page_data(data):
 
 
 ADMISSION_PAGE_DATA: dict = {
+    "form_welcome_image": "/student-welcome.png",
     "faq_section": {
         "title_prefix": "Got",
         "title_accent": "Questions?",

@@ -175,7 +175,72 @@ class HomeworkAssignment(models.Model):
         return f"{t} ({self.assigned_date})"
 
 
+class AnnouncementCampaign(models.Model):
+    """Head-office notification publish job (fans out to per-centre Announcement rows)."""
+
+    class PublishScope(models.TextChoices):
+        PAN_INDIA = "pan_india", "Pan-India"
+        STATE = "state", "State"
+        CITY = "city", "City"
+        FRANCHISES = "franchises", "Multiple centres"
+        ONE_CENTRE = "one_centre", "One centre"
+
+    title = models.CharField(max_length=255)
+    body = models.TextField(blank=True)
+    publish_scope = models.CharField(
+        max_length=20,
+        choices=PublishScope.choices,
+        default=PublishScope.PAN_INDIA,
+    )
+    target_states = models.JSONField(default=list, blank=True)
+    target_cities = models.JSONField(default=list, blank=True)
+    target_franchise_ids = models.JSONField(default=list, blank=True)
+    franchise = models.ForeignKey(
+        Franchise,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="announcement_campaigns",
+        help_text="Primary centre when publish_scope is one_centre.",
+    )
+    student = models.ForeignKey(
+        StudentProfile,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="announcement_campaigns",
+        help_text="When set with one_centre, only this student's parent sees the notification.",
+    )
+    class_name = models.CharField(
+        max_length=120,
+        blank=True,
+        default="",
+        help_text="When student is empty, limits to parents with a child in this class. Empty = all parents.",
+    )
+    visible_to_parents = models.BooleanField(default=True)
+    visible_to_centres = models.BooleanField(default=True)
+    published_at = models.DateTimeField(default=timezone.now)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-published_at", "-created_at"]
+        verbose_name = "Announcement campaign"
+        verbose_name_plural = "Announcement campaigns"
+
+    def __str__(self) -> str:
+        return (self.title or "").strip() or "(untitled campaign)"
+
+
 class Announcement(models.Model):
+    campaign = models.ForeignKey(
+        AnnouncementCampaign,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="deliveries",
+    )
     franchise = models.ForeignKey(Franchise, on_delete=models.CASCADE, related_name="portal_announcements")
     title = models.CharField(max_length=255)
     body = models.TextField(blank=True)
@@ -193,6 +258,8 @@ class Announcement(models.Model):
         default="",
         help_text="When student is empty, limits to parents with a child in this class. Empty = all parents.",
     )
+    visible_to_parents = models.BooleanField(default=True)
+    visible_to_centres = models.BooleanField(default=True)
     published_at = models.DateTimeField(default=timezone.now)
     email_dispatched_at = models.DateTimeField(
         null=True,
@@ -259,7 +326,13 @@ class FeeRecord(models.Model):
         PAID = "PAID", "Paid"
         OVERDUE = "OVERDUE", "Overdue"
 
+    class Source(models.TextChoices):
+        MANUAL = "MANUAL", "Manual"
+        TIKES = "TIKES", "TiKES"
+
     student = models.ForeignKey(StudentProfile, on_delete=models.CASCADE, related_name="fee_records")
+    source = models.CharField(max_length=20, choices=Source.choices, default=Source.MANUAL)
+    line_serial = models.PositiveIntegerField(default=0)
     fee_structure_name = models.CharField(max_length=255, blank=True)
     id_card_no = models.CharField(max_length=100, blank=True)
     course = models.CharField(max_length=255, blank=True)
@@ -278,6 +351,13 @@ class FeeRecord(models.Model):
         ordering = ["-due_date", "-created_at"]
         verbose_name = "Fee record"
         verbose_name_plural = "Fee records"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["student", "line_serial"],
+                condition=models.Q(source="TIKES"),
+                name="students_feerecord_unique_tikes_line",
+            ),
+        ]
 
     def __str__(self) -> str:
         t = (self.title or "").strip() or "(untitled)"
@@ -332,10 +412,28 @@ class SupportTicket(models.Model):
         CLOSED = "CLOSED", "Closed"
 
     parent = models.ForeignKey(ParentProfile, on_delete=models.CASCADE, related_name="support_tickets")
+    student = models.ForeignKey(
+        "StudentProfile",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="support_tickets",
+        help_text="Optional — which child this ticket is about.",
+    )
     subject = models.CharField(max_length=255)
     body = models.TextField()
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.OPEN)
     franchise_reply = models.TextField(blank=True)
+    ho_reminder_message = models.TextField(
+        blank=True,
+        default="",
+        help_text="Optional head-office note shown to the centre when reminding them to action this ticket.",
+    )
+    ho_reminded_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When head office last reminded the centre about this ticket.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -511,3 +609,20 @@ class ParentNotificationRead(models.Model):
 
     def __str__(self) -> str:
         return f"{self.parent_id}:{self.notification_key}"
+
+
+class FranchiseNotificationRead(models.Model):
+    """Tracks read state for franchise centre inbox notifications."""
+
+    franchise = models.ForeignKey(Franchise, on_delete=models.CASCADE, related_name="inbox_reads")
+    notification_key = models.CharField(max_length=120)
+    read_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-read_at"]
+        constraints = [
+            models.UniqueConstraint(fields=["franchise", "notification_key"], name="uniq_franchise_notification_key"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.franchise_id}:{self.notification_key}"

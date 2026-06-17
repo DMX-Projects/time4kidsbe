@@ -9,16 +9,18 @@ from rest_framework import generics, permissions, viewsets
 from rest_framework.decorators import api_view, authentication_classes, permission_classes
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
 
 from accounts.models import UserRole
 from accounts.permissions import IsAdminUser, IsFranchiseUser, IsParentUser
-from accounts.profile_access import franchise_profile_for_user, parent_profile_for_user
+from accounts.profile_access import franchise_profile_for_user, parent_profile_for_user, resolved_parent_profile_for_user
 from documents.auth import QueryJWTAuthentication
 from documents.download_names import safe_disposition_filename
 from franchises.models import Franchise
+from students.portal_views import _parent_focus_student, normalize_portal_class_name
 from .models import Event, EventMedia
 from .serializers import EventMediaSerializer, EventSerializer
-from .visibility import parent_events_queryset
+from .visibility import parent_event_class_filter_options, parent_events_queryset
 
 
 def _norm_user_role(user) -> str:
@@ -193,9 +195,17 @@ class EventMediaDetailView(generics.RetrieveUpdateDestroyAPIView):
         instance.delete()
 
 
+def _class_name_from_request(request) -> str | None:
+    raw = (request.query_params.get("class_name") or request.query_params.get("class") or "").strip()
+    if not raw or raw.lower() in ("all", "all classes"):
+        return None
+    return raw
+
+
 class ParentEventListView(generics.ListAPIView):
     serializer_class = EventSerializer
     permission_classes = [IsParentUser]
+    pagination_class = None
 
     def get_serializer_context(self):
         ctx = super().get_serializer_context()
@@ -203,18 +213,42 @@ class ParentEventListView(generics.ListAPIView):
         return ctx
 
     def get_queryset(self):
-        parent_profile = parent_profile_for_user(self.request.user)
+        parent_profile = resolved_parent_profile_for_user(self.request.user)
+        class_name = _class_name_from_request(self.request)
+        if class_name:
+            return parent_events_queryset(parent_profile, class_name=class_name)
         return parent_events_queryset(parent_profile)
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        serializer = self.get_serializer(queryset, many=True)
+        wrap = (request.query_params.get("wrap") or "").strip().lower()
+        if wrap == "gallery":
+            parent_profile = resolved_parent_profile_for_user(request.user)
+            focus = _parent_focus_student(request, parent_profile)
+            default_class = ""
+            if focus:
+                default_class = normalize_portal_class_name(focus.class_name or "") or (focus.class_name or "").strip()
+            selected = _class_name_from_request(request) or ""
+            from accounts.profile_access import effective_franchise_for_parent
+
+            centre = effective_franchise_for_parent(parent_profile) if parent_profile else None
+            return Response(
+                {
+                    "events": serializer.data,
+                    "class_filters": parent_event_class_filter_options(),
+                    "default_class_name": default_class,
+                    "selected_class_name": selected,
+                    "franchise_id": centre.pk if centre else None,
+                    "count": len(serializer.data),
+                }
+            )
+        return Response(serializer.data)
 
 
 class PublicEventListView(generics.ListAPIView):
     serializer_class = EventSerializer
     permission_classes = [permissions.AllowAny]
-
-    def get_serializer_context(self):
-        ctx = super().get_serializer_context()
-        ctx["omit_video_links"] = True
-        return ctx
 
     def get_serializer_context(self):
         ctx = super().get_serializer_context()

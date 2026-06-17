@@ -94,6 +94,23 @@ class ParentDocument(models.Model):
         blank=True,
         help_text="Optional newsletter audio upload (MP3, WAV, etc.).",
     )
+    class PublishScope(models.TextChoices):
+        PAN_INDIA = "pan_india", "Pan-India"
+        STATE = "state", "State"
+        CITY = "city", "City"
+        FRANCHISES = "franchises", "Multiple centres"
+        ONE_CENTRE = "one_centre", "One centre"
+
+    publish_scope = models.CharField(
+        max_length=20,
+        choices=PublishScope.choices,
+        default=PublishScope.PAN_INDIA,
+        blank=True,
+    )
+    target_states = models.JSONField(default=list, blank=True)
+    target_cities = models.JSONField(default=list, blank=True)
+    target_franchise_ids = models.JSONField(default=list, blank=True)
+    target_class_names = models.JSONField(default=list, blank=True)
     is_active = models.BooleanField(default=True)
     order = models.PositiveIntegerField(default=0, help_text="Display order")
     created_at = models.DateTimeField(auto_now_add=True)

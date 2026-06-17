@@ -6,6 +6,7 @@ from franchises.models import ParentProfile
 
 from .models import (
     Announcement,
+    AnnouncementCampaign,
     AttendanceRecord,
     FeeRecord,
     Grade,
@@ -369,6 +370,12 @@ class HomeworkAssignmentSerializer(serializers.ModelSerializer):
             attrs["attachment_kind"] = ""
         return attrs
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if not (data.get("class_name") or "").strip():
+            data["class_name"] = "All classes"
+        return data
+
     def get_student_name(self, obj):
         if obj.student_id:
             try:
@@ -434,6 +441,7 @@ class HomeworkAssignmentSerializer(serializers.ModelSerializer):
 class AnnouncementSerializer(serializers.ModelSerializer):
     student_name = serializers.SerializerMethodField()
     audience_label = serializers.SerializerMethodField()
+    notification_origin = serializers.SerializerMethodField()
     schedule_date = serializers.DateField(required=False, allow_null=True, write_only=True)
     is_scheduled = serializers.SerializerMethodField()
 
@@ -442,12 +450,14 @@ class AnnouncementSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "franchise",
+            "campaign",
             "title",
             "body",
             "student",
             "student_name",
             "class_name",
             "audience_label",
+            "notification_origin",
             "published_at",
             "schedule_date",
             "is_scheduled",
@@ -458,8 +468,10 @@ class AnnouncementSerializer(serializers.ModelSerializer):
         read_only_fields = [
             "id",
             "franchise",
+            "campaign",
             "student_name",
             "audience_label",
+            "notification_origin",
             "is_scheduled",
             "created_at",
             "updated_at",
@@ -481,10 +493,22 @@ class AnnouncementSerializer(serializers.ModelSerializer):
             return target_class
         return "All parents"
 
+    def get_notification_origin(self, obj) -> str:
+        return "head_office" if obj.campaign_id else "centre"
+
     def get_is_scheduled(self, obj) -> bool:
         from django.utils import timezone
 
         return bool(obj.published_at and obj.published_at > timezone.now())
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if not (data.get("class_name") or "").strip() and instance.student_id:
+            try:
+                data["class_name"] = (instance.student.class_name or "").strip()
+            except ObjectDoesNotExist:
+                pass
+        return data
 
     def validate_student(self, value):
         if value is None:
@@ -510,26 +534,237 @@ class AnnouncementSerializer(serializers.ModelSerializer):
         from students.portal_schedule import published_at_from_schedule_date
 
         schedule_date = attrs.pop("schedule_date", serializers.empty)
-        student = attrs.get("student")
-        if student is None and self.instance is not None and "student" not in attrs:
+        if "student" in attrs:
+            student = attrs["student"]
+        elif self.instance is not None:
             student = self.instance.student
-        class_name = attrs.get("class_name")
-        if class_name is None and self.instance is not None and "class_name" not in attrs:
+        else:
+            student = None
+        if "class_name" in attrs:
+            class_name = attrs["class_name"]
+        elif self.instance is not None:
             class_name = self.instance.class_name
+        else:
+            class_name = ""
         class_name = (class_name or "").strip()
         if "class_name" in attrs or self.instance is None:
             attrs["class_name"] = class_name
+        if student:
+            attrs["student"] = student
+        elif "student" in attrs or self.instance is not None:
+            attrs["student"] = None
         if student and class_name:
             raise serializers.ValidationError("Choose either a class or a student, not both.")
 
         if schedule_date is not serializers.empty:
             attrs["published_at"] = published_at_from_schedule_date(schedule_date)
 
+        if self.instance is None:
+            attrs.setdefault("visible_to_parents", True)
+            attrs.setdefault("visible_to_centres", False)
+
         return attrs
+
+
+class AdminAnnouncementCampaignSerializer(serializers.ModelSerializer):
+    """Head office: publish notifications to one or many centres."""
+
+    student_name = serializers.SerializerMethodField()
+    audience_label = serializers.SerializerMethodField()
+    publish_target_label = serializers.SerializerMethodField()
+    franchise_name = serializers.SerializerMethodField()
+    schedule_date = serializers.DateField(required=False, allow_null=True, write_only=True)
+    target_scope = serializers.CharField(required=False, write_only=True)
+    franchise_ids = serializers.ListField(
+        child=serializers.IntegerField(),
+        required=False,
+        write_only=True,
+    )
+
+    class Meta:
+        model = AnnouncementCampaign
+        fields = [
+            "id",
+            "franchise",
+            "franchise_name",
+            "title",
+            "body",
+            "student",
+            "student_name",
+            "class_name",
+            "audience_label",
+            "publish_scope",
+            "target_scope",
+            "target_states",
+            "target_cities",
+            "target_franchise_ids",
+            "franchise_ids",
+            "publish_target_label",
+            "visible_to_parents",
+            "visible_to_centres",
+            "published_at",
+            "schedule_date",
+            "is_active",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "id",
+            "franchise_name",
+            "student_name",
+            "audience_label",
+            "publish_target_label",
+            "created_at",
+            "updated_at",
+        ]
+
+    def get_student_name(self, obj):
+        if not obj.student_id:
+            return ""
+        try:
+            return obj.student.full_name or ""
+        except ObjectDoesNotExist:
+            return ""
+
+    def get_audience_label(self, obj):
+        from students.announcement_campaigns import audience_label
+
+        return audience_label(obj)
+
+    def get_publish_target_label(self, obj):
+        from students.announcement_campaigns import publish_target_label
+
+        return publish_target_label(obj)
+
+    def get_franchise_name(self, obj):
+        if not obj.franchise_id:
+            return ""
+        try:
+            return obj.franchise.name or ""
+        except ObjectDoesNotExist:
+            return ""
+
+    def validate_class_name(self, value):
+        from students.portal_views import normalize_portal_class_name
+
+        return normalize_portal_class_name(value or "")
+
+    def validate_student(self, value):
+        if value is None:
+            return value
+        franchise = self.initial_data.get("franchise")
+        franchise_ids = self.initial_data.get("franchise_ids") or []
+        target_scope = (self.initial_data.get("target_scope") or self.initial_data.get("publish_scope") or "").strip()
+        if target_scope != AnnouncementCampaign.PublishScope.ONE_CENTRE:
+            raise serializers.ValidationError("Student targeting is only available for one centre.")
+        franchise_id = franchise or (franchise_ids[0] if franchise_ids else None)
+        if not franchise_id:
+            raise serializers.ValidationError("Select a centre before choosing a student.")
+        from accounts.profile_access import students_at_franchise
+        from franchises.models import Franchise
+
+        centre = Franchise.objects.filter(pk=franchise_id).first()
+        if not centre:
+            raise serializers.ValidationError("Centre not found.")
+        if not students_at_franchise(centre).filter(pk=value.pk).exists():
+            raise serializers.ValidationError("Student is not enrolled at the selected centre.")
+        return value
+
+    def validate(self, attrs):
+        from students.portal_schedule import published_at_from_schedule_date
+
+        target_scope = (attrs.pop("target_scope", None) or attrs.get("publish_scope") or "").strip()
+        if target_scope:
+            attrs["publish_scope"] = target_scope
+
+        franchise_ids = attrs.pop("franchise_ids", None)
+        scope = attrs.get("publish_scope") or (
+            self.instance.publish_scope if self.instance else AnnouncementCampaign.PublishScope.PAN_INDIA
+        )
+
+        if scope == AnnouncementCampaign.PublishScope.ONE_CENTRE:
+            franchise = attrs.get("franchise")
+            if franchise is None and self.instance is not None and "franchise" not in attrs:
+                franchise = self.instance.franchise
+            if franchise is None and franchise_ids:
+                from franchises.models import Franchise
+
+                franchise = Franchise.objects.filter(pk=franchise_ids[0]).first()
+                if franchise:
+                    attrs["franchise"] = franchise
+            if not attrs.get("franchise") and not (self.instance and self.instance.franchise_id):
+                raise serializers.ValidationError({"franchise": "Select a centre."})
+            if attrs.get("franchise"):
+                attrs["target_franchise_ids"] = [attrs["franchise"].pk]
+        elif scope == AnnouncementCampaign.PublishScope.FRANCHISES:
+            ids = franchise_ids if franchise_ids is not None else (self.instance.target_franchise_ids if self.instance else [])
+            if not ids:
+                raise serializers.ValidationError({"franchise_ids": "Select at least one centre."})
+            attrs["target_franchise_ids"] = ids
+            attrs["franchise"] = None
+            attrs["student"] = None
+        elif scope == AnnouncementCampaign.PublishScope.STATE:
+            states = attrs.get("target_states")
+            if states is None and self.instance is not None:
+                states = self.instance.target_states
+            if not states:
+                raise serializers.ValidationError({"target_states": "Select at least one state."})
+            attrs["franchise"] = None
+            attrs["student"] = None
+        elif scope == AnnouncementCampaign.PublishScope.CITY:
+            cities = attrs.get("target_cities")
+            if cities is None and self.instance is not None:
+                cities = self.instance.target_cities
+            if not cities:
+                raise serializers.ValidationError({"target_cities": "Select at least one city."})
+            attrs["franchise"] = None
+            attrs["student"] = None
+        else:
+            attrs["franchise"] = None
+            attrs["student"] = None
+
+        student = attrs.get("student")
+        if student is None and self.instance is not None and "student" not in attrs:
+            student = self.instance.student
+        class_name = attrs.get("class_name")
+        if class_name is None and self.instance is not None and "class_name" not in attrs:
+            class_name = self.instance.class_name
+        if (student and (class_name or "").strip()) or (
+            student and scope != AnnouncementCampaign.PublishScope.ONE_CENTRE
+        ):
+            if student and (class_name or "").strip():
+                raise serializers.ValidationError("Choose either a class filter or one student, not both.")
+            if student and scope != AnnouncementCampaign.PublishScope.ONE_CENTRE:
+                raise serializers.ValidationError("Student targeting is only available for one centre.")
+
+        schedule_date = attrs.pop("schedule_date", serializers.empty)
+        if schedule_date is not serializers.empty:
+            attrs["published_at"] = published_at_from_schedule_date(schedule_date)
+
+        return attrs
+
+    def create(self, validated_data):
+        from students.announcement_campaigns import sync_campaign_deliveries
+        from students.portal_views import _after_announcement_saved
+
+        campaign = AnnouncementCampaign.objects.create(**validated_data)
+        sync_campaign_deliveries(campaign, after_save=_after_announcement_saved)
+        return campaign
+
+    def update(self, instance, validated_data):
+        from students.announcement_campaigns import sync_campaign_deliveries
+        from students.portal_views import _after_announcement_saved
+
+        for key, val in validated_data.items():
+            setattr(instance, key, val)
+        instance.save()
+        sync_campaign_deliveries(instance, after_save=_after_announcement_saved)
+        return instance
 
 
 class AttendanceRecordSerializer(serializers.ModelSerializer):
     student_name = serializers.SerializerMethodField()
+    class_name = serializers.SerializerMethodField()
 
     class Meta:
         model = AttendanceRecord
@@ -537,13 +772,14 @@ class AttendanceRecordSerializer(serializers.ModelSerializer):
             "id",
             "student",
             "student_name",
+            "class_name",
             "date",
             "status",
             "note",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "student_name", "created_at", "updated_at"]
+        read_only_fields = ["id", "student_name", "class_name", "created_at", "updated_at"]
 
     def get_student_name(self, obj):
         try:
@@ -551,6 +787,20 @@ class AttendanceRecordSerializer(serializers.ModelSerializer):
         except ObjectDoesNotExist:
             return ""
         return getattr(st, "full_name", "") or ""
+
+    def get_class_name(self, obj):
+        try:
+            st = obj.student
+        except ObjectDoesNotExist:
+            return ""
+        return (getattr(st, "class_name", None) or "").strip()
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        # ``student`` is the StudentProfile pk; expose ``student_id`` alias for mobile clients.
+        if data.get("student") is not None:
+            data["student_id"] = data["student"]
+        return data
 
     def validate_student(self, value):
         request = self.context.get("request")
@@ -594,6 +844,8 @@ class FeeRecordSerializer(serializers.ModelSerializer):
             "id",
             "student",
             "student_name",
+            "source",
+            "line_serial",
             "fee_structure_name",
             "id_card_no",
             "course",
@@ -608,7 +860,7 @@ class FeeRecordSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "student_name", "created_at", "updated_at"]
+        read_only_fields = ["id", "student_name", "source", "line_serial", "created_at", "updated_at"]
 
     def validate_student(self, value):
         request = self.context.get("request")
@@ -619,17 +871,68 @@ class FeeRecordSerializer(serializers.ModelSerializer):
 
 
 class SupportTicketParentSerializer(serializers.ModelSerializer):
+    student_name = serializers.SerializerMethodField()
+    student_class_name = serializers.SerializerMethodField()
+
     class Meta:
         model = SupportTicket
-        fields = ["id", "subject", "body", "status", "franchise_reply", "created_at", "updated_at"]
-        read_only_fields = ["status", "franchise_reply", "created_at", "updated_at"]
+        fields = [
+            "id",
+            "subject",
+            "body",
+            "status",
+            "franchise_reply",
+            "student",
+            "student_name",
+            "student_class_name",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "status",
+            "franchise_reply",
+            "student_name",
+            "student_class_name",
+            "created_at",
+            "updated_at",
+        ]
+        extra_kwargs = {"student": {"required": False, "allow_null": True}}
+
+    def _student_fields(self, obj):
+        if not obj.student_id:
+            return None, None
+        try:
+            student = obj.student
+        except ObjectDoesNotExist:
+            return None, None
+        name = (student.full_name or "").strip().rstrip("-").strip()
+        cls = (student.class_name or "").strip() or None
+        return name or None, cls
+
+    def get_student_name(self, obj):
+        name, _cls = self._student_fields(obj)
+        return name
+
+    def get_student_class_name(self, obj):
+        _name, cls = self._student_fields(obj)
+        return cls
 
 
 class SupportTicketFranchiseSerializer(serializers.ModelSerializer):
     """Franchise ticket list; parent.user may be missing on live DB — avoid source= traversal."""
 
+    status = serializers.ChoiceField(
+        choices=[
+            SupportTicket.Status.OPEN,
+            SupportTicket.Status.IN_PROGRESS,
+            SupportTicket.Status.CLOSED,
+            ("RESOLVED", "Resolved"),
+        ]
+    )
     parent_name = serializers.SerializerMethodField()
     parent_email = serializers.SerializerMethodField()
+    student_name = serializers.SerializerMethodField()
+    student_class_name = serializers.SerializerMethodField()
 
     class Meta:
         model = SupportTicket
@@ -638,14 +941,56 @@ class SupportTicketFranchiseSerializer(serializers.ModelSerializer):
             "parent",
             "parent_name",
             "parent_email",
+            "student",
+            "student_name",
+            "student_class_name",
             "subject",
             "body",
             "status",
             "franchise_reply",
+            "ho_reminder_message",
+            "ho_reminded_at",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["parent", "parent_name", "parent_email", "subject", "body", "created_at"]
+        read_only_fields = [
+            "parent",
+            "parent_name",
+            "parent_email",
+            "student",
+            "student_name",
+            "student_class_name",
+            "subject",
+            "body",
+            "ho_reminder_message",
+            "ho_reminded_at",
+            "created_at",
+        ]
+
+    def _student_fields(self, obj):
+        if not obj.student_id:
+            return None, None
+        try:
+            student = obj.student
+        except ObjectDoesNotExist:
+            return None, None
+        name = (student.full_name or "").strip().rstrip("-").strip()
+        cls = (student.class_name or "").strip() or None
+        return name or None, cls
+
+    def get_student_name(self, obj):
+        name, _cls = self._student_fields(obj)
+        return name
+
+    def get_student_class_name(self, obj):
+        _name, cls = self._student_fields(obj)
+        return cls
+
+    def validate_status(self, value):
+        # Frontend uses "RESOLVED" while DB keeps legacy "CLOSED".
+        if str(value or "").upper() == "RESOLVED":
+            return SupportTicket.Status.CLOSED
+        return value
 
     def get_parent_name(self, obj):
         try:
@@ -669,6 +1014,87 @@ class SupportTicketFranchiseSerializer(serializers.ModelSerializer):
         except ObjectDoesNotExist:
             return ""
         return getattr(user, "email", "") or ""
+
+
+class SupportTicketAdminSerializer(serializers.ModelSerializer):
+    """Head-office CMS: all centres, filters, HO reminder fields."""
+
+    franchise = serializers.SerializerMethodField()
+    franchise_name = serializers.SerializerMethodField()
+    parent_name = serializers.SerializerMethodField()
+    status_label = serializers.SerializerMethodField()
+    is_unresolved = serializers.SerializerMethodField()
+    days_open = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SupportTicket
+        fields = [
+            "id",
+            "franchise",
+            "franchise_name",
+            "parent_name",
+            "subject",
+            "body",
+            "status",
+            "status_label",
+            "is_unresolved",
+            "days_open",
+            "franchise_reply",
+            "ho_reminder_message",
+            "ho_reminded_at",
+            "created_at",
+            "updated_at",
+        ]
+
+    def get_franchise(self, obj):
+        try:
+            parent = obj.parent
+        except ObjectDoesNotExist:
+            return None
+        return getattr(parent, "franchise_id", None)
+
+    def get_franchise_name(self, obj):
+        try:
+            parent = obj.parent
+        except ObjectDoesNotExist:
+            return ""
+        try:
+            franchise = parent.franchise
+        except ObjectDoesNotExist:
+            return ""
+        return (getattr(franchise, "name", None) or "").strip()
+
+    def get_parent_name(self, obj):
+        try:
+            parent = obj.parent
+        except ObjectDoesNotExist:
+            return ""
+        try:
+            user = parent.user
+        except ObjectDoesNotExist:
+            return ""
+        name = (getattr(user, "full_name", None) or "").strip()
+        return name or getattr(user, "email", "") or ""
+
+    def get_status_label(self, obj):
+        if obj.status == SupportTicket.Status.CLOSED:
+            return "Resolved"
+        if obj.status == SupportTicket.Status.IN_PROGRESS:
+            return "In progress"
+        if obj.status == SupportTicket.Status.OPEN:
+            return "Open"
+        return str(obj.status or "").replace("_", " ").title()
+
+    def get_is_unresolved(self, obj):
+        return obj.status != SupportTicket.Status.CLOSED
+
+    def get_days_open(self, obj):
+        if not obj.created_at:
+            return 0
+        from django.utils import timezone
+
+        delta = timezone.now() - obj.created_at
+        return max(0, delta.days)
 
 
 class TransportRouteSerializer(serializers.ModelSerializer):

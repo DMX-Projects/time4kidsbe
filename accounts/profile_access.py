@@ -468,6 +468,37 @@ def parents_at_franchise(franchise):
     return ParentProfile.objects.filter(pk__in=parent_ids).select_related("user", "franchise")
 
 
+def students_at_franchise(franchise):
+    """Active students enrolled at a centre (direct parent link or legacy Centre import)."""
+    from django.db.models import Q
+
+    from students.models import StudentProfile
+
+    if not franchise:
+        return StudentProfile.objects.none()
+
+    direct_qs = StudentProfile.objects.filter(parent__franchise=franchise, is_active=True)
+
+    centre_q = Q()
+    name = (franchise.name or "").strip()
+    if name:
+        centre_q |= Q(Centre__iexact=name)
+    slug = (franchise.slug or "").strip()
+    if slug:
+        centre_q |= Q(Centre__iexact=slug.replace("-", " "))
+        centre_q |= Q(Centre__iexact=slug)
+
+    if centre_q:
+        legacy_ids = StudentProfile.objects.filter(is_active=True).filter(centre_q).values_list("pk", flat=True)
+        direct_ids = direct_qs.values_list("pk", flat=True)
+        all_ids = set(direct_ids) | set(legacy_ids)
+        return StudentProfile.objects.filter(pk__in=all_ids).select_related("parent").order_by(
+            "first_name", "last_name"
+        )
+
+    return direct_qs.select_related("parent").order_by("first_name", "last_name")
+
+
 def ensure_parent_profile_for_user(user):
     """
     Resolve the parent's centre profile for portal actions (tickets, etc.).
@@ -559,6 +590,41 @@ def primary_student_for_parent_user(user):
     return None, pp
 
 
+def parent_students_list_for_user(user) -> list[dict]:
+    """All active linked children for parent login / mobile child switcher."""
+    pp = parent_profile_for_user(user)
+    if not pp:
+        return []
+
+    from students.models import StudentProfile
+
+    rows = (
+        StudentProfile.objects.filter(parent=pp, is_active=True)
+        .order_by("id")
+    )
+    out: list[dict] = []
+    for student in rows:
+        gender, gender_label = student_gender_for_login(student)
+        parts = [str(student.first_name or "").strip(), str(student.last_name or "").strip()]
+        full_name = " ".join(p for p in parts if p).strip() or (student.ParentName or "").strip()
+        out.append(
+            {
+                "id": student.pk,
+                "full_name": full_name,
+                "first_name": str(student.first_name or "").strip(),
+                "last_name": str(student.last_name or "").strip(),
+                "class_name": (student.class_name or "").strip(),
+                "section": (student.section or "").strip(),
+                "id_card_no": (student.Idcardno or "").strip(),
+                "academic_year": (student.Year or "").strip(),
+                "gender": gender,
+                "gender_label": gender_label,
+                "roll_number": (student.roll_number or "").strip(),
+            }
+        )
+    return out
+
+
 def student_gender_for_login(student) -> tuple[str, str]:
     """Return ``(gender_code, gender_label)`` — e.g. ``("M", "Male")``."""
     if not student:
@@ -573,57 +639,35 @@ def student_gender_for_login(student) -> tuple[str, str]:
 
 def parent_login_context(user) -> dict:
     """
-    Extra fields for parent JWT login / ``/auth/me/`` responses.
+    Extra fields for parent JWT login / ``/auth/me/`` / parent profile GET.
 
-    Keys: child_name, franchise, franchise_id, class, id_card_no, academic_year,
-    gender, gender_label.
+    Single source for centre + linked children — no duplicate child_name blocks.
     """
-    student, pp = primary_student_for_parent_user(user)
+    pp = parent_profile_for_user(user)
+    student, _ = primary_student_for_parent_user(user)
 
     franchise_name = ""
     franchise_id = None
-    if pp and pp.franchise_id:
-        try:
-            franchise_name = (pp.franchise.name or "").strip()
-            franchise_id = pp.franchise.id
-        except ObjectDoesNotExist:
-            pass
+    parent_profile_id = None
+    if pp:
+        parent_profile_id = pp.pk
+        if pp.franchise_id:
+            try:
+                franchise_name = (pp.franchise.name or "").strip()
+                franchise_id = pp.franchise.id
+            except ObjectDoesNotExist:
+                pass
     elif student and (student.Centre or "").strip():
         franchise_name = (student.Centre or "").strip()
 
-    child_name = ""
-    if student:
-        child_name = student.full_name
-    elif pp:
-        child_name = (pp.child_name or "").strip()
-
-    class_name = (student.class_name or "").strip() if student else ""
-    id_card_no = ""
-    if student:
-        id_card_no = (student.Idcardno or "").strip()
-    if not id_card_no:
-        id_card_no = (getattr(user, "username", None) or "").strip()
-
-    academic_year = (student.Year or "").strip() if student else ""
-    gender, gender_label = student_gender_for_login(student)
-
-    parent_full_name = ""
-    if user:
-        parent_full_name = (getattr(user, "full_name", None) or "").strip()
-
-    # App home/header greeting: child name only (not parent full_name).
-    display_name = child_name or parent_full_name
+    students = parent_students_list_for_user(user)
 
     return {
-        "child_name": child_name,
-        "display_name": display_name,
+        "parent_profile_id": parent_profile_id,
         "franchise": franchise_name,
         "franchise_id": franchise_id,
-        "class": class_name,
-        "id_card_no": id_card_no,
-        "academic_year": academic_year,
-        "gender": gender,
-        "gender_label": gender_label,
+        "students": students,
+        "has_multiple_children": len(students) > 1,
     }
 
 

@@ -38,3 +38,6 @@ Thumbs.db
 
 # Test files
 test_*.py
+
+# Dev/maintenance scripts — local only, not for production deploy
+/scripts/

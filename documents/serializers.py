@@ -12,6 +12,94 @@ from .state_utils import (
     franchise_state_code,
 )
 from .embed_urls import is_audio_media_url, is_usable_embed_url, normalize_parent_embed_url
+from .parent_document_media import (
+    parent_document_has_listable_file,
+    parent_document_has_newsletter_audio,
+)
+
+
+def _parse_json_list(value) -> list:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return []
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, list) else []
+        except json.JSONDecodeError:
+            return []
+    return []
+
+
+def apply_publish_target_attrs(attrs: dict, raw_data: dict | None = None) -> dict:
+    """Normalize publish_scope + target lists from JSON API or multipart form."""
+    raw = raw_data or {}
+    scope = (attrs.get("publish_scope") or raw.get("publish_scope") or ParentDocument.PublishScope.PAN_INDIA).strip()
+    attrs["publish_scope"] = scope
+
+    if "target_states" in attrs:
+        attrs["target_states"] = _parse_json_list(attrs.get("target_states"))
+    elif raw.get("target_states") is not None:
+        attrs["target_states"] = _parse_json_list(raw.get("target_states"))
+
+    if "target_cities" in attrs:
+        attrs["target_cities"] = _parse_json_list(attrs.get("target_cities"))
+    elif raw.get("target_cities") is not None:
+        attrs["target_cities"] = _parse_json_list(raw.get("target_cities"))
+
+    if "target_franchise_ids" in attrs:
+        attrs["target_franchise_ids"] = [
+            int(x) for x in _parse_json_list(attrs.get("target_franchise_ids")) if str(x).isdigit()
+        ]
+    elif raw.get("target_franchise_ids") is not None:
+        attrs["target_franchise_ids"] = [
+            int(x) for x in _parse_json_list(raw.get("target_franchise_ids")) if str(x).isdigit()
+        ]
+
+    if "target_class_names" in attrs:
+        raw_classes = _parse_json_list(attrs.get("target_class_names"))
+    elif raw.get("target_class_names") is not None:
+        raw_classes = _parse_json_list(raw.get("target_class_names"))
+    else:
+        raw_classes = None
+    class_name_raw = (attrs.get("class_name") or raw.get("class_name") or "").strip()
+    if raw_classes is None and class_name_raw:
+        raw_classes = [class_name_raw]
+    if raw_classes is not None:
+        from students.portal_views import normalize_portal_class_name
+
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in raw_classes:
+            label = normalize_portal_class_name(str(item).strip()) or str(item).strip()
+            if not label:
+                continue
+            key = label.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized.append(label)
+        attrs["target_class_names"] = normalized
+
+    franchise = attrs.get("franchise")
+    if scope == ParentDocument.PublishScope.ONE_CENTRE and franchise is not None:
+        attrs["target_franchise_ids"] = [franchise.pk]
+    elif scope == ParentDocument.PublishScope.FRANCHISES and not attrs.get("target_franchise_ids"):
+        attrs["target_franchise_ids"] = []
+    elif scope in (ParentDocument.PublishScope.PAN_INDIA, ParentDocument.PublishScope.STATE, ParentDocument.PublishScope.CITY):
+        if scope != ParentDocument.PublishScope.ONE_CENTRE:
+            attrs["franchise"] = None
+
+    if scope == ParentDocument.PublishScope.STATE and attrs.get("target_states") and not attrs.get("state"):
+        attrs["state"] = attrs["target_states"][0]
+
+    return attrs
+
+
 from .newsletter_files import (
     is_audio_rhymes_upload_file,
     is_newsletter_audio_upload_file,
@@ -43,15 +131,22 @@ class ParentDocumentSerializer(serializers.ModelSerializer):
     franchise_name = serializers.CharField(source='franchise.name', read_only=True, allow_null=True)
     state_display = serializers.CharField(source='get_state_display', read_only=True, allow_null=True)
     display_title = serializers.SerializerMethodField()
+    source_label = serializers.SerializerMethodField()
+    file_view_path = serializers.SerializerMethodField()
+    audio_view_path = serializers.SerializerMethodField()
+    class_name = serializers.CharField(required=False, allow_blank=True, write_only=True)
 
     class Meta:
         model = ParentDocument
         fields = [
             'id', 'category', 'category_display', 'title', 'description', 'source_path',
-            'file', 'thumbnail', 'franchise', 'franchise_name', 'is_active',
+            'file', 'thumbnail', 'franchise', 'franchise_name', 'source_label',
+            'file_view_path', 'audio_view_path', 'is_active',
             'order', 'state', 'state_display', 'academic_year', 'holiday_entries',
             'period_start', 'period_end', 'video_embed_url', 'audio_file', 'audio_embed_url',
             'display_title',
+            'publish_scope', 'target_states', 'target_cities', 'target_franchise_ids',
+            'target_class_names', 'class_name',
             'created_at', 'updated_at',
         ]
         read_only_fields = ['id', 'franchise', 'is_active', 'created_at', 'updated_at']
@@ -69,8 +164,8 @@ class ParentDocumentSerializer(serializers.ModelSerializer):
                 is_active=True,
                 category=DocumentCategory.HOLIDAY_LISTS,
                 franchise__isnull=True,
-                state=obj.state,
-                academic_year=obj.academic_year,
+                state=effective_holiday_state(obj),
+                academic_year=effective_holiday_academic_year(obj),
             )
             .order_by("-updated_at")
             .first()
@@ -102,6 +197,25 @@ class ParentDocumentSerializer(serializers.ModelSerializer):
             return f"{state_display} ({year})" if state_display else obj.title
         return obj.title
 
+    def get_source_label(self, obj: ParentDocument) -> str:
+        if obj.franchise_id:
+            try:
+                name = (obj.franchise.name or "").strip()
+            except Exception:
+                name = ""
+            return name or "Your centre"
+        return "Head office"
+
+    def get_file_view_path(self, obj: ParentDocument) -> str:
+        if parent_document_has_listable_file(obj):
+            return f"/documents/parent/documents/{obj.pk}/file/"
+        return ""
+
+    def get_audio_view_path(self, obj: ParentDocument) -> str:
+        if parent_document_has_newsletter_audio(obj):
+            return f"/documents/parent/documents/{obj.pk}/audio/"
+        return ""
+
     def _audio_file_available(self, obj: ParentDocument) -> bool:
         if not obj.audio_file:
             return False
@@ -127,11 +241,27 @@ class ParentDocumentSerializer(serializers.ModelSerializer):
             year = effective_holiday_academic_year(instance)
             if not (data.get("academic_year") or "").strip():
                 data["academic_year"] = year
-        # Remove franchise/franchise_name when null — no meaning to the parent
+        # Parents only need franchise id/name on centre-specific rows.
         if data.get("franchise") is None:
             data.pop("franchise", None)
             data.pop("franchise_name", None)
+        if not data.get("file_view_path"):
+            data.pop("file_view_path", None)
+        if not data.get("audio_view_path"):
+            data.pop("audio_view_path", None)
+        names = instance.target_class_names or []
+        data["class_name"] = (str(names[0]).strip() if names else "") or (data.get("class_name") or "")
+        if not data.get("target_class_names"):
+            data["target_class_names"] = names if isinstance(names, list) else []
         return data
+
+    def create(self, validated_data):
+        validated_data.pop("class_name", None)
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        validated_data.pop("class_name", None)
+        return super().update(instance, validated_data)
 
 
 class FranchiseParentDocumentWriteSerializer(serializers.ModelSerializer):
@@ -144,6 +274,8 @@ class FranchiseParentDocumentWriteSerializer(serializers.ModelSerializer):
         required=False,
         default=DocumentCategory.CLASS_TIMETABLE,
     )
+    target_class_names = FlexibleHolidayEntriesField(required=False)
+    class_name = serializers.CharField(required=False, allow_blank=True, write_only=True)
 
     class Meta:
         model = ParentDocument
@@ -161,6 +293,8 @@ class FranchiseParentDocumentWriteSerializer(serializers.ModelSerializer):
             "period_end",
             "video_embed_url",
             "audio_embed_url",
+            "target_class_names",
+            "class_name",
             "created_at",
             "updated_at",
         ]
@@ -223,14 +357,27 @@ class FranchiseParentDocumentWriteSerializer(serializers.ModelSerializer):
             attrs["holiday_entries"] = holiday_entries
 
         if category == DocumentCategory.HOLIDAY_LISTS:
+            request = self.context.get("request")
+            from accounts.profile_access import franchise_profile_for_user
+            from documents.state_utils import franchise_state_code
+
+            franchise = franchise_profile_for_user(request.user) if request else None
+            centre_code = franchise_state_code(franchise) if franchise else None
             state = attrs.get("state") or (self.instance.state if self.instance else None)
+            if self.instance is None and not state and centre_code:
+                attrs["state"] = centre_code
+                state = centre_code
             if not state:
                 raise serializers.ValidationError({"state": "State is required for holiday lists."})
-            if file_obj is not None:
-                raise serializers.ValidationError({"file": "Holiday lists use manual entries only."})
-            if self.instance is None and len(holiday_entries) == 0:
+            if centre_code and state != centre_code:
                 raise serializers.ValidationError(
-                    {"holiday_entries": "Add at least one holiday for your centre, or update an existing date."}
+                    {"state": "Centre holiday lists must use your centre's state from profile."}
+                )
+            if file_obj is not None and not is_pdf_upload_file(file_obj):
+                raise serializers.ValidationError({"file": "Holiday PDF must be a PDF file."})
+            if self.instance is None and not file_obj and len(holiday_entries) == 0:
+                raise serializers.ValidationError(
+                    {"holiday_entries": "Upload a PDF or add at least one holiday with a date."}
                 )
             title = (attrs.get("title") or "").strip()
             if self.instance is None and not title:
@@ -276,6 +423,10 @@ class FranchiseParentDocumentWriteSerializer(serializers.ModelSerializer):
         else:
             raise serializers.ValidationError({"category": "Invalid document category for centre upload."})
 
+        request = self.context.get("request")
+        raw = getattr(request, "data", None) if request else {}
+        apply_publish_target_attrs(attrs, raw if isinstance(raw, dict) else {})
+
         return attrs
 
     def create(self, validated_data):
@@ -292,9 +443,13 @@ class FranchiseParentDocumentWriteSerializer(serializers.ModelSerializer):
         if uploaded_audio and not validated_data.get("audio_file"):
             validated_data["audio_file"] = uploaded_audio
         category = validated_data.pop("category", DocumentCategory.CLASS_TIMETABLE)
+        validated_data.pop("class_name", None)
         validated_data["franchise"] = franchise
         validated_data["category"] = category
         validated_data["is_active"] = True
+        validated_data["publish_scope"] = ParentDocument.PublishScope.ONE_CENTRE
+        validated_data["target_franchise_ids"] = [franchise.pk]
+        validated_data.setdefault("target_class_names", [])
         return super().create(validated_data)
 
     def update(self, instance, validated_data):
@@ -305,6 +460,7 @@ class FranchiseParentDocumentWriteSerializer(serializers.ModelSerializer):
         if uploaded_audio and not validated_data.get("audio_file"):
             validated_data["audio_file"] = uploaded_audio
         validated_data.pop("category", None)
+        validated_data.pop("class_name", None)
         return super().update(instance, validated_data)
 
 
@@ -318,14 +474,41 @@ class AdminParentDocumentSerializer(ParentDocumentSerializer):
     class Meta(ParentDocumentSerializer.Meta):
         read_only_fields = ['id', 'created_at', 'updated_at']
 
+    def _incoming_audio_file(self):
+        request = self.context.get("request")
+        if not request:
+            return None
+        return getattr(request, "FILES", None).get("audio_file")
+
+    def _incoming_file(self):
+        request = self.context.get("request")
+        if not request:
+            return None
+        return getattr(request, "FILES", None).get("file")
+
+    def _resolved_category(self, attrs):
+        if attrs.get("category"):
+            return attrs["category"]
+        if self.instance is not None:
+            return self.instance.category
+        return None
+
     def validate_video_embed_url(self, value: str | None) -> str:
         cleaned = normalize_parent_embed_url(value)
         if cleaned and is_audio_media_url(cleaned):
             raise serializers.ValidationError(
-                "That link looks like a direct audio file. Use Upload for audio files."
+                "That link looks like a direct audio file. Use Audio link instead of Video link."
             )
         if cleaned and not is_usable_embed_url(cleaned):
             raise serializers.ValidationError("Paste a valid video or iframe embed URL.")
+        return cleaned
+
+    def validate_audio_embed_url(self, value: str | None) -> str:
+        cleaned = normalize_parent_embed_url(value)
+        if cleaned and not is_audio_media_url(cleaned):
+            raise serializers.ValidationError(
+                "Paste a direct audio link (MP3, M4A, MP4, WAV, etc.) — not a video embed."
+            )
         return cleaned
 
     def _resolved_holiday_entries(self, attrs):
@@ -335,19 +518,52 @@ class AdminParentDocumentSerializer(ParentDocumentSerializer):
             return normalize_holiday_entries(self.instance.holiday_entries or [])
         return []
 
-    def validate(self, attrs):
+    def _merge_uploaded_files(self, validated_data):
         request = self.context.get("request")
-        uploaded = getattr(request, "FILES", None).get("file") if request else None
-        has_upload = bool(attrs.get("file") or uploaded)
+        if not request:
+            return validated_data
+        files = getattr(request, "FILES", None)
+        if not files:
+            return validated_data
+        uploaded = files.get("file")
+        uploaded_audio = files.get("audio_file")
+        if uploaded and not validated_data.get("file"):
+            validated_data["file"] = uploaded
+        if uploaded_audio and not validated_data.get("audio_file"):
+            validated_data["audio_file"] = uploaded_audio
+        return validated_data
+
+    def create(self, validated_data):
+        return super().create(self._merge_uploaded_files(validated_data))
+
+    def update(self, instance, validated_data):
+        return super().update(instance, self._merge_uploaded_files(validated_data))
+
+    def validate(self, attrs):
+        uploaded = self._incoming_file()
+        uploaded_audio = self._incoming_audio_file()
+        file_obj = attrs.get("file") or uploaded
+        audio_obj = attrs.get("audio_file") or uploaded_audio
+        category = self._resolved_category(attrs)
+        if category:
+            attrs["category"] = category
+        has_upload = bool(file_obj)
         embed_raw = (attrs.get("video_embed_url") or "").strip()
-        if not embed_raw and self.instance is not None:
+        if not embed_raw and self.instance is not None and "video_embed_url" not in attrs:
             embed_raw = (self.instance.video_embed_url or "").strip()
         has_embed = bool(embed_raw)
-        if has_upload and has_embed:
+        audio_embed = (attrs.get("audio_embed_url") or "").strip()
+        if not audio_embed and self.instance is not None and "audio_embed_url" not in attrs:
+            audio_embed = (self.instance.audio_embed_url or "").strip()
+        has_audio = bool(audio_obj or audio_embed)
+        if category == DocumentCategory.CLASS_TIMETABLE and has_upload and has_embed:
+            raise serializers.ValidationError(
+                {"detail": "Use one newsletter type: PDF, video link, or audio — not multiple."}
+            )
+        if category != DocumentCategory.CLASS_TIMETABLE and has_upload and has_embed:
             raise serializers.ValidationError(
                 {"detail": "Use either a file upload or a video/embed link, not both."}
             )
-        category = attrs.get("category") or (self.instance.category if self.instance else None)
         state = attrs.get("state")
         franchise = attrs.get("franchise")
         if franchise is None and self.instance is not None:
@@ -365,7 +581,6 @@ class AdminParentDocumentSerializer(ParentDocumentSerializer):
                     attrs["academic_year"] = self.instance.academic_year
                 else:
                     attrs["academic_year"] = DEFAULT_HOLIDAY_ACADEMIC_YEAR
-        file_obj = attrs.get("file") or uploaded
         if file_obj is not None:
             if category == DocumentCategory.PRESCHOOL_POLICIES and not is_pdf_upload_file(file_obj):
                 raise serializers.ValidationError({"file": "Preschool policies must be a PDF file."})
@@ -380,9 +595,41 @@ class AdminParentDocumentSerializer(ParentDocumentSerializer):
                 DocumentCategory.PARENTING_TIPS,
             ) and not is_pdf_upload_file(file_obj):
                 raise serializers.ValidationError({"file": "This section accepts PDF files only."})
-        if category == "CLASS_TIMETABLE" and file_obj is not None and not is_newsletter_upload_file(file_obj):
-            raise serializers.ValidationError({"file": "Newsletter must be a PDF or Word document."})
-        if category == "HOLIDAY_LISTS":
+        if category == DocumentCategory.CLASS_TIMETABLE:
+            if has_upload and has_audio:
+                raise serializers.ValidationError(
+                    {"detail": "Use one newsletter type: PDF, video link, or audio — not multiple."}
+                )
+            if has_embed and has_audio:
+                raise serializers.ValidationError(
+                    {"detail": "Use one newsletter type: PDF, video link, or audio — not multiple."}
+                )
+            if file_obj is not None and not is_newsletter_upload_file(file_obj):
+                raise serializers.ValidationError({"file": "Newsletter must be a PDF or Word document."})
+            if audio_obj is not None and not is_newsletter_audio_upload_file(audio_obj):
+                raise serializers.ValidationError(
+                    {"audio_file": "Audio must be MP3, M4A, MP4 (audio), WAV, AMR, or another common audio format."}
+                )
+            if self.instance is None and not has_upload and not has_embed and not has_audio:
+                raise serializers.ValidationError(
+                    {"file": "Upload a PDF, add a video link, or add audio (file or link)."}
+                )
+            if (
+                self.instance is not None
+                and not has_upload
+                and not has_embed
+                and not has_audio
+                and not (
+                    self.instance.file
+                    or self.instance.video_embed_url
+                    or self.instance.audio_file
+                    or self.instance.audio_embed_url
+                )
+            ):
+                raise serializers.ValidationError(
+                    {"file": "Upload a PDF, add a video link, or add audio (file or link)."}
+                )
+        elif category == "HOLIDAY_LISTS":
             holiday_entries = self._resolved_holiday_entries(attrs)
             attrs["holiday_entries"] = holiday_entries
             if file_obj is not None and not is_pdf_upload_file(file_obj):
@@ -418,6 +665,25 @@ class AdminParentDocumentSerializer(ParentDocumentSerializer):
             raise serializers.ValidationError(
                 {"file": "Upload a file or paste a video/embed link."}
             )
+
+        request = self.context.get("request")
+        raw = getattr(request, "data", None) if request else {}
+        apply_publish_target_attrs(attrs, raw if isinstance(raw, dict) else {})
+
+        scope = attrs.get("publish_scope") or ParentDocument.PublishScope.PAN_INDIA
+        if scope == ParentDocument.PublishScope.ONE_CENTRE and not attrs.get("franchise") and not (
+            self.instance and self.instance.franchise_id
+        ):
+            ids = attrs.get("target_franchise_ids") or []
+            if not ids:
+                raise serializers.ValidationError({"franchise": "Select a centre for one-centre publish."})
+        if scope == ParentDocument.PublishScope.FRANCHISES and not (attrs.get("target_franchise_ids") or []):
+            raise serializers.ValidationError({"target_franchise_ids": "Select at least one centre."})
+        if scope == ParentDocument.PublishScope.STATE and not (attrs.get("target_states") or attrs.get("state")):
+            raise serializers.ValidationError({"target_states": "Select at least one state."})
+        if scope == ParentDocument.PublishScope.CITY and not (attrs.get("target_cities") or []):
+            raise serializers.ValidationError({"target_cities": "Select at least one city."})
+
         return attrs
 
 
