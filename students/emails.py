@@ -39,6 +39,9 @@ def notify_parents_new_announcement(announcement: Announcement) -> int:
     if not announcement.is_active:
         return 0
 
+    if not getattr(announcement, "visible_to_parents", True):
+        return 0
+
     if announcement.email_dispatched_at:
         return 0
 
@@ -57,7 +60,11 @@ def notify_parents_new_announcement(announcement: Announcement) -> int:
     from_email = getattr(settings, "MAIL_FROM_ADDRESS", None) or getattr(
         settings, "DEFAULT_FROM_EMAIL", "info@timekidspreschools.com"
     )
-    franchise_name = announcement.franchise.name
+    franchise_name = (
+        announcement.franchise.name
+        if announcement.franchise_id
+        else "TIME4Kids Head Office"
+    )
 
     safe_franchise = html.escape(franchise_name)
     safe_title = html.escape(announcement.title)
@@ -143,6 +150,7 @@ def dispatch_due_announcement_emails() -> int:
 
     due = Announcement.objects.filter(
         is_active=True,
+        visible_to_parents=True,
         email_dispatched_at__isnull=True,
         published_at__lte=timezone.now(),
     ).select_related("franchise", "student", "student__parent")
@@ -163,3 +171,83 @@ def notify_parents_new_announcement_by_id(announcement_id: int) -> None:
         logger.warning("notify_parents_new_announcement_by_id: Announcement %s missing", announcement_id)
         return
     notify_parents_new_announcement(ann)
+
+
+def notify_franchise_unresolved_ticket(ticket, *, message: str) -> bool:
+    """Email the centre login when head office reminds them about an open ticket."""
+    from students.models import SupportTicket
+
+    if ticket.status == SupportTicket.Status.RESOLVED:
+        return False
+
+    try:
+        franchise = ticket.parent.franchise
+        centre_user = franchise.user
+    except Exception:
+        logger.warning("notify_franchise_unresolved_ticket: missing franchise for ticket %s", ticket.pk)
+        return False
+
+    addr = (getattr(centre_user, "email", None) or "").strip()
+    if not addr or "@" not in addr:
+        logger.warning("notify_franchise_unresolved_ticket: no email for franchise %s", franchise.pk)
+        return False
+
+    api_key = getattr(settings, "SENDGRID_API_KEY", None) or ""
+    if not api_key.strip():
+        logger.warning("SENDGRID_API_KEY not set; skipping franchise ticket reminder email")
+        return False
+
+    base_url = getattr(settings, "PUBLIC_SITE_URL", "http://localhost:3000").rstrip("/")
+    tickets_url = f"{base_url}/dashboard/franchise/parent-tickets/"
+    from_email = getattr(settings, "MAIL_FROM_ADDRESS", None) or getattr(
+        settings, "DEFAULT_FROM_EMAIL", "info@timekidspreschools.com"
+    )
+
+    safe_centre = html.escape(franchise.name)
+    safe_subject = html.escape(ticket.subject)
+    safe_message = html.escape(message).replace("\n", "<br/>")
+    safe_parent = html.escape(
+        getattr(ticket.parent, "child_name", None) or str(ticket.parent)
+    )
+    status_label = html.escape(ticket.get_status_display())
+
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head><meta charset="utf-8"></head>
+    <body style="font-family:Arial,sans-serif;line-height:1.6;color:#333;">
+        <div style="max-width:600px;margin:0 auto;padding:24px;">
+            <p><strong>Head office</strong> has asked your centre to action a parent support ticket.</p>
+            <p><strong>Centre:</strong> {safe_centre}</p>
+            <p><strong>Parent:</strong> {safe_parent}</p>
+            <p><strong>Ticket:</strong> {safe_subject}</p>
+            <p><strong>Status:</strong> {status_label}</p>
+            <p>{safe_message}</p>
+            <a href="{html.escape(tickets_url)}"
+               style="display:inline-block;margin-top:16px;padding:12px 20px;background:#ea580c;color:#fff;
+                      text-decoration:none;border-radius:8px;font-weight:bold;">
+                Open Parent Support tickets
+            </a>
+        </div>
+    </body>
+    </html>
+    """
+
+    subject = f"Action required: parent support ticket — {ticket.subject}"
+    try:
+        sg = SendGridAPIClient(api_key)
+        response = sg.send(
+            Mail(
+                from_email=from_email,
+                to_emails=addr,
+                subject=subject,
+                html_content=html_content,
+            )
+        )
+        if response.status_code == 202:
+            logger.info("Ticket reminder emailed to %s (ticket=%s)", addr, ticket.pk)
+            return True
+        logger.warning("SendGrid status %s for ticket reminder to %s", response.status_code, addr)
+    except Exception:
+        logger.exception("Failed to send ticket reminder to %s", addr)
+    return False

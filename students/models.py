@@ -1,5 +1,6 @@
 import uuid
 
+from django.conf import settings
 from django.db import models
 from django.utils import timezone
 from django.core.validators import RegexValidator
@@ -176,7 +177,39 @@ class HomeworkAssignment(models.Model):
 
 
 class Announcement(models.Model):
-    franchise = models.ForeignKey(Franchise, on_delete=models.CASCADE, related_name="portal_announcements")
+    franchise = models.ForeignKey(
+        Franchise,
+        on_delete=models.CASCADE,
+        related_name="portal_announcements",
+        null=True,
+        blank=True,
+        help_text="Null for head-office global notifications with publish targeting.",
+    )
+    ho_admin = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="ho_announcements",
+        help_text="Head office admin who published this global notification.",
+    )
+    publish_scope = models.CharField(
+        max_length=32,
+        blank=True,
+        default="",
+        help_text="pan_india, state, city, franchises, or one_centre when franchise is null.",
+    )
+    target_states = models.JSONField(default=list, blank=True)
+    target_cities = models.JSONField(default=list, blank=True)
+    target_franchise_ids = models.JSONField(default=list, blank=True)
+    visible_to_parents = models.BooleanField(
+        default=True,
+        help_text="When true, parents at matching centres see this in the parent app.",
+    )
+    visible_to_centres = models.BooleanField(
+        default=True,
+        help_text="When true, matching franchise centres see this in their notifications inbox.",
+    )
     title = models.CharField(max_length=255)
     body = models.TextField(blank=True)
     student = models.ForeignKey(
@@ -329,13 +362,18 @@ class SupportTicket(models.Model):
     class Status(models.TextChoices):
         OPEN = "OPEN", "Open"
         IN_PROGRESS = "IN_PROGRESS", "In progress"
-        CLOSED = "CLOSED", "Closed"
+        RESOLVED = "RESOLVED", "Resolved"
 
     parent = models.ForeignKey(ParentProfile, on_delete=models.CASCADE, related_name="support_tickets")
     subject = models.CharField(max_length=255)
     body = models.TextField()
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.OPEN)
     franchise_reply = models.TextField(blank=True)
+    ho_reminder_message = models.TextField(
+        blank=True,
+        help_text="Head office reminder shown to the centre until the ticket is resolved.",
+    )
+    ho_reminded_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -354,6 +392,87 @@ class SupportTicket(models.Model):
             except ParentProfile.DoesNotExist:
                 parent_label = f"missing parent #{self.parent_id}"
         return f"{subj} ({parent_label})"
+
+
+class SupportTicketStatusEvent(models.Model):
+    """Audit trail for franchise ticket updates; drives parent in-app notifications."""
+
+    class EventType(models.TextChoices):
+        STATUS_CHANGE = "STATUS_CHANGE", "Status change"
+        REPLY = "REPLY", "Franchise reply"
+
+    ticket = models.ForeignKey(SupportTicket, on_delete=models.CASCADE, related_name="status_events")
+    event_type = models.CharField(max_length=20, choices=EventType.choices)
+    old_status = models.CharField(max_length=20, blank=True)
+    new_status = models.CharField(max_length=20, blank=True)
+    message = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "Support ticket status event"
+        verbose_name_plural = "Support ticket status events"
+
+    def __str__(self) -> str:
+        return f"ticket-{self.ticket_id}:{self.event_type}"
+
+
+class ParentPushDevice(models.Model):
+    """FCM device token registered by the parent mobile app."""
+
+    parent = models.ForeignKey(ParentProfile, on_delete=models.CASCADE, related_name="push_devices")
+    token = models.CharField(max_length=512)
+    platform = models.CharField(max_length=20, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-updated_at"]
+        constraints = [
+            models.UniqueConstraint(fields=["parent", "token"], name="uniq_parent_push_token"),
+        ]
+        verbose_name = "Parent push device"
+        verbose_name_plural = "Parent push devices"
+
+    def __str__(self) -> str:
+        return f"{self.parent_id}:{self.platform or 'device'}"
+
+
+class FranchiseNotification(models.Model):
+    """In-app alerts for franchise centres (head office reminders, etc.)."""
+
+    class Source(models.TextChoices):
+        SUPPORT_TICKET = "support_ticket", "Support ticket"
+        HEAD_OFFICE = "head_office", "Head office"
+
+    franchise = models.ForeignKey(
+        "franchises.Franchise",
+        on_delete=models.CASCADE,
+        related_name="portal_notifications",
+    )
+    source = models.CharField(max_length=32, choices=Source.choices, default=Source.HEAD_OFFICE)
+    source_id = models.PositiveIntegerField(null=True, blank=True)
+    title = models.CharField(max_length=255)
+    body = models.TextField(blank=True)
+    action_path = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Franchise dashboard path, e.g. /dashboard/franchise/parent-tickets/",
+    )
+    read_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "Franchise notification"
+        verbose_name_plural = "Franchise notifications"
+        indexes = [
+            models.Index(fields=["franchise", "-created_at"]),
+            models.Index(fields=["franchise", "source", "source_id"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.franchise_id}:{self.source}:{self.title[:40]}"
 
 
 class TransportRoute(models.Model):
