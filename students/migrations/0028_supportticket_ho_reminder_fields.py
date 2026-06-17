@@ -1,4 +1,4 @@
-# Sync SupportTicket with live DB columns ho_reminder_message / ho_reminded_at.
+# SupportTicket HO reminder fields — idempotent on Postgres (add if missing).
 
 from django.db import migrations, models
 
@@ -14,13 +14,17 @@ class Migration(migrations.Migration):
             database_operations=[
                 migrations.RunSQL(
                     sql="""
-                        UPDATE students_supportticket
-                        SET ho_reminder_message = ''
-                        WHERE ho_reminder_message IS NULL;
                         ALTER TABLE students_supportticket
-                        ALTER COLUMN ho_reminder_message SET DEFAULT '';
+                            ADD COLUMN IF NOT EXISTS ho_reminder_message TEXT NOT NULL DEFAULT '';
+                        ALTER TABLE students_supportticket
+                            ADD COLUMN IF NOT EXISTS ho_reminded_at TIMESTAMPTZ NULL;
                     """,
-                    reverse_sql=migrations.RunSQL.noop,
+                    reverse_sql="""
+                        ALTER TABLE students_supportticket
+                            DROP COLUMN IF EXISTS ho_reminded_at;
+                        ALTER TABLE students_supportticket
+                            DROP COLUMN IF EXISTS ho_reminder_message;
+                    """,
                 ),
             ],
             state_operations=[
