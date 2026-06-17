@@ -178,9 +178,6 @@ PC_DOCUMENTS_ROOT = Path(_pc_env).expanduser().resolve() if _pc_env else _defaul
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 AUTH_USER_MODEL = "accounts.User"
 
-# Firebase Cloud Messaging (parent app push). Set FCM_SERVER_KEY in .env.local to enable.
-FCM_SERVER_KEY = os.getenv("FCM_SERVER_KEY", "").strip()
-
 # --- Password hashers: plaintext only (`plain$...` or bare literal in DB). See users/hashers.py. ---
 PASSWORD_HASHERS = [
     "users.hashers.PlaintextPasswordHasher",
