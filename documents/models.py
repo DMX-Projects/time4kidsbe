@@ -113,6 +113,32 @@ class ParentDocument(models.Model):
     target_class_names = models.JSONField(default=list, blank=True)
     is_active = models.BooleanField(default=True)
     order = models.PositiveIntegerField(default=0, help_text="Display order")
+    publish_scope = models.CharField(
+        max_length=20,
+        blank=True,
+        default="pan_india",
+        help_text="Who sees this when franchise is blank: pan_india, state, city, franchises, one_centre.",
+    )
+    target_states = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="State codes (AP, TS, …) when publish_scope is state.",
+    )
+    target_cities = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="City names when publish_scope is city.",
+    )
+    target_franchise_ids = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="Centre IDs when publish_scope is franchises or one_centre.",
+    )
+    target_class_names = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="Optional class labels for class-specific parent-app content.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

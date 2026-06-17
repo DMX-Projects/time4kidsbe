@@ -60,7 +60,11 @@ def notify_parents_new_announcement(announcement: Announcement) -> int:
     from_email = getattr(settings, "MAIL_FROM_ADDRESS", None) or getattr(
         settings, "DEFAULT_FROM_EMAIL", "info@timekidspreschools.com"
     )
-    franchise_name = announcement.franchise.name
+    franchise_name = (
+        announcement.franchise.name
+        if announcement.franchise_id
+        else "TIME4Kids Head Office"
+    )
 
     safe_franchise = html.escape(franchise_name)
     safe_title = html.escape(announcement.title)
@@ -146,6 +150,7 @@ def dispatch_due_announcement_emails() -> int:
 
     due = Announcement.objects.filter(
         is_active=True,
+        visible_to_parents=True,
         email_dispatched_at__isnull=True,
         published_at__lte=timezone.now(),
     ).select_related("franchise", "student", "student__parent")

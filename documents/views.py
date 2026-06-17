@@ -407,6 +407,18 @@ class FranchiseParentDocumentListCreateView(generics.ListCreateAPIView):
                 qs = qs.filter(state=state)
             return qs.order_by("-academic_year", "state", "-created_at")
         if manage == "newsletter":
+            from common.cms_targeting import parent_document_visible_to_franchise
+
+            global_candidates = ParentDocument.objects.filter(
+                is_active=True,
+                category=DocumentCategory.CLASS_TIMETABLE,
+                franchise__isnull=True,
+            ).select_related("franchise")
+            visible_global_ids = [
+                doc.id
+                for doc in global_candidates
+                if parent_document_visible_to_franchise(doc, franchise_profile)
+            ]
             qs = ParentDocument.objects.filter(
                 is_active=True,
                 category=DocumentCategory.CLASS_TIMETABLE,
@@ -430,11 +442,7 @@ class FranchiseParentDocumentListCreateView(generics.ListCreateAPIView):
         return ctx
 
     def create(self, request, *args, **kwargs):
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        doc = serializer.save()
-        out = ParentDocumentSerializer(doc, context=self.get_serializer_context())
-        return Response(out.data, status=status.HTTP_201_CREATED)
+        raise PermissionDenied("Holiday lists and newsletters are managed by head office.")
 
 
 class FranchiseParentDocumentDetailView(generics.RetrieveUpdateDestroyAPIView):
@@ -462,14 +470,14 @@ class FranchiseParentDocumentDetailView(generics.RetrieveUpdateDestroyAPIView):
         ctx["request"] = self.request
         return ctx
 
-    def perform_destroy(self, instance):
-        if instance.file:
-            instance.file.delete(save=False)
-        if instance.audio_file:
-            instance.audio_file.delete(save=False)
-        if instance.thumbnail:
-            instance.thumbnail.delete(save=False)
-        super().perform_destroy(instance)
+    def update(self, request, *args, **kwargs):
+        raise PermissionDenied("Holiday lists and newsletters are managed by head office.")
+
+    def partial_update(self, request, *args, **kwargs):
+        raise PermissionDenied("Holiday lists and newsletters are managed by head office.")
+
+    def destroy(self, request, *args, **kwargs):
+        raise PermissionDenied("Holiday lists and newsletters are managed by head office.")
 
 
 class AdminParentDocumentListCreateView(generics.ListCreateAPIView):

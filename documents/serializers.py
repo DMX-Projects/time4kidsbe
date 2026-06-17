@@ -107,6 +107,7 @@ from .newsletter_files import (
     is_pdf_upload_file,
 )
 from common.fields import RelativeFileField, RelativeImageField
+from common.cms_targeting import PublishScope
 
 
 class FlexibleHolidayEntriesField(serializers.JSONField):
@@ -144,6 +145,7 @@ class ParentDocumentSerializer(serializers.ModelSerializer):
             'file_view_path', 'audio_view_path', 'is_active',
             'order', 'state', 'state_display', 'academic_year', 'holiday_entries',
             'period_start', 'period_end', 'video_embed_url', 'audio_file', 'audio_embed_url',
+            'publish_scope', 'target_states', 'target_cities', 'target_franchise_ids', 'target_class_names',
             'display_title',
             'publish_scope', 'target_states', 'target_cities', 'target_franchise_ids',
             'target_class_names', 'class_name',
@@ -332,6 +334,18 @@ class FranchiseParentDocumentWriteSerializer(serializers.ModelSerializer):
             return None
         return getattr(request, "FILES", None).get("audio_file")
 
+    def _newsletter_incoming_media_kinds(self, attrs, file_obj, audio_obj) -> set[str]:
+        kinds: set[str] = set()
+        if file_obj is not None:
+            kinds.add("document")
+        if "video_embed_url" in attrs and (attrs.get("video_embed_url") or "").strip():
+            kinds.add("video")
+        if audio_obj is not None:
+            kinds.add("audio")
+        if "audio_embed_url" in attrs and (attrs.get("audio_embed_url") or "").strip():
+            kinds.add("audio")
+        return kinds
+
     def _resolved_category(self, attrs):
         if attrs.get("category"):
             return attrs["category"]
@@ -418,6 +432,20 @@ class FranchiseParentDocumentWriteSerializer(serializers.ModelSerializer):
                     period_end = self.instance.period_end
             if period_start and period_end and period_end < period_start:
                 raise serializers.ValidationError({"period_end": "End date must be on or after start date."})
+            incoming_kinds = self._newsletter_incoming_media_kinds(attrs, file_obj, audio_obj)
+            if self.instance is None:
+                if len(incoming_kinds) != 1:
+                    raise serializers.ValidationError(
+                        {
+                            "detail": "Upload PDF, video, and audio as separate items — one type per upload."
+                        }
+                    )
+            elif len(incoming_kinds) > 1:
+                raise serializers.ValidationError(
+                    {
+                        "detail": "Each save must be one media type only. Upload PDF, video, and audio separately."
+                    }
+                )
         elif self.instance is None and not file_obj:
             raise serializers.ValidationError({"file": "Choose a file to upload."})
         else:
@@ -468,6 +496,7 @@ class AdminParentDocumentSerializer(ParentDocumentSerializer):
     """Head office: CRUD parent app documents (global or per-centre)."""
 
     file = RelativeFileField(required=False, allow_null=True)
+    audio_file = RelativeFileField(required=False, allow_null=True)
     thumbnail = RelativeImageField(required=False, allow_null=True)
     holiday_entries = FlexibleHolidayEntriesField(required=False)
 
@@ -685,6 +714,47 @@ class AdminParentDocumentSerializer(ParentDocumentSerializer):
             raise serializers.ValidationError({"target_cities": "Select at least one city."})
 
         return attrs
+
+    def _normalize_publish_targeting(self, attrs):
+        franchise = attrs.get("franchise")
+        if franchise is None and self.instance is not None and "franchise" not in attrs:
+            franchise = self.instance.franchise
+        scope = (attrs.get("publish_scope") or "").strip().lower()
+        if not scope and self.instance is not None:
+            scope = (self.instance.publish_scope or PublishScope.PAN_INDIA).strip().lower()
+        if franchise is not None:
+            attrs["publish_scope"] = PublishScope.ONE_CENTRE
+            attrs["target_franchise_ids"] = [franchise.id]
+            attrs["target_states"] = []
+            attrs["target_cities"] = []
+            return
+        if not scope:
+            scope = PublishScope.PAN_INDIA
+        attrs["publish_scope"] = scope
+        states = attrs.get("target_states")
+        if states is None and self.instance is not None:
+            states = self.instance.target_states or []
+        attrs["target_states"] = list(states or [])
+        cities = attrs.get("target_cities")
+        if cities is None and self.instance is not None:
+            cities = self.instance.target_cities or []
+        attrs["target_cities"] = list(cities or [])
+        franchise_ids = attrs.get("target_franchise_ids")
+        if franchise_ids is None and self.instance is not None:
+            franchise_ids = self.instance.target_franchise_ids or []
+        attrs["target_franchise_ids"] = [int(i) for i in (franchise_ids or []) if str(i).strip().isdigit()]
+        class_names = attrs.get("target_class_names")
+        if class_names is None and self.instance is not None:
+            class_names = self.instance.target_class_names or []
+        attrs["target_class_names"] = [str(c).strip() for c in (class_names or []) if str(c).strip()]
+        if scope == PublishScope.STATE and not attrs["target_states"]:
+            raise serializers.ValidationError({"target_states": "Select at least one state."})
+        if scope == PublishScope.CITY and not attrs["target_cities"]:
+            raise serializers.ValidationError({"target_cities": "Select at least one city."})
+        if scope == PublishScope.FRANCHISES and not attrs["target_franchise_ids"]:
+            raise serializers.ValidationError({"target_franchise_ids": "Select at least one centre."})
+        if scope == PublishScope.ONE_CENTRE and len(attrs["target_franchise_ids"]) != 1:
+            raise serializers.ValidationError({"target_franchise_ids": "Select exactly one centre."})
 
 
 class FranchiseCentreDocumentCreateSerializer(serializers.ModelSerializer):

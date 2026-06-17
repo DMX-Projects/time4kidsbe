@@ -1,4 +1,5 @@
 from django.core.exceptions import ObjectDoesNotExist
+from django.utils import timezone
 from rest_framework import serializers
 
 from accounts.profile_access import franchise_profile_for_user, parent_profile_for_user
@@ -9,6 +10,7 @@ from .models import (
     AnnouncementCampaign,
     AttendanceRecord,
     FeeRecord,
+    FranchiseNotification,
     Grade,
     HomeworkAssignment,
     ParentNotificationRead,
@@ -870,6 +872,9 @@ class FeeRecordSerializer(serializers.ModelSerializer):
         return value
 
 
+from .support_ticket_notify import record_ticket_update_for_parent, ticket_status_label
+
+
 class SupportTicketParentSerializer(serializers.ModelSerializer):
     student_name = serializers.SerializerMethodField()
     student_class_name = serializers.SerializerMethodField()
@@ -947,6 +952,7 @@ class SupportTicketFranchiseSerializer(serializers.ModelSerializer):
             "subject",
             "body",
             "status",
+            "status_label",
             "franchise_reply",
             "ho_reminder_message",
             "ho_reminded_at",
@@ -1014,6 +1020,134 @@ class SupportTicketFranchiseSerializer(serializers.ModelSerializer):
         except ObjectDoesNotExist:
             return ""
         return getattr(user, "email", "") or ""
+
+    def get_status_label(self, obj):
+        return ticket_status_label(obj.status)
+
+    def update(self, instance, validated_data):
+        old_status = instance.status
+        old_reply = instance.franchise_reply or ""
+        instance = super().update(instance, validated_data)
+        status_changed = instance.status != old_status
+        reply_changed = (instance.franchise_reply or "").strip() != old_reply.strip()
+        if status_changed or reply_changed:
+            record_ticket_update_for_parent(
+                instance,
+                old_status=old_status,
+                status_changed=status_changed,
+                reply_changed=reply_changed,
+            )
+        if instance.status == SupportTicket.Status.RESOLVED:
+            instance.ho_reminder_message = ""
+            instance.ho_reminded_at = None
+            instance.save(update_fields=["ho_reminder_message", "ho_reminded_at", "updated_at"])
+            FranchiseNotification.objects.filter(
+                franchise_id=instance.parent.franchise_id,
+                source=FranchiseNotification.Source.SUPPORT_TICKET,
+                source_id=instance.id,
+                read_at__isnull=True,
+            ).update(read_at=timezone.now())
+        return instance
+
+
+class FranchiseNotificationSerializer(serializers.ModelSerializer):
+    read = serializers.SerializerMethodField()
+
+    class Meta:
+        model = FranchiseNotification
+        fields = [
+            "id",
+            "source",
+            "source_id",
+            "title",
+            "body",
+            "action_path",
+            "read",
+            "read_at",
+            "created_at",
+        ]
+        read_only_fields = fields
+
+    def get_read(self, obj) -> bool:
+        return obj.read_at is not None
+
+
+class AdminSupportTicketSerializer(serializers.ModelSerializer):
+    """Head office: view all parent support tickets across centres."""
+
+    franchise = serializers.IntegerField(source="parent.franchise_id", read_only=True)
+    franchise_name = serializers.SerializerMethodField()
+    parent_name = serializers.SerializerMethodField()
+    parent_email = serializers.SerializerMethodField()
+    status_label = serializers.SerializerMethodField()
+    is_unresolved = serializers.SerializerMethodField()
+    days_open = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SupportTicket
+        fields = [
+            "id",
+            "franchise",
+            "franchise_name",
+            "parent",
+            "parent_name",
+            "parent_email",
+            "subject",
+            "body",
+            "status",
+            "status_label",
+            "is_unresolved",
+            "days_open",
+            "franchise_reply",
+            "ho_reminder_message",
+            "ho_reminded_at",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = fields
+
+    def get_franchise_name(self, obj):
+        try:
+            return obj.parent.franchise.name if obj.parent and obj.parent.franchise_id else ""
+        except ObjectDoesNotExist:
+            return ""
+
+    def get_parent_name(self, obj):
+        try:
+            parent = obj.parent
+        except ObjectDoesNotExist:
+            return ""
+        try:
+            user = parent.user
+        except ObjectDoesNotExist:
+            return ""
+        name = (getattr(user, "full_name", None) or "").strip()
+        return name or getattr(parent, "child_name", "") or getattr(user, "email", "") or ""
+
+    def get_parent_email(self, obj):
+        try:
+            parent = obj.parent
+        except ObjectDoesNotExist:
+            return ""
+        try:
+            user = parent.user
+        except ObjectDoesNotExist:
+            return ""
+        return getattr(user, "email", "") or getattr(parent, "Emailid", "") or ""
+
+    def get_status_label(self, obj):
+        return ticket_status_label(obj.status)
+
+    def get_is_unresolved(self, obj) -> bool:
+        return obj.status != SupportTicket.Status.RESOLVED
+
+    def get_days_open(self, obj) -> int:
+        from django.utils import timezone
+
+        if not obj.created_at:
+            return 0
+        delta = timezone.now() - obj.created_at
+        return max(0, delta.days)
 
 
 class SupportTicketAdminSerializer(serializers.ModelSerializer):
