@@ -22,6 +22,7 @@ from .download_names import (
     safe_disposition_filename,
 )
 from .models import ParentDocument, DocumentCategory, FranchiseDocument, FranchiseDocumentCategory, IndentRequest
+from .newsletter_dates import filter_newsletters_by_date
 from .parent_document_mobile import parent_documents_api_response
 from .serializers import (
     ParentDocumentSerializer,
@@ -78,6 +79,9 @@ def parent_documents_by_category(request, category):
         category__in=category_filter
     )
     if category == DocumentCategory.CLASS_TIMETABLE:
+        track_date = (request.query_params.get("date") or "").strip()[:10]
+        if track_date:
+            documents = filter_newsletters_by_date(documents, track_date=track_date)
         documents = documents.order_by("-period_start", "-created_at")
     elif category == DocumentCategory.HOLIDAY_LISTS:
         documents = documents.order_by("state", "-academic_year", "-updated_at")
@@ -344,35 +348,6 @@ def admin_franchise_documents_summary(request):
     return Response(out)
 
 
-def _filter_newsletter_by_date(qs, track_date: str, from_date: str, to_date: str):
-    """Filter CLASS_TIMETABLE rows by block date or created date."""
-    if track_date:
-        return qs.filter(
-            Q(
-                period_start__isnull=False,
-                period_end__isnull=False,
-                period_start__lte=track_date,
-                period_end__gte=track_date,
-            )
-            | Q(
-                period_start__isnull=True,
-                period_end__isnull=True,
-                created_at__date=track_date,
-            )
-        )
-    if from_date and to_date:
-        return qs.filter(
-            Q(period_start__isnull=False, period_end__isnull=False, period_start__lte=to_date, period_end__gte=from_date)
-            | Q(
-                period_start__isnull=True,
-                period_end__isnull=True,
-                created_at__date__gte=from_date,
-                created_at__date__lte=to_date,
-            )
-        )
-    return qs
-
-
 class FranchiseParentDocumentListCreateView(generics.ListCreateAPIView):
     """Franchise: list parent-app documents; upload Newsletter and centre holiday PDFs."""
 
@@ -415,7 +390,7 @@ class FranchiseParentDocumentListCreateView(generics.ListCreateAPIView):
             track_date = (self.request.query_params.get("date") or "").strip()[:10]
             from_date = (self.request.query_params.get("from") or "").strip()[:10]
             to_date = (self.request.query_params.get("to") or "").strip()[:10]
-            qs = _filter_newsletter_by_date(qs, track_date, from_date, to_date)
+            qs = filter_newsletters_by_date(qs, track_date=track_date, from_date=from_date, to_date=to_date)
             return qs.select_related("franchise").order_by("-period_start", "-created_at")
         return (
             ParentDocument.objects.filter(is_active=True)
@@ -488,7 +463,7 @@ class AdminParentDocumentListCreateView(generics.ListCreateAPIView):
             track_date = (self.request.query_params.get("date") or "").strip()[:10]
             from_date = (self.request.query_params.get("from") or "").strip()[:10]
             to_date = (self.request.query_params.get("to") or "").strip()[:10]
-            qs = _filter_newsletter_by_date(qs, track_date, from_date, to_date)
+            qs = filter_newsletters_by_date(qs, track_date=track_date, from_date=from_date, to_date=to_date)
             return qs.order_by("-period_start", "-created_at")
         if manage == "holidays":
             qs = qs.filter(is_active=True, category=DocumentCategory.HOLIDAY_LISTS)
