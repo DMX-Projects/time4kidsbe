@@ -17,7 +17,12 @@ def parent_document_mobile_row(row: dict) -> dict:
     audio_file = (row.get("audio_file") or "").strip()
     audio_embed = (row.get("audio_embed_url") or "").strip()
 
-    out["date"] = _slice_date(row.get("period_start") or row.get("created_at"))
+    block = _slice_date(row.get("period_start"))
+    uploaded = _slice_date(row.get("created_at"))
+    out["block_date"] = block or None
+    out["uploaded_at"] = uploaded or None
+    # Primary sort/filter date: block date when set, else upload day.
+    out["date"] = block or uploaded
 
     if video_embed and not file_path and not audio_file and not audio_embed:
         out["kind"] = "video"

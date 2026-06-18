@@ -12,6 +12,7 @@ from .state_utils import (
     franchise_state_code,
 )
 from .embed_urls import is_audio_media_url, is_usable_embed_url, normalize_parent_embed_url
+from .newsletter_dates import normalize_newsletter_period_attrs
 from .parent_document_media import (
     parent_document_has_listable_file,
     parent_document_has_newsletter_audio,
@@ -418,6 +419,7 @@ class FranchiseParentDocumentWriteSerializer(serializers.ModelSerializer):
                     period_end = self.instance.period_end
             if period_start and period_end and period_end < period_start:
                 raise serializers.ValidationError({"period_end": "End date must be on or after start date."})
+            normalize_newsletter_period_attrs(attrs)
         elif self.instance is None and not file_obj:
             raise serializers.ValidationError({"file": "Choose a file to upload."})
         else:
@@ -629,6 +631,7 @@ class AdminParentDocumentSerializer(ParentDocumentSerializer):
                 raise serializers.ValidationError(
                     {"file": "Upload a PDF, add a video link, or add audio (file or link)."}
                 )
+            normalize_newsletter_period_attrs(attrs)
         elif category == "HOLIDAY_LISTS":
             holiday_entries = self._resolved_holiday_entries(attrs)
             attrs["holiday_entries"] = holiday_entries

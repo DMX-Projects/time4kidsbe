@@ -491,6 +491,48 @@ def _build_parent_calendar_items(
     return items
 
 
+def _parent_newsletter_calendar_items(request, focus) -> list[dict]:
+    """Newsletter rows for parent calendar (block date and upload date when they differ)."""
+    from documents.models import DocumentCategory
+    from documents.serializers import ParentDocumentSerializer
+    from documents.views import _parent_document_category_filter, _parent_documents_visible_queryset
+
+    qs = _parent_documents_visible_queryset(request.user, student=focus).filter(
+        category__in=_parent_document_category_filter(DocumentCategory.CLASS_TIMETABLE)
+    )
+    rows = ParentDocumentSerializer(
+        qs.order_by("-period_start", "-created_at"),
+        many=True,
+        context={"request": request, "merge_holiday_for_parent": True},
+    ).data
+
+    items: list[dict] = []
+    for row in rows:
+        pk = int(row["id"])
+        block = str(row.get("period_start") or "")[:10]
+        uploaded = str(row.get("created_at") or "")[:10]
+        title = str(row.get("display_title") or row.get("title") or "Newsletter")
+        detail = (row.get("source_label") or "").strip()
+        dates: list[str] = []
+        if block:
+            dates.append(block)
+        if uploaded and uploaded not in dates:
+            dates.append(uploaded)
+        if not dates:
+            continue
+        for day in dates:
+            items.append(
+                _calendar_item_row(
+                    item_type="newsletter",
+                    item_id=pk,
+                    title=title,
+                    date_str=day,
+                    detail=detail,
+                )
+            )
+    return items
+
+
 def _calendar_item_on_date(item: dict, day: str) -> bool:
     """True when ``day`` (YYYY-MM-DD) falls within the item's date range."""
     d = (day or "")[:10]
@@ -576,6 +618,8 @@ def _parent_calendar_attendance_payload(
     attendance_rows = AttendanceRecordSerializer(attendance_qs, many=True).data
 
     calendar_items = _build_parent_calendar_items(events_data, homework_data, announcement_data)
+    calendar_items.extend(_parent_newsletter_calendar_items(request, focus))
+    calendar_items.sort(key=lambda row: (row["date"], row["type"], row["title"].lower()))
 
     selected_day = selected_date.isoformat() if selected_date else None
     if selected_day:
