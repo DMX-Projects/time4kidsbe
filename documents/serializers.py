@@ -3,7 +3,12 @@ from pathlib import Path
 
 from django.db import IntegrityError
 from rest_framework import serializers
-from .holiday_entries import merge_holiday_entries, normalize_holiday_entries
+from .holiday_entries import (
+    enrich_holiday_entries,
+    franchise_city_label,
+    merge_holiday_entries,
+    normalize_holiday_entries,
+)
 from .models import ParentDocument, FranchiseDocument, FranchiseDocumentCategory, DocumentCategory, IndentRequest
 from .state_utils import (
     DEFAULT_HOLIDAY_ACADEMIC_YEAR,
@@ -156,10 +161,19 @@ class ParentDocumentSerializer(serializers.ModelSerializer):
         entries = obj.holiday_entries or []
         if obj.category != DocumentCategory.HOLIDAY_LISTS:
             return entries
+
+        centre_default = ""
+        if obj.franchise_id:
+            franchise = getattr(obj, "franchise", None)
+            if franchise is not None:
+                centre_default = franchise_city_label(franchise)
+
         if not obj.franchise_id:
-            return entries
+            return enrich_holiday_entries(entries, None)
+
         if not self.context.get("merge_holiday_for_parent"):
-            return entries
+            return enrich_holiday_entries(entries, centre_default or None)
+
         global_doc = (
             ParentDocument.objects.filter(
                 is_active=True,
@@ -173,7 +187,8 @@ class ParentDocumentSerializer(serializers.ModelSerializer):
         )
         return merge_holiday_entries(
             global_doc.holiday_entries if global_doc else [],
-            entries,
+            obj.holiday_entries or [],
+            centre_default_city=centre_default,
         )
 
     def _file_available(self, obj: ParentDocument) -> bool:
@@ -242,6 +257,14 @@ class ParentDocumentSerializer(serializers.ModelSerializer):
             year = effective_holiday_academic_year(instance)
             if not (data.get("academic_year") or "").strip():
                 data["academic_year"] = year
+            if not isinstance(self.fields.get("holiday_entries"), serializers.SerializerMethodField):
+                default_city = ""
+                if instance.franchise_id and instance.franchise:
+                    default_city = franchise_city_label(instance.franchise)
+                data["holiday_entries"] = enrich_holiday_entries(
+                    data.get("holiday_entries"),
+                    default_city or None,
+                )
         # Parents only need franchise id/name on centre-specific rows.
         if data.get("franchise") is None:
             data.pop("franchise", None)
@@ -340,11 +363,24 @@ class FranchiseParentDocumentWriteSerializer(serializers.ModelSerializer):
             return self.instance.category
         return DocumentCategory.CLASS_TIMETABLE
 
+    def _franchise_default_city(self) -> str:
+        request = self.context.get("request")
+        if not request:
+            return ""
+        from accounts.profile_access import franchise_profile_for_user
+
+        franchise = franchise_profile_for_user(request.user)
+        return franchise_city_label(franchise) if franchise else ""
+
     def _resolved_holiday_entries(self, attrs):
+        default_city = self._franchise_default_city()
         if "holiday_entries" in attrs:
-            return normalize_holiday_entries(attrs["holiday_entries"])
+            return normalize_holiday_entries(attrs["holiday_entries"], default_city=default_city or None)
         if self.instance is not None:
-            return normalize_holiday_entries(self.instance.holiday_entries or [])
+            return normalize_holiday_entries(
+                self.instance.holiday_entries or [],
+                default_city=default_city or None,
+            )
         return []
 
     def validate(self, attrs):
@@ -369,14 +405,38 @@ class FranchiseParentDocumentWriteSerializer(serializers.ModelSerializer):
                 attrs["state"] = centre_code
                 state = centre_code
             if not state:
+                request = self.context.get("request")
+                from accounts.profile_access import franchise_profile_for_user
+
+                franchise = franchise_profile_for_user(request.user) if request else None
+                if franchise:
+                    resolved = franchise_state_code(franchise)
+                    if resolved:
+                        state = resolved
+                        attrs["state"] = resolved
+            if not state:
                 raise serializers.ValidationError({"state": "State is required for holiday lists."})
             if centre_code and state != centre_code:
                 raise serializers.ValidationError(
                     {"state": "Centre holiday lists must use your centre's state from profile."}
                 )
+            has_existing_file = bool(self.instance and self.instance.file)
             if file_obj is not None and not is_pdf_upload_file(file_obj):
                 raise serializers.ValidationError({"file": "Holiday PDF must be a PDF file."})
-            if self.instance is None and not file_obj and len(holiday_entries) == 0:
+            if (
+                self.instance is None
+                and len(holiday_entries) == 0
+                and not file_obj
+            ):
+                raise serializers.ValidationError(
+                    {"holiday_entries": "Upload a PDF or add at least one holiday with a date."}
+                )
+            if (
+                self.instance is not None
+                and len(holiday_entries) == 0
+                and not file_obj
+                and not has_existing_file
+            ):
                 raise serializers.ValidationError(
                     {"holiday_entries": "Upload a PDF or add at least one holiday with a date."}
                 )

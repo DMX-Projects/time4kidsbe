@@ -348,6 +348,13 @@ def admin_franchise_documents_summary(request):
     return Response(out)
 
 
+def _filter_holiday_docs_by_track_date(qs, track_date: str):
+    """Holiday CMS: show lists created or updated on the selected track date."""
+    if not track_date:
+        return qs
+    return qs.filter(Q(created_at__date=track_date) | Q(updated_at__date=track_date))
+
+
 class FranchiseParentDocumentListCreateView(generics.ListCreateAPIView):
     """Franchise: list parent-app documents; upload Newsletter and centre holiday PDFs."""
 
@@ -458,6 +465,14 @@ class AdminParentDocumentListCreateView(generics.ListCreateAPIView):
     def get_queryset(self):
         qs = ParentDocument.objects.all().select_related("franchise")
         manage = (self.request.query_params.get("manage") or "").strip().lower()
+        if manage == "holidays":
+            qs = qs.filter(is_active=True, category=DocumentCategory.HOLIDAY_LISTS)
+            state = (self.request.query_params.get("state") or "").strip()
+            if state:
+                qs = qs.filter(state=state)
+            track_date = (self.request.query_params.get("date") or "").strip()[:10]
+            qs = _filter_holiday_docs_by_track_date(qs, track_date)
+            return qs.order_by("-academic_year", "state", "-updated_at")
         if manage == "newsletter":
             qs = qs.filter(is_active=True, category=DocumentCategory.CLASS_TIMETABLE)
             track_date = (self.request.query_params.get("date") or "").strip()[:10]
@@ -465,13 +480,7 @@ class AdminParentDocumentListCreateView(generics.ListCreateAPIView):
             to_date = (self.request.query_params.get("to") or "").strip()[:10]
             qs = filter_newsletters_by_date(qs, track_date=track_date, from_date=from_date, to_date=to_date)
             return qs.order_by("-period_start", "-created_at")
-        if manage == "holidays":
-            qs = qs.filter(is_active=True, category=DocumentCategory.HOLIDAY_LISTS)
-            state = (self.request.query_params.get("state") or "").strip()
-            if state:
-                qs = qs.filter(state=state)
-            return qs.order_by("-academic_year", "state", "-created_at")
-        qs = qs.order_by("category", "order", "-created_at")
+        return qs.order_by("category", "order", "-created_at")
         cat = (self.request.query_params.get("category") or "").strip()
         if cat:
             valid = [c[0] for c in DocumentCategory.choices]
