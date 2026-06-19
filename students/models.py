@@ -286,6 +286,36 @@ class AttendanceRecord(models.Model):
         return f"{who} - {self.date} ({self.get_status_display()})"
 
 
+class CentreAttendanceClosedDay(models.Model):
+    franchise = models.ForeignKey(
+        Franchise,
+        on_delete=models.CASCADE,
+        related_name="attendance_closed_days",
+    )
+    date = models.DateField()
+    label = models.CharField(max_length=255)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-date"]
+        verbose_name = "Centre attendance closed day"
+        verbose_name_plural = "Centre attendance closed days"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["franchise", "date"],
+                name="uniq_centre_attendance_closed_date",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        try:
+            centre = self.franchise.name
+        except Franchise.DoesNotExist:
+            centre = f"franchise #{self.franchise_id}"
+        return f"{centre} — {self.date} ({self.label})"
+
+
 class FeeRecord(models.Model):
     class Status(models.TextChoices):
         PENDING = "PENDING", "Pending"

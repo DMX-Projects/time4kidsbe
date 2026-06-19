@@ -378,6 +378,53 @@ def admin_franchise_documents_summary(request):
     return Response(out)
 
 
+def _filter_holiday_docs_by_track_date(qs, track_date: str):
+    """Holiday CMS: show lists created or updated on the selected track date."""
+    if not track_date:
+        return qs
+    return qs.filter(Q(created_at__date=track_date) | Q(updated_at__date=track_date))
+
+
+def _filter_newsletter_by_date(qs, track_date: str, from_date: str, to_date: str):
+    """Filter CLASS_TIMETABLE rows by block date or created/updated date."""
+    if track_date:
+        return qs.filter(
+            Q(
+                period_start__isnull=False,
+                period_end__isnull=False,
+                period_start__lte=track_date,
+                period_end__gte=track_date,
+            )
+            | Q(
+                period_start__isnull=True,
+                period_end__isnull=True,
+                created_at__date=track_date,
+            )
+            | Q(
+                period_start__isnull=True,
+                period_end__isnull=True,
+                updated_at__date=track_date,
+            )
+        )
+    if from_date and to_date:
+        return qs.filter(
+            Q(period_start__isnull=False, period_end__isnull=False, period_start__lte=to_date, period_end__gte=from_date)
+            | Q(
+                period_start__isnull=True,
+                period_end__isnull=True,
+                created_at__date__gte=from_date,
+                created_at__date__lte=to_date,
+            )
+            | Q(
+                period_start__isnull=True,
+                period_end__isnull=True,
+                updated_at__date__gte=from_date,
+                updated_at__date__lte=to_date,
+            )
+        )
+    return qs
+
+
 class FranchiseParentDocumentListCreateView(generics.ListCreateAPIView):
     """Franchise: list parent-app documents; upload Newsletter and centre holiday PDFs."""
 
@@ -424,30 +471,7 @@ class FranchiseParentDocumentListCreateView(generics.ListCreateAPIView):
             track_date = (self.request.query_params.get("date") or "").strip()[:10]
             from_date = (self.request.query_params.get("from") or "").strip()[:10]
             to_date = (self.request.query_params.get("to") or "").strip()[:10]
-            if track_date:
-                qs = qs.filter(
-                    Q(
-                        period_start__isnull=False,
-                        period_end__isnull=False,
-                        period_start__lte=track_date,
-                        period_end__gte=track_date,
-                    )
-                    | Q(
-                        period_start__isnull=True,
-                        period_end__isnull=True,
-                        created_at__date=track_date,
-                    )
-                )
-            elif from_date and to_date:
-                qs = qs.filter(
-                    Q(period_start__isnull=False, period_end__isnull=False, period_start__lte=to_date, period_end__gte=from_date)
-                    | Q(
-                        period_start__isnull=True,
-                        period_end__isnull=True,
-                        created_at__date__gte=from_date,
-                        created_at__date__lte=to_date,
-                    )
-                )
+            qs = _filter_newsletter_by_date(qs, track_date, from_date, to_date)
             return qs.select_related("franchise").order_by("-period_start", "-created_at")
         return (
             ParentDocument.objects.filter(is_active=True)
@@ -462,7 +486,7 @@ class FranchiseParentDocumentListCreateView(generics.ListCreateAPIView):
         return ctx
 
     def create(self, request, *args, **kwargs):
-        raise PermissionDenied("Holiday lists and newsletters are managed by head office.")
+        return super().create(request, *args, **kwargs)
 
 
 class FranchiseParentDocumentDetailView(generics.RetrieveUpdateDestroyAPIView):
@@ -491,13 +515,13 @@ class FranchiseParentDocumentDetailView(generics.RetrieveUpdateDestroyAPIView):
         return ctx
 
     def update(self, request, *args, **kwargs):
-        raise PermissionDenied("Holiday lists and newsletters are managed by head office.")
+        return super().update(request, *args, **kwargs)
 
     def partial_update(self, request, *args, **kwargs):
-        raise PermissionDenied("Holiday lists and newsletters are managed by head office.")
+        return super().partial_update(request, *args, **kwargs)
 
     def destroy(self, request, *args, **kwargs):
-        raise PermissionDenied("Holiday lists and newsletters are managed by head office.")
+        return super().destroy(request, *args, **kwargs)
 
 
 class AdminParentDocumentListCreateView(generics.ListCreateAPIView):
@@ -509,6 +533,29 @@ class AdminParentDocumentListCreateView(generics.ListCreateAPIView):
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get_queryset(self):
+        manage = (self.request.query_params.get("manage") or "").strip().lower()
+        if manage == "holidays":
+            qs = ParentDocument.objects.filter(
+                is_active=True,
+                category=DocumentCategory.HOLIDAY_LISTS,
+            ).select_related("franchise")
+            state = (self.request.query_params.get("state") or "").strip()
+            if state:
+                qs = qs.filter(state=state)
+            track_date = (self.request.query_params.get("date") or "").strip()[:10]
+            qs = _filter_holiday_docs_by_track_date(qs, track_date)
+            return qs.order_by("-academic_year", "state", "-updated_at")
+        if manage == "newsletter":
+            qs = ParentDocument.objects.filter(
+                is_active=True,
+                category=DocumentCategory.CLASS_TIMETABLE,
+            ).select_related("franchise")
+            track_date = (self.request.query_params.get("date") or "").strip()[:10]
+            from_date = (self.request.query_params.get("from") or "").strip()[:10]
+            to_date = (self.request.query_params.get("to") or "").strip()[:10]
+            qs = _filter_newsletter_by_date(qs, track_date, from_date, to_date)
+            return qs.order_by("-period_start", "-updated_at")
+
         qs = ParentDocument.objects.all().select_related("franchise").order_by("category", "order", "-created_at")
         cat = (self.request.query_params.get("category") or "").strip()
         if cat:
