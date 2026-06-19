@@ -14,7 +14,7 @@ from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import IsAuthenticated
 from accounts.models import UserRole
 from accounts.permissions import IsFranchiseUser, IsParentUser, IsAdminOrApproverUser
-from accounts.profile_access import franchise_profile_for_user, parent_profile_for_user
+from accounts.profile_access import franchise_profile_for_user, resolved_parent_profile_for_user, effective_franchise_for_parent
 from .auth import QueryJWTAuthentication
 from .download_names import (
     franchise_document_download_filename,
@@ -22,6 +22,8 @@ from .download_names import (
     safe_disposition_filename,
 )
 from .models import ParentDocument, DocumentCategory, FranchiseDocument, FranchiseDocumentCategory, IndentRequest
+from .newsletter_dates import filter_newsletters_by_date
+from .parent_document_mobile import parent_documents_api_response
 from .serializers import (
     ParentDocumentSerializer,
     AdminParentDocumentSerializer,
@@ -40,12 +42,22 @@ class ParentDocumentListView(generics.ListAPIView):
     pagination_class = None  # Disable pagination to show all documents
 
     def get_queryset(self):
-        return _parent_documents_visible_queryset(self.request.user)
+        from students.portal_views import _parent_student_from_request
+
+        profile = resolved_parent_profile_for_user(self.request.user)
+        student = _parent_student_from_request(self.request, profile) if profile else None
+        return _parent_documents_visible_queryset(self.request.user, student=student)
 
     def get_serializer_context(self):
         ctx = super().get_serializer_context()
         ctx["merge_holiday_for_parent"] = True
         return ctx
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        serializer = self.get_serializer(queryset, many=True)
+        payload = parent_documents_api_response(request, serializer.data)
+        return Response(payload)
 
 
 @api_view(['GET'])
@@ -58,15 +70,29 @@ def parent_documents_by_category(request, category):
     if category not in valid_categories:
         return Response({"error": "Invalid category"}, status=400)
 
+    from students.portal_views import _parent_student_from_request
+
     category_filter = _parent_document_category_filter(category)
-    documents = _parent_documents_visible_queryset(request.user).filter(category__in=category_filter)
+    profile = resolved_parent_profile_for_user(request.user)
+    student = _parent_student_from_request(request, profile) if profile else None
+    documents = _parent_documents_visible_queryset(request.user, student=student).filter(
+        category__in=category_filter
+    )
+    if category == DocumentCategory.CLASS_TIMETABLE:
+        track_date = (request.query_params.get("date") or "").strip()[:10]
+        if track_date:
+            documents = filter_newsletters_by_date(documents, track_date=track_date)
+        documents = documents.order_by("-period_start", "-created_at")
+    elif category == DocumentCategory.HOLIDAY_LISTS:
+        documents = documents.order_by("state", "-academic_year", "-updated_at")
 
     serializer = ParentDocumentSerializer(
         documents,
         many=True,
         context={"request": request, "merge_holiday_for_parent": True},
     )
-    return Response(serializer.data)
+    payload = parent_documents_api_response(request, serializer.data)
+    return Response(payload)
 
 
 def _norm_user_role(user) -> str:
@@ -80,100 +106,38 @@ def _parent_document_category_filter(category: str) -> list[str]:
     return [category]
 
 
-def _parent_documents_visible_queryset(user):
-    """Active parent-app documents: global + parent's centre (when linked)."""
+def _parent_documents_visible_queryset(user, student=None):
+    """Active parent-app documents visible to this parent (scope + class filter)."""
     from .parent_document_media import filter_parent_documents_by_media_type
-    from .state_utils import franchise_state_code
-    from common.cms_targeting import parent_document_visible_to_franchise
+    from .publish_targeting import filter_documents_for_parent
 
     qs = ParentDocument.objects.filter(is_active=True).select_related("franchise")
     role = _norm_user_role(user)
     if role == UserRole.PARENT.value:
-        profile = parent_profile_for_user(user)
-        if profile and profile.franchise_id:
-            franchise = profile.franchise
-            centre_ids = list(
-                qs.filter(franchise_id=franchise.id).values_list("id", flat=True)
-            )
-            global_candidates = qs.filter(franchise__isnull=True)
-            visible_global_ids = [
-                doc.id
-                for doc in global_candidates
-                if parent_document_visible_to_franchise(doc, franchise)
-            ]
-            qs = ParentDocument.objects.filter(
-                Q(id__in=centre_ids) | Q(id__in=visible_global_ids)
-            ).select_related("franchise")
-            qs = _apply_holiday_centre_overrides(qs, profile.franchise_id)
-            
-            # Restrict global holiday lists to the parent's franchise state
-            eff_state = franchise_state_code(profile.franchise)
-            if eff_state:
-                qs = qs.exclude(
-                    Q(category=DocumentCategory.HOLIDAY_LISTS) &
-                    Q(franchise__isnull=True) &
-                    ~Q(state=eff_state)
-                )
+        profile = resolved_parent_profile_for_user(user)
+        if profile:
+            franchise = effective_franchise_for_parent(profile)
+            if franchise:
+                qs = qs.filter(Q(franchise__isnull=True) | Q(franchise_id=franchise.id))
             else:
-                # If centre has no valid state, hide all global holiday lists
-                qs = qs.exclude(
-                    Q(category=DocumentCategory.HOLIDAY_LISTS) &
-                    Q(franchise__isnull=True)
-                )
+                qs = qs.filter(franchise__isnull=True)
+            qs = filter_documents_for_parent(qs, profile, student=student)
         else:
-            qs = qs.filter(franchise__isnull=True)
-            # Unlinked parents cannot see any state-specific global holiday lists
+            qs = qs.filter(franchise__isnull=True, publish_scope=ParentDocument.PublishScope.PAN_INDIA)
             qs = qs.exclude(category=DocumentCategory.HOLIDAY_LISTS)
-            
     qs = filter_parent_documents_by_media_type(qs)
     return qs.order_by("category", "order", "-created_at")
 
 
 def _apply_holiday_centre_overrides(qs, franchise_id):
     """
-    Parents see centre holiday PDF instead of head-office global for the same state + year.
-    Centre rows with manual entries only (no PDF) must not hide the head-office PDF.
+    Deprecated: parents receive both head-office and centre holiday rows; the app merges
+    PDFs and manual dates client-side (newest PDF wins for the same state + year).
     """
-    from .state_utils import effective_holiday_academic_year, effective_holiday_state
-
-    centre_holidays = (
-        ParentDocument.objects.filter(
-            is_active=True,
-            category=DocumentCategory.HOLIDAY_LISTS,
-            franchise_id=franchise_id,
-        )
-        .exclude(file="")
-        .exclude(file__isnull=True)
-        .select_related("franchise")
-    )
-    exclude_global = Q()
-
-    for holiday in centre_holidays:
-        if not holiday.file:
-            continue
-        stored_name = getattr(holiday.file, "name", "") or ""
-        if not stored_name.strip():
-            continue
-        try:
-            if not holiday.file.storage.exists(stored_name):
-                continue
-        except Exception:
-            pass
-        eff_state = effective_holiday_state(holiday)
-        if not eff_state:
-            continue
-        exclude_global |= Q(
-            category=DocumentCategory.HOLIDAY_LISTS,
-            franchise__isnull=True,
-            state=eff_state,
-            academic_year=effective_holiday_academic_year(holiday),
-        )
-    if exclude_global:
-        qs = qs.exclude(exclude_global)
     return qs
 
 
-def _user_can_stream_parent_document(user, doc: ParentDocument) -> bool:
+def _user_can_stream_parent_document(user, doc: ParentDocument, request=None) -> bool:
     """Parents: visible active docs. Franchise: global + own centre. Admin: all."""
     role = _norm_user_role(user)
     if role in (UserRole.ADMIN.value, UserRole.APPROVER.value):
@@ -181,12 +145,18 @@ def _user_can_stream_parent_document(user, doc: ParentDocument) -> bool:
     if not doc.is_active:
         return False
     if role == UserRole.PARENT.value:
-        return _parent_documents_visible_queryset(user).filter(pk=doc.pk).exists()
+        from students.portal_views import _parent_focus_student
+
+        profile = resolved_parent_profile_for_user(user)
+        student = _parent_focus_student(request, profile) if request and profile else None
+        return _parent_documents_visible_queryset(user, student=student).filter(pk=doc.pk).exists()
     if role == UserRole.FRANCHISE.value:
         franchise = franchise_profile_for_user(user)
         if franchise is None:
             return False
-        return doc.franchise_id is None or doc.franchise_id == franchise.id
+        from .publish_targeting import document_matches_franchise
+
+        return document_matches_franchise(doc, franchise)
     return False
 
 
@@ -199,7 +169,7 @@ def parent_document_file(request, pk: int):
     on public /media/… on the marketing domain.
     """
     doc = get_object_or_404(ParentDocument, pk=pk)
-    if not _user_can_stream_parent_document(request.user, doc):
+    if not _user_can_stream_parent_document(request.user, doc, request=request):
         raise PermissionDenied("You do not have access to this document.")
     if not doc.file:
         raise Http404("No file on this record.")
@@ -227,7 +197,7 @@ def parent_document_file(request, pk: int):
 def parent_document_audio_file(request, pk: int):
     """Stream newsletter audio upload with JWT auth (header or ?access=)."""
     doc = get_object_or_404(ParentDocument, pk=pk)
-    if not _user_can_stream_parent_document(request.user, doc):
+    if not _user_can_stream_parent_document(request.user, doc, request=request):
         raise PermissionDenied("You do not have access to this document.")
     if not doc.audio_file:
         raise Http404("No audio file on this record.")
@@ -385,46 +355,6 @@ def _filter_holiday_docs_by_track_date(qs, track_date: str):
     return qs.filter(Q(created_at__date=track_date) | Q(updated_at__date=track_date))
 
 
-def _filter_newsletter_by_date(qs, track_date: str, from_date: str, to_date: str):
-    """Filter CLASS_TIMETABLE rows by block date or created/updated date."""
-    if track_date:
-        return qs.filter(
-            Q(
-                period_start__isnull=False,
-                period_end__isnull=False,
-                period_start__lte=track_date,
-                period_end__gte=track_date,
-            )
-            | Q(
-                period_start__isnull=True,
-                period_end__isnull=True,
-                created_at__date=track_date,
-            )
-            | Q(
-                period_start__isnull=True,
-                period_end__isnull=True,
-                updated_at__date=track_date,
-            )
-        )
-    if from_date and to_date:
-        return qs.filter(
-            Q(period_start__isnull=False, period_end__isnull=False, period_start__lte=to_date, period_end__gte=from_date)
-            | Q(
-                period_start__isnull=True,
-                period_end__isnull=True,
-                created_at__date__gte=from_date,
-                created_at__date__lte=to_date,
-            )
-            | Q(
-                period_start__isnull=True,
-                period_end__isnull=True,
-                updated_at__date__gte=from_date,
-                updated_at__date__lte=to_date,
-            )
-        )
-    return qs
-
-
 class FranchiseParentDocumentListCreateView(generics.ListCreateAPIView):
     """Franchise: list parent-app documents; upload Newsletter and centre holiday PDFs."""
 
@@ -441,37 +371,33 @@ class FranchiseParentDocumentListCreateView(generics.ListCreateAPIView):
         franchise_profile = franchise_profile_for_user(self.request.user)
         if not franchise_profile:
             return ParentDocument.objects.none()
+        from .publish_targeting import filter_documents_for_franchise, franchise_documents_base_q
+
         manage = (self.request.query_params.get("manage") or "").strip().lower()
         if manage == "holidays":
             qs = ParentDocument.objects.filter(
                 is_active=True,
                 category=DocumentCategory.HOLIDAY_LISTS,
-            ).filter(Q(franchise__isnull=True) | Q(franchise=franchise_profile))
+            ).filter(franchise_documents_base_q(franchise_profile))
+            qs = filter_documents_for_franchise(qs.select_related("franchise"), franchise_profile)
             state = (self.request.query_params.get("state") or "").strip()
+            if not state:
+                from documents.state_utils import franchise_state_code
+
+                state = franchise_state_code(franchise_profile) or ""
             if state:
                 qs = qs.filter(state=state)
-            return qs.select_related("franchise").order_by("-academic_year", "state", "-created_at")
+            return qs.order_by("-academic_year", "state", "-created_at")
         if manage == "newsletter":
-            from common.cms_targeting import parent_document_visible_to_franchise
-
-            global_candidates = ParentDocument.objects.filter(
-                is_active=True,
-                category=DocumentCategory.CLASS_TIMETABLE,
-                franchise__isnull=True,
-            ).select_related("franchise")
-            visible_global_ids = [
-                doc.id
-                for doc in global_candidates
-                if parent_document_visible_to_franchise(doc, franchise_profile)
-            ]
             qs = ParentDocument.objects.filter(
                 is_active=True,
                 category=DocumentCategory.CLASS_TIMETABLE,
-            ).filter(Q(franchise=franchise_profile) | Q(id__in=visible_global_ids))
+            ).filter(franchise_documents_base_q(franchise_profile))
+            qs = filter_documents_for_franchise(qs.select_related("franchise"), franchise_profile)
             track_date = (self.request.query_params.get("date") or "").strip()[:10]
             from_date = (self.request.query_params.get("from") or "").strip()[:10]
             to_date = (self.request.query_params.get("to") or "").strip()[:10]
-            qs = _filter_newsletter_by_date(qs, track_date, from_date, to_date)
+            qs = filter_newsletters_by_date(qs, track_date=track_date, from_date=from_date, to_date=to_date)
             return qs.select_related("franchise").order_by("-period_start", "-created_at")
         return (
             ParentDocument.objects.filter(is_active=True)
@@ -486,7 +412,11 @@ class FranchiseParentDocumentListCreateView(generics.ListCreateAPIView):
         return ctx
 
     def create(self, request, *args, **kwargs):
-        return super().create(request, *args, **kwargs)
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        doc = serializer.save()
+        out = ParentDocumentSerializer(doc, context=self.get_serializer_context())
+        return Response(out.data, status=status.HTTP_201_CREATED)
 
 
 class FranchiseParentDocumentDetailView(generics.RetrieveUpdateDestroyAPIView):
@@ -514,14 +444,14 @@ class FranchiseParentDocumentDetailView(generics.RetrieveUpdateDestroyAPIView):
         ctx["request"] = self.request
         return ctx
 
-    def update(self, request, *args, **kwargs):
-        return super().update(request, *args, **kwargs)
-
-    def partial_update(self, request, *args, **kwargs):
-        return super().partial_update(request, *args, **kwargs)
-
-    def destroy(self, request, *args, **kwargs):
-        return super().destroy(request, *args, **kwargs)
+    def perform_destroy(self, instance):
+        if instance.file:
+            instance.file.delete(save=False)
+        if instance.audio_file:
+            instance.audio_file.delete(save=False)
+        if instance.thumbnail:
+            instance.thumbnail.delete(save=False)
+        super().perform_destroy(instance)
 
 
 class AdminParentDocumentListCreateView(generics.ListCreateAPIView):
@@ -533,12 +463,10 @@ class AdminParentDocumentListCreateView(generics.ListCreateAPIView):
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get_queryset(self):
+        qs = ParentDocument.objects.all().select_related("franchise")
         manage = (self.request.query_params.get("manage") or "").strip().lower()
         if manage == "holidays":
-            qs = ParentDocument.objects.filter(
-                is_active=True,
-                category=DocumentCategory.HOLIDAY_LISTS,
-            ).select_related("franchise")
+            qs = qs.filter(is_active=True, category=DocumentCategory.HOLIDAY_LISTS)
             state = (self.request.query_params.get("state") or "").strip()
             if state:
                 qs = qs.filter(state=state)
@@ -546,17 +474,13 @@ class AdminParentDocumentListCreateView(generics.ListCreateAPIView):
             qs = _filter_holiday_docs_by_track_date(qs, track_date)
             return qs.order_by("-academic_year", "state", "-updated_at")
         if manage == "newsletter":
-            qs = ParentDocument.objects.filter(
-                is_active=True,
-                category=DocumentCategory.CLASS_TIMETABLE,
-            ).select_related("franchise")
+            qs = qs.filter(is_active=True, category=DocumentCategory.CLASS_TIMETABLE)
             track_date = (self.request.query_params.get("date") or "").strip()[:10]
             from_date = (self.request.query_params.get("from") or "").strip()[:10]
             to_date = (self.request.query_params.get("to") or "").strip()[:10]
-            qs = _filter_newsletter_by_date(qs, track_date, from_date, to_date)
-            return qs.order_by("-period_start", "-updated_at")
-
-        qs = ParentDocument.objects.all().select_related("franchise").order_by("category", "order", "-created_at")
+            qs = filter_newsletters_by_date(qs, track_date=track_date, from_date=from_date, to_date=to_date)
+            return qs.order_by("-period_start", "-created_at")
+        return qs.order_by("category", "order", "-created_at")
         cat = (self.request.query_params.get("category") or "").strip()
         if cat:
             valid = [c[0] for c in DocumentCategory.choices]

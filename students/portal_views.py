@@ -1,15 +1,16 @@
 from accounts.permissions import IsDriverUser
 from accounts.profile_access import driver_profile_for_user
-from franchises.models import DriverProfile, Franchise
+from franchises.models import DriverProfile
 from franchises.serializers import DriverProfileSerializer, DriverCreateSerializer
 """Parent portal: homework, announcements, attendance, fees, transport, support tickets."""
 
 import re
 import threading
 import json
-from datetime import timedelta
+from datetime import date, timedelta
 
 from django.db import transaction
+from django.shortcuts import get_object_or_404
 from django.db.utils import OperationalError, ProgrammingError
 from django.db.models import Q
 from django.utils import timezone
@@ -29,6 +30,7 @@ from accounts.profile_access import (
     franchise_profile_for_user,
     parents_at_franchise,
     resolved_parent_profile_for_user,
+    students_at_franchise,
     user_owns_legacy_student,
 )
 from events.calendar_filters import exclude_showcase_placeholder_events
@@ -39,25 +41,23 @@ from events.visibility import parent_events_queryset
 
 from .models import (
     Announcement,
+    AnnouncementCampaign,
     AttendanceRecord,
     FeeRecord,
+    FranchiseNotificationRead,
     Grade,
     HomeworkAssignment,
     ParentFeePayment,
     ParentNotificationRead,
-    FranchiseNotification,
-    ParentPushDevice,
     StudentAchievement,
     StudentProfile,
     StudentTransportAssignment,
     StudentTripStatus,
     SupportTicket,
-    SupportTicketStatusEvent,
     TransportRoute,
     TransportTrip,
     TransportTripLocation,
 )
-from .support_ticket_notify import ticket_status_label
 from .portal_schedule import (
     announcement_on_schedule_date_q,
     parent_visible_announcement_q,
@@ -66,17 +66,16 @@ from .portal_schedule import (
     published_at_from_schedule_date,
 )
 from .serializers import (
-    AdminAnnouncementSerializer,
-    AdminSupportTicketSerializer,
+    AdminAnnouncementCampaignSerializer,
     AnnouncementSerializer,
     AttendanceRecordSerializer,
-    FranchiseNotificationSerializer,
     FranchiseAttendanceBulkSerializer,
     FranchiseAttendanceUpsertSerializer,
     FeeRecordSerializer,
     GradeSerializer,
     HomeworkAssignmentSerializer,
     ParentStudentAchievementSerializer,
+    SupportTicketAdminSerializer,
     SupportTicketFranchiseSerializer,
     SupportTicketParentSerializer,
     StudentTransportAssignmentSerializer,
@@ -255,32 +254,15 @@ def _class_label_matches(student_class: str, target_class: str) -> bool:
     tc = (target_class or "").strip()
     if not sc or not tc:
         return False
-    if sc == tc:
-        return True
 
-    sc_canon = _canonical_class_label(sc)
-    tc_canon = _canonical_class_label(tc)
-    if sc_canon and tc_canon:
-        return sc_canon == tc_canon
-    if sc_canon and sc_canon == tc:
+    sc_canon = _canonical_class_label(sc) or sc
+    tc_canon = _canonical_class_label(tc) or tc
+    if sc_canon == tc_canon:
         return True
-    if tc_canon and tc_canon == sc:
+    if sc_canon == tc or tc_canon == sc:
         return True
-
-    sc_lower = sc.lower()
-    tc_lower = tc.lower()
-    if sc_lower == tc_lower or sc_lower in tc_lower or tc_lower in sc_lower:
+    if sc.lower() == tc.lower():
         return True
-    for label in HOMEWORK_CLASS_LABELS:
-        label_lower = label.lower()
-        sc_match = label_lower in sc_lower or sc_lower in label_lower
-        tc_match = label_lower in tc_lower or tc_lower in label_lower
-        if sc_match and tc_match:
-            return True
-        if sc_match and label == tc:
-            return True
-        if tc_match and label == sc:
-            return True
     return False
 
 
@@ -296,7 +278,6 @@ def _parent_centre(parent_profile):
 def parent_profiles_for_announcement(announcement):
     """Parents who should receive an announcement (in-app and email)."""
     from franchises.models import ParentProfile
-    from common.cms_targeting import franchises_matching_announcement
 
     if announcement.student_id:
         try:
@@ -308,72 +289,379 @@ def parent_profiles_for_announcement(announcement):
             return ParentProfile.objects.none()
         return ParentProfile.objects.filter(pk=parent_id).select_related("user", "franchise")
 
-    franchises = franchises_matching_announcement(
-        announcement,
-        admin_user=getattr(announcement, "ho_admin", None),
-    )
-    if not franchises:
-        return ParentProfile.objects.none()
-
+    base = parents_at_franchise(announcement.franchise)
     target_class = normalize_portal_class_name(announcement.class_name or "")
-    parent_ids: set[int] = set()
-    for franchise in franchises:
-        base = parents_at_franchise(franchise)
-        if target_class:
-            base_parent_ids = list(base.values_list("pk", flat=True))
-            for student in StudentProfile.objects.filter(
-                is_active=True,
-                parent_id__in=base_parent_ids,
-            ).only("parent_id", "class_name"):
-                if _class_label_matches(student.class_name, target_class):
-                    parent_ids.add(student.parent_id)
-        else:
-            parent_ids.update(base.values_list("pk", flat=True))
-
-    if not parent_ids:
-        return ParentProfile.objects.none()
-    return ParentProfile.objects.filter(pk__in=parent_ids).select_related("user", "franchise")
+    if target_class:
+        parent_ids: set[int] = set()
+        base_parent_ids = list(base.values_list("pk", flat=True))
+        for student in StudentProfile.objects.filter(
+            is_active=True,
+            parent_id__in=base_parent_ids,
+        ).only("parent_id", "class_name"):
+            if _class_label_matches(student.class_name, target_class):
+                parent_ids.add(student.parent_id)
+        return base.filter(pk__in=parent_ids)
+    return base
 
 
-def _announcement_ids_visible_at_franchise(franchise, *, parents_visible=True):
-    """Announcement primary keys visible at a centre (legacy per-centre + global HO rows)."""
-    from common.cms_targeting import announcement_visible_to_franchise
+def _parent_student_from_request(request, parent_profile):
+    """Optional ?student= or ?student_id= — one linked child for multi-child filtering."""
+    if not parent_profile or request is None:
+        return None
+    params = getattr(request, "query_params", None) or getattr(request, "GET", None)
+    if params is None:
+        return None
+    raw = (params.get("student") or params.get("student_id") or "").strip()
+    if not raw:
+        return None
+    try:
+        sid = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return StudentProfile.objects.filter(parent=parent_profile, is_active=True, pk=sid).first()
 
-    ids = set(
-        Announcement.objects.filter(franchise=franchise, is_active=True).values_list("pk", flat=True)
+
+def _parent_focus_student(request, parent_profile):
+    """
+    One child for scoped parent APIs (attendance, fees on mobile).
+    Uses explicit ?student= when sent; otherwise primary / only active child so
+    native apps do not merge every sibling's records when the param is omitted.
+    """
+    explicit = _parent_student_from_request(request, parent_profile)
+    if explicit is not None:
+        return explicit
+    if not parent_profile:
+        return None
+    user = getattr(request, "user", None) if request else None
+    if user:
+        from accounts.profile_access import primary_student_for_parent_user
+
+        student, pp = primary_student_for_parent_user(user)
+        if student and student.is_active and student.parent_id == parent_profile.pk:
+            return student
+    return (
+        StudentProfile.objects.filter(parent=parent_profile, is_active=True)
+        .order_by("first_name", "last_name", "id")
+        .first()
     )
-    global_filter = {"is_active": True, "franchise__isnull": True}
-    if parents_visible:
-        global_filter["visible_to_parents"] = True
-    for announcement in Announcement.objects.filter(**global_filter).only(
-        "id",
-        "franchise_id",
-        "publish_scope",
-        "target_states",
-        "target_cities",
-        "target_franchise_ids",
-        "is_active",
-        "visible_to_parents",
-    ):
-        if announcement_visible_to_franchise(announcement, franchise):
-            ids.add(announcement.id)
-    return ids
 
 
-def _announcements_at_franchise_queryset(franchise, parent_profile=None, user=None):
-    """Active announcements for a centre, optionally narrowed for a parent audience."""
-    ids = _announcement_ids_visible_at_franchise(franchise, parents_visible=True)
-    if not ids:
-        return Announcement.objects.none()
-    qs = (
-        Announcement.objects.filter(pk__in=ids, is_active=True)
+def _parent_attendance_api_payload(request, rows: list, focus: StudentProfile | None) -> dict | list:
+    """Mobile envelope; ``?wrap=list`` keeps bare array for legacy/web."""
+    params = getattr(request, "query_params", None) or getattr(request, "GET", None)
+    wrap = ((params.get("wrap") if params else None) or "").strip().lower()
+    if wrap in ("list", "array"):
+        return rows
+    payload = {
+        "attendance": rows,
+        "count": len(rows),
+        "student_id": focus.pk if focus else None,
+        "student_name": focus.full_name if focus else "",
+        "class_name": ((focus.class_name or "").strip() if focus else ""),
+    }
+    if focus is None and params is not None:
+        payload["requires_student"] = True
+    return payload
+
+
+def _homework_row_visible_for_student(row, student) -> bool:
+    if row.student_id:
+        return row.student_id == student.pk
+    target_class = (row.class_name or "").strip()
+    if target_class:
+        return _class_label_matches(student.class_name, target_class)
+    return True
+
+
+def _filter_homework_queryset_for_student(queryset, student):
+    if student is None:
+        return queryset
+    ids = [row.pk for row in queryset if _homework_row_visible_for_student(row, student)]
+    return queryset.filter(pk__in=ids)
+
+
+def _announcement_row_visible_for_student(row, student) -> bool:
+    if getattr(row, "student_id", None):
+        return row.student_id == student.pk
+    target_class = (row.class_name or "").strip()
+    if target_class:
+        return _class_label_matches(student.class_name, target_class)
+    return True
+
+
+def _filter_announcements_for_student(queryset, student):
+    if student is None:
+        return queryset
+    ids = [row.pk for row in queryset if _announcement_row_visible_for_student(row, student)]
+    return queryset.filter(pk__in=ids)
+
+
+def _calendar_item_row(
+    *,
+    item_type: str,
+    item_id: int,
+    title: str,
+    date_str: str,
+    detail: str = "",
+    end_date: str | None = None,
+) -> dict:
+    """Unified calendar row — same shape the parent web calendar uses per day."""
+    row = {
+        "id": f"{item_type}-{item_id}",
+        "type": item_type,
+        "title": (title or "").strip() or item_type.replace("_", " ").title(),
+        "date": date_str,
+        "detail": (detail or "").strip(),
+        "source_id": item_id,
+    }
+    end = (end_date or date_str or "")[:10]
+    if end and end != date_str:
+        row["end_date"] = end
+    return row
+
+
+def _homework_calendar_detail(row: dict) -> str:
+    cls = (row.get("class_name") or "").strip()
+    if cls and cls.lower() not in ("all classes", "all"):
+        return cls
+    name = (row.get("student_name") or "").strip()
+    if name and not name.lower().startswith("all students"):
+        return name
+    return cls or "All classes"
+
+
+def _build_parent_calendar_items(
+    events_data: list,
+    homework_data: list,
+    announcement_data: list,
+) -> list[dict]:
+    items: list[dict] = []
+    for ev in events_data:
+        start = str(ev.get("start_date") or ev.get("date") or "")[:10]
+        if not start:
+            continue
+        end = str(ev.get("end_date") or start)[:10]
+        detail = (
+            (ev.get("audience_label") or "").strip()
+            or (ev.get("class_name") or "").strip()
+            or (ev.get("location") or "").strip()
+        )
+        items.append(
+            _calendar_item_row(
+                item_type="event",
+                item_id=int(ev["id"]),
+                title=str(ev.get("title") or "Event"),
+                date_str=start,
+                detail=detail,
+                end_date=end,
+            )
+        )
+    for hw in homework_data:
+        date_str = str(hw.get("assigned_date") or "")[:10]
+        if not date_str:
+            continue
+        items.append(
+            _calendar_item_row(
+                item_type="homework",
+                item_id=int(hw["id"]),
+                title=str(hw.get("title") or "Homework"),
+                date_str=date_str,
+                detail=_homework_calendar_detail(hw),
+            )
+        )
+    for ann in announcement_data:
+        date_str = str(ann.get("published_at") or "")[:10]
+        if not date_str:
+            continue
+        detail = (
+            (ann.get("audience_label") or "").strip()
+            or (ann.get("class_name") or "").strip()
+            or (ann.get("body") or "").strip()[:120]
+        )
+        items.append(
+            _calendar_item_row(
+                item_type="announcement",
+                item_id=int(ann["id"]),
+                title=str(ann.get("title") or "Announcement"),
+                date_str=date_str,
+                detail=detail,
+            )
+        )
+    items.sort(key=lambda row: (row["date"], row["type"], row["title"].lower()))
+    return items
+
+
+def _parent_newsletter_calendar_items(request, focus) -> list[dict]:
+    """Newsletter rows for parent calendar (block date and upload date when they differ)."""
+    from documents.models import DocumentCategory
+    from documents.serializers import ParentDocumentSerializer
+    from documents.views import _parent_document_category_filter, _parent_documents_visible_queryset
+
+    qs = _parent_documents_visible_queryset(request.user, student=focus).filter(
+        category__in=_parent_document_category_filter(DocumentCategory.CLASS_TIMETABLE)
+    )
+    rows = ParentDocumentSerializer(
+        qs.order_by("-period_start", "-created_at"),
+        many=True,
+        context={"request": request, "merge_holiday_for_parent": True},
+    ).data
+
+    items: list[dict] = []
+    for row in rows:
+        pk = int(row["id"])
+        block = str(row.get("period_start") or "")[:10]
+        uploaded = str(row.get("created_at") or "")[:10]
+        title = str(row.get("display_title") or row.get("title") or "Newsletter")
+        detail = (row.get("source_label") or "").strip()
+        dates: list[str] = []
+        if block:
+            dates.append(block)
+        if uploaded and uploaded not in dates:
+            dates.append(uploaded)
+        if not dates:
+            continue
+        for day in dates:
+            items.append(
+                _calendar_item_row(
+                    item_type="newsletter",
+                    item_id=pk,
+                    title=title,
+                    date_str=day,
+                    detail=detail,
+                )
+            )
+    return items
+
+
+def _calendar_item_on_date(item: dict, day: str) -> bool:
+    """True when ``day`` (YYYY-MM-DD) falls within the item's date range."""
+    d = (day or "")[:10]
+    if not d:
+        return False
+    start = str(item.get("date") or "")[:10]
+    end = str(item.get("end_date") or start)[:10]
+    if not start:
+        return False
+    return start <= d <= end
+
+
+def _event_on_date(ev: dict, day: str) -> bool:
+    d = (day or "")[:10]
+    start = str(ev.get("start_date") or ev.get("date") or "")[:10]
+    end = str(ev.get("end_date") or start)[:10]
+    if not start or not d:
+        return False
+    return start <= d <= end
+
+
+def _row_on_date(row: dict, day: str, *, date_field: str = "date") -> bool:
+    return str(row.get(date_field) or "")[:10] == (day or "")[:10]
+
+
+def _selected_date_from_request(request) -> date | None:
+    params = getattr(request, "query_params", None) or getattr(request, "GET", None)
+    if params is None:
+        return None
+    raw = (params.get("date") or params.get("selected_date") or "").strip()
+    if not raw:
+        return None
+    return parse_date(raw)
+
+
+def _parent_calendar_attendance_payload(
+    request,
+    pp,
+    centre,
+    *,
+    focus: StudentProfile | None,
+    selected_date: date | None = None,
+) -> dict:
+    """Calendar + attendance for one focused child (matches parent web calendar rules)."""
+    events_qs = exclude_showcase_placeholder_events(parent_events_queryset(pp, centre=centre, student=focus))
+    event_ctx = {"request": request, "omit_video_links": True}
+    events_data = EventSerializer(events_qs, many=True, context=event_ctx).data
+
+    homework_qs = HomeworkAssignment.objects.none()
+    announcements_qs = Announcement.objects.none()
+    if centre:
+        homework_qs = (
+            HomeworkAssignment.objects.filter(franchise=centre)
+            .filter(_homework_visible_q(pp, user=request.user))
+            .filter(parent_visible_homework_q())
+            .select_related("student")
+            .distinct()
+            .order_by("-assigned_date", "-created_at")
+        )
+        announcements_qs = (
+            Announcement.objects.filter(franchise=centre, is_active=True, visible_to_parents=True)
+            .filter(_announcement_visible_q(pp, user=request.user))
+            .filter(parent_visible_announcement_q())
+            .select_related("student")
+            .distinct()
+            .order_by("-published_at")
+        )
+    if focus is not None:
+        homework_qs = _filter_homework_queryset_for_student(homework_qs, focus)
+        announcements_qs = _filter_announcements_for_student(announcements_qs, focus)
+
+    hw_ctx = {"request": request}
+    homework_data = HomeworkAssignmentSerializer(homework_qs, many=True, context=hw_ctx).data
+    announcement_data = AnnouncementSerializer(announcements_qs, many=True, context=hw_ctx).data
+
+    attendance_qs = (
+        AttendanceRecord.objects.filter(student__parent=pp, student__is_active=True)
         .select_related("student")
-        .distinct()
-        .order_by("-published_at", "-created_at")
+        .order_by("-date", "student_id")
     )
-    if parent_profile is not None:
-        qs = qs.filter(_announcement_visible_q(parent_profile, user=user))
-    return qs
+    if focus is not None:
+        attendance_qs = attendance_qs.filter(student_id=focus.pk)
+    attendance_rows = AttendanceRecordSerializer(attendance_qs, many=True).data
+
+    calendar_items = _build_parent_calendar_items(events_data, homework_data, announcement_data)
+    calendar_items.extend(_parent_newsletter_calendar_items(request, focus))
+    calendar_items.sort(key=lambda row: (row["date"], row["type"], row["title"].lower()))
+
+    selected_day = selected_date.isoformat() if selected_date else None
+    if selected_day:
+        calendar_items = [row for row in calendar_items if _calendar_item_on_date(row, selected_day)]
+        attendance_rows = [row for row in attendance_rows if _row_on_date(row, selected_day)]
+
+    # calendar_items is the canonical list for calendar UI. Omit parallel detail arrays
+    # so mobile apps that merge calendar_items + calendar_events/homework/announcements
+    # do not render the same row twice (e.g. "holi" shown as two cards). Use source_id
+    # with GET /events/parent/, /students/parent/homework/, etc. for attachments/media.
+    events_data = []
+    homework_data = []
+    announcement_data = []
+
+    student_block = None
+    if focus is not None:
+        student_block = {
+            "id": focus.pk,
+            "name": focus.full_name,
+            "class_name": (focus.class_name or "").strip(),
+        }
+
+    payload = {
+        "student": student_block,
+        "selected_date": selected_day,
+        "response_mode": "day" if selected_day else "full",
+        "calendar_items": calendar_items,
+        "calendar_events": events_data,
+        "homework": homework_data,
+        "announcements": announcement_data,
+        "attendance": attendance_rows,
+        "attendance_count": len(attendance_rows),
+        "attendance_for_date": None,
+        "student_id": focus.pk if focus else None,
+        "student_name": focus.full_name if focus else "",
+        "class_name": ((focus.class_name or "").strip() if focus else ""),
+    }
+    if focus is None:
+        multi = StudentProfile.objects.filter(parent=pp, is_active=True).count() > 1
+        if multi:
+            payload["requires_student"] = True
+    return payload
 
 
 # ----- Parent (read-only / limited write) -----
@@ -389,7 +677,7 @@ class ParentHomeworkListView(generics.ListAPIView):
         centre = _parent_centre(pp)
         if not pp or not centre:
             return HomeworkAssignment.objects.none()
-        return (
+        qs = (
             HomeworkAssignment.objects.filter(franchise=centre)
             .filter(_homework_visible_q(pp, user=self.request.user))
             .filter(parent_visible_homework_q())
@@ -397,6 +685,8 @@ class ParentHomeworkListView(generics.ListAPIView):
             .distinct()
             .order_by("-assigned_date", "-created_at")
         )
+        focus = _parent_focus_student(self.request, pp)
+        return _filter_homework_queryset_for_student(qs, focus)
 
 
 def _announcement_notification_rows(rows, read_map=None):
@@ -408,6 +698,7 @@ def _announcement_notification_rows(rows, read_map=None):
         key = f"announcement-{ann_id}"
         read_at = read_map.get(key)
         body = row.get("body") or ""
+        class_name = (row.get("class_name") or "").strip()
         notifications.append(
             {
                 "id": key,
@@ -417,6 +708,7 @@ def _announcement_notification_rows(rows, read_map=None):
                 "body": body,
                 "message": body,
                 "description": body,
+                "class_name": class_name,
                 "published_at": row.get("published_at"),
                 "audience_label": row.get("audience_label") or "",
                 "student_name": row.get("student_name") or "",
@@ -425,6 +717,18 @@ def _announcement_notification_rows(rows, read_map=None):
             }
         )
     return notifications
+
+
+def _notification_class_label(*, class_name="", student=None) -> str:
+    label = (class_name or "").strip()
+    if label:
+        return label
+    if student is not None:
+        try:
+            return (student.class_name or "").strip()
+        except Exception:
+            return ""
+    return ""
 
 
 class ParentAnnouncementListView(generics.ListAPIView):
@@ -437,10 +741,16 @@ class ParentAnnouncementListView(generics.ListAPIView):
         centre = _parent_centre(pp)
         if not pp or not centre:
             return Announcement.objects.none()
-        return (
-            _announcements_at_franchise_queryset(centre, parent_profile=pp, user=self.request.user)
+        qs = (
+            Announcement.objects.filter(franchise=centre, is_active=True, visible_to_parents=True)
+            .filter(_announcement_visible_q(pp, user=self.request.user))
             .filter(parent_visible_announcement_q())
+            .select_related("student")
+            .distinct()
+            .order_by("-published_at")
         )
+        focus = _parent_student_from_request(self.request, pp)
+        return _filter_announcements_for_student(qs, focus)
 
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
@@ -482,15 +792,41 @@ class ParentAttendanceListView(generics.ListAPIView):
         pp = resolved_parent_profile_for_user(self.request.user)
         if not pp:
             return AttendanceRecord.objects.none()
-        return (
+        qs = (
             AttendanceRecord.objects.filter(student__parent=pp, student__is_active=True)
             .select_related("student")
             .order_by("-date", "student_id")
         )
+        focus = _parent_focus_student(self.request, pp)
+        if focus is not None:
+            qs = qs.filter(student_id=focus.pk)
+        return qs
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        serializer = self.get_serializer(queryset, many=True)
+        pp = resolved_parent_profile_for_user(request.user)
+        focus = _parent_focus_student(request, pp)
+        payload = _parent_attendance_api_payload(request, serializer.data, focus)
+        if isinstance(payload, list):
+            return Response(payload)
+        return Response(payload)
 
 
 class ParentCalendarAttendanceView(APIView):
-    """Combined parent payload for calendar events + attendance."""
+    """
+    Combined parent payload for calendar + attendance for **one focused child**.
+
+    Pass ``?student=`` or ``?student_id=`` (id from ``/students/parent/students/``).
+    Pass ``?date=YYYY-MM-DD`` (or ``?selected_date=``) to scope the response to one day —
+    ``calendar_items``, ``attendance``, etc. then contain only that date (for date tap / mobile).
+
+    Events, homework, and announcements are class-filtered like the parent web calendar —
+    not every sibling's rows mixed together.
+
+    Prefer ``calendar_items[]`` for the day/month UI; use ``calendar_events`` / ``homework``
+    when you need full event media or homework attachments.
+    """
 
     permission_classes = [IsParentUser]
 
@@ -498,19 +834,29 @@ class ParentCalendarAttendanceView(APIView):
         pp = resolved_parent_profile_for_user(request.user)
         centre = _parent_centre(pp)
         if not pp or not centre:
-            return Response({"calendar_events": [], "attendance": []})
+            return Response(
+                {
+                    "student": None,
+                    "selected_date": None,
+                    "calendar_items": [],
+                    "calendar_events": [],
+                    "homework": [],
+                    "announcements": [],
+                    "attendance": [],
+                    "attendance_count": 0,
+                    "attendance_for_date": None,
+                    "student_id": None,
+                    "student_name": "",
+                    "class_name": "",
+                }
+            )
 
-        events_qs = exclude_showcase_placeholder_events(parent_events_queryset(pp, centre=centre))
-        attendance_qs = (
-            AttendanceRecord.objects.filter(student__parent=pp, student__is_active=True)
-            .select_related("student")
-            .order_by("-date", "student_id")
-        )
+        focus = _parent_focus_student(request, pp)
+        selected_date = _selected_date_from_request(request)
         return Response(
-            {
-                "calendar_events": EventSerializer(events_qs, many=True).data,
-                "attendance": AttendanceRecordSerializer(attendance_qs, many=True).data,
-            }
+            _parent_calendar_attendance_payload(
+                request, pp, centre, focus=focus, selected_date=selected_date
+            )
         )
 
 
@@ -563,7 +909,7 @@ class ParentFeeSummaryView(APIView):
             return Response(payload)
 
         pp = resolved_parent_profile_for_user(request.user)
-        student_id = (request.query_params.get("student") or "").strip()
+        student_id = (request.query_params.get("student") or request.query_params.get("student_id") or "").strip()
         student = None
 
         if pp:
@@ -571,9 +917,15 @@ class ParentFeeSummaryView(APIView):
                 "parent", "parent__franchise"
             )
             if student_id:
-                student = students_qs.filter(pk=student_id).first()
+                try:
+                    sid = int(student_id)
+                except (TypeError, ValueError):
+                    return empty_summary(lookup_message="Invalid student id.")
+                student = students_qs.filter(pk=sid).first()
+                if not student:
+                    return empty_summary(lookup_message="Student not found for this parent account.")
 
-        if not student:
+        if not student and not student_id:
             student, pp_from_primary = primary_student_for_parent_user(request.user)
             if not pp:
                 pp = pp_from_primary
@@ -638,6 +990,9 @@ class ParentFeeSummaryView(APIView):
             summary["lookup_message"] = (
                 f"TiKES is connected but fee_payment has no active records for ID card {id_card_no}."
             )
+        from students.fee_summary import merge_centre_status_overrides
+
+        summary = merge_centre_status_overrides(student, summary)
         return Response(summary)
 
 
@@ -867,11 +1222,15 @@ class ParentGradeListView(generics.ListAPIView):
         pp = resolved_parent_profile_for_user(self.request.user)
         if not pp:
             return Grade.objects.none()
-        return (
+        qs = (
             Grade.objects.filter(student__parent=pp, student__is_active=True)
             .select_related("student")
             .order_by("-exam_date", "subject")
         )
+        focus = _parent_student_from_request(self.request, pp)
+        if focus is not None:
+            qs = qs.filter(student_id=focus.pk)
+        return qs
 
 def _parent_transport_routes_queryset(pp):
     """All transport routes published at the parent's centre (not only assigned routes)."""
@@ -977,7 +1336,21 @@ class ParentSupportTicketListCreateView(generics.ListCreateAPIView):
         pp = resolved_parent_profile_for_user(self.request.user)
         if not pp:
             return SupportTicket.objects.none()
-        return SupportTicket.objects.filter(parent=pp).order_by("-created_at")
+        qs = (
+            SupportTicket.objects.filter(parent=pp)
+            .select_related("student")
+            .order_by("-created_at")
+        )
+        focus = _parent_student_from_request(self.request, pp)
+        if focus is None:
+            active_kids = StudentProfile.objects.filter(parent=pp, is_active=True)
+            if active_kids.count() == 1:
+                focus = active_kids.first()
+            elif active_kids.count() > 1:
+                return SupportTicket.objects.none()
+        if focus is not None:
+            qs = qs.filter(student_id=focus.pk)
+        return qs
 
     def perform_create(self, serializer):
         pp = resolved_parent_profile_for_user(self.request.user)
@@ -985,7 +1358,26 @@ class ParentSupportTicketListCreateView(generics.ListCreateAPIView):
             raise PermissionDenied(
                 "Parent profile not found. Your account is not linked to a centre yet — contact your preschool."
             )
-        serializer.save(parent=pp)
+        active_kids = StudentProfile.objects.filter(parent=pp, is_active=True)
+        student = None
+        raw_student = self.request.data.get("student")
+        if raw_student not in (None, ""):
+            try:
+                sid = int(raw_student)
+            except (TypeError, ValueError):
+                raise PermissionDenied("Invalid student id.")
+            student = active_kids.filter(pk=sid).first()
+            if not student:
+                raise PermissionDenied("Student not found for this parent account.")
+        else:
+            focus = _parent_student_from_request(self.request, pp) or _parent_focus_student(self.request, pp)
+            if focus is not None:
+                student = focus
+        if active_kids.count() > 1 and student is None:
+            raise PermissionDenied("Select which child this ticket is about (pass student id).")
+        if active_kids.count() == 1 and student is None:
+            student = active_kids.first()
+        serializer.save(parent=pp, student=student)
 
 
 class ParentNotificationsView(APIView):
@@ -1010,15 +1402,18 @@ class ParentNotificationsView(APIView):
                     "events": [],
                     "achievements": [],
                     "attendance": [],
-                    "tickets": [],
                     "notifications": [],
                     "unread_count": 0,
                 }
             )
 
         announcements_qs = (
-            _announcements_at_franchise_queryset(centre, parent_profile=pp, user=request.user)
+            Announcement.objects.filter(franchise=centre, is_active=True, visible_to_parents=True)
+            .filter(_announcement_visible_q(pp, user=request.user))
             .filter(parent_visible_announcement_q())
+            .select_related("student")
+            .distinct()
+            .order_by("-published_at")
         ) if centre else Announcement.objects.none()
         homework_qs = (
             HomeworkAssignment.objects.filter(franchise=centre)
@@ -1038,8 +1433,11 @@ class ParentNotificationsView(APIView):
             if centre
             else TransportRoute.objects.none()
         )
+        event_focus = _parent_focus_student(request, pp)
         events_qs = (
-            exclude_showcase_placeholder_events(parent_events_queryset(pp, centre=centre))
+            exclude_showcase_placeholder_events(
+                parent_events_queryset(pp, centre=centre, student=event_focus)
+            )
             if centre
             else Event.objects.none()
         )
@@ -1060,12 +1458,18 @@ class ParentNotificationsView(APIView):
             .select_related("student")
             .order_by("-date", "student_id")
         )
-        tickets_qs = SupportTicket.objects.filter(parent=pp).order_by("-updated_at", "-created_at")
-        ticket_events_qs = (
-            SupportTicketStatusEvent.objects.filter(ticket__parent=pp)
-            .select_related("ticket")
-            .order_by("-created_at")
-        )
+
+        focus = _parent_student_from_request(request, pp)
+        attendance_focus = _parent_focus_student(request, pp)
+        homework_focus = _parent_focus_student(request, pp)
+        if focus is not None:
+            announcements_qs = _filter_announcements_for_student(announcements_qs, focus)
+            fees_qs = fees_qs.filter(student_id=focus.pk)
+            achievements_qs = achievements_qs.filter(Q(student__isnull=True) | Q(student_id=focus.pk))
+        if homework_focus is not None:
+            homework_qs = _filter_homework_queryset_for_student(homework_qs, homework_focus)
+        if attendance_focus is not None:
+            attendance_qs = attendance_qs.filter(student_id=attendance_focus.pk)
 
         try:
             read_map = {
@@ -1089,6 +1493,7 @@ class ParentNotificationsView(APIView):
                     "source_id": item.id,
                     "title": item.title or "Announcement",
                     "body": item.body or "",
+                    "class_name": _notification_class_label(class_name=item.class_name, student=item.student),
                     "published_at": item.published_at,
                     "read": read_at is not None,
                     "read_at": read_at,
@@ -1105,6 +1510,7 @@ class ParentNotificationsView(APIView):
                     "source_id": item.id,
                     "title": item.title or "Homework posted",
                     "body": item.description or "",
+                    "class_name": _notification_class_label(class_name=item.class_name, student=item.student),
                     "published_at": item.assigned_date,
                     "read": read_at is not None,
                     "read_at": read_at,
@@ -1191,29 +1597,6 @@ class ParentNotificationsView(APIView):
                 }
             )
 
-        try:
-            for event in ticket_events_qs:
-                key = f"ticket-event-{event.id}"
-                read_at = read_map.get(key)
-                if event.event_type == SupportTicketStatusEvent.EventType.STATUS_CHANGE:
-                    title = f"Support ticket: {ticket_status_label(event.new_status or event.ticket.status)}"
-                else:
-                    title = f"Support ticket reply: {event.ticket.subject}"
-                notifications.append(
-                    {
-                        "id": key,
-                        "source": "support_ticket",
-                        "source_id": event.ticket_id,
-                        "title": title,
-                        "body": event.message or event.ticket.subject,
-                        "published_at": event.created_at,
-                        "read": read_at is not None,
-                        "read_at": read_at,
-                    }
-                )
-        except (ProgrammingError, OperationalError):
-            pass
-
         notifications = [
             n for n in notifications if (not n["read"]) or (n.get("read_at") and n["read_at"] >= hide_read_before)
         ]
@@ -1232,86 +1615,10 @@ class ParentNotificationsView(APIView):
                 "events": EventSerializer(events_qs, many=True).data,
                 "achievements": ParentStudentAchievementSerializer(achievements_qs, many=True).data,
                 "attendance": AttendanceRecordSerializer(attendance_qs, many=True).data,
-                "tickets": SupportTicketParentSerializer(tickets_qs, many=True).data,
                 "notifications": notifications,
                 "unread_count": unread_count,
             }
         )
-
-
-class ParentPushDeviceRegisterView(APIView):
-    """Register or remove an FCM device token for parent push notifications."""
-
-    permission_classes = [IsParentUser]
-
-    def post(self, request):
-        pp = resolved_parent_profile_for_user(request.user)
-        if not pp:
-            return Response({"detail": "Parent profile not found"}, status=404)
-
-        token = ""
-        platform = ""
-        try:
-            if hasattr(request, "data") and isinstance(request.data, dict):
-                token = str(request.data.get("token") or "").strip()
-                platform = str(request.data.get("platform") or "").strip()[:20]
-        except Exception:
-            pass
-        if not token:
-            try:
-                raw = (request.body or b"").decode("utf-8").strip()
-                if raw:
-                    payload = json.loads(raw)
-                    if isinstance(payload, dict):
-                        token = str(payload.get("token") or "").strip()
-                        platform = str(payload.get("platform") or "").strip()[:20]
-            except Exception:
-                pass
-
-        if not token:
-            return Response({"detail": "token is required"}, status=400)
-
-        try:
-            ParentPushDevice.objects.update_or_create(
-                parent=pp,
-                token=token,
-                defaults={"platform": platform},
-            )
-        except (ProgrammingError, OperationalError):
-            return Response({"detail": "Push device table not ready"}, status=503)
-
-        return Response({"ok": True})
-
-    def delete(self, request):
-        pp = resolved_parent_profile_for_user(request.user)
-        if not pp:
-            return Response({"detail": "Parent profile not found"}, status=404)
-
-        token = ""
-        try:
-            if hasattr(request, "data") and isinstance(request.data, dict):
-                token = str(request.data.get("token") or "").strip()
-        except Exception:
-            pass
-        if not token:
-            try:
-                raw = (request.body or b"").decode("utf-8").strip()
-                if raw:
-                    payload = json.loads(raw)
-                    if isinstance(payload, dict):
-                        token = str(payload.get("token") or "").strip()
-            except Exception:
-                pass
-
-        if not token:
-            return Response({"detail": "token is required"}, status=400)
-
-        try:
-            ParentPushDevice.objects.filter(parent=pp, token=token).delete()
-        except (ProgrammingError, OperationalError):
-            return Response({"detail": "Push device table not ready"}, status=503)
-
-        return Response({"ok": True})
 
 
 class ParentNotificationReadView(APIView):
@@ -1419,8 +1726,6 @@ class FranchiseHomeworkDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 def _after_announcement_saved(announcement: Announcement) -> None:
     """Reset or dispatch parent emails after create/update."""
-    if not getattr(announcement, "visible_to_parents", True):
-        return
     if announcement.published_at > timezone.now():
         Announcement.objects.filter(pk=announcement.pk).update(email_dispatched_at=None)
         return
@@ -1437,137 +1742,6 @@ def _after_announcement_saved(announcement: Announcement) -> None:
     transaction.on_commit(lambda: threading.Thread(target=_email_parents, daemon=True).start())
 
 
-class AdminAnnouncementListCreateView(generics.ListCreateAPIView):
-    """Head office: publish global notifications to centres and parents."""
-
-    permission_classes = [IsAdminUser]
-    serializer_class = AdminAnnouncementSerializer
-    pagination_class = None
-
-    def get_queryset(self):
-        from django.db.models import Q
-
-        qs = (
-            Announcement.objects.filter(
-                Q(ho_admin=self.request.user) | Q(franchise__admin=self.request.user)
-            )
-            .select_related("franchise", "student")
-            .order_by("-published_at", "-created_at")
-        )
-        franchise_id = (self.request.query_params.get("franchise") or "").strip()
-        if franchise_id.isdigit():
-            qs = qs.filter(franchise_id=int(franchise_id))
-        global_only = (self.request.query_params.get("global") or "").strip().lower()
-        if global_only in ("1", "true", "yes"):
-            qs = qs.filter(franchise__isnull=True)
-        return qs
-
-    def get_serializer_context(self):
-        ctx = super().get_serializer_context()
-        ctx["request"] = self.request
-        return ctx
-
-    def create(self, request, *args, **kwargs):
-        from common.cms_targeting import PublishScope, resolve_franchises_for_publish
-        from students.franchise_notifications import sync_announcement_centre_notifications
-
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        data = serializer.validated_data.copy()
-        target_scope = data.pop("publish_scope", PublishScope.PAN_INDIA)
-        target_states = data.pop("target_states", [])
-        target_cities = data.pop("target_cities", [])
-        franchise_ids = data.pop("target_franchise_ids", [])
-        single_franchise = data.pop("franchise", None)
-        one_centre_id = None
-        if target_scope == PublishScope.ONE_CENTRE:
-            one_centre_id = single_franchise.id if single_franchise else (franchise_ids[0] if franchise_ids else None)
-
-        franchises = resolve_franchises_for_publish(
-            request.user,
-            scope=target_scope,
-            franchise_id=one_centre_id,
-            franchise_ids=franchise_ids,
-            target_states=target_states,
-            target_cities=target_cities,
-        )
-
-        if not franchises:
-            return Response({"detail": "No centres match this publish target."}, status=400)
-
-        data.pop("publish_scope", None)
-        data.pop("target_states", None)
-        data.pop("target_cities", None)
-        data.pop("target_franchise_ids", None)
-        announcement = Announcement.objects.create(
-            franchise=None,
-            ho_admin=request.user,
-            publish_scope=target_scope,
-            target_states=list(target_states or []),
-            target_cities=list(target_cities or []),
-            target_franchise_ids=list(franchise_ids or []),
-            **data,
-        )
-        sync_announcement_centre_notifications(announcement, franchises)
-        if announcement.visible_to_parents:
-            _after_announcement_saved(announcement)
-        out = AdminAnnouncementSerializer(announcement, context=self.get_serializer_context())
-        return Response(out.data, status=status.HTTP_201_CREATED)
-
-
-class AdminAnnouncementDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsAdminUser]
-    serializer_class = AdminAnnouncementSerializer
-
-    def get_queryset(self):
-        from django.db.models import Q
-
-        return Announcement.objects.filter(
-            Q(ho_admin=self.request.user) | Q(franchise__admin=self.request.user)
-        ).select_related("franchise", "student")
-
-    def get_serializer_context(self):
-        ctx = super().get_serializer_context()
-        ctx["request"] = self.request
-        return ctx
-
-    def perform_update(self, serializer):
-        from common.cms_targeting import PublishScope, resolve_franchises_for_publish
-        from students.franchise_notifications import sync_announcement_centre_notifications
-
-        validated = serializer.validated_data
-        target_scope = validated.get("publish_scope", PublishScope.PAN_INDIA)
-        target_states = validated.get("target_states", [])
-        target_cities = validated.get("target_cities", [])
-        franchise_ids = validated.get("target_franchise_ids", [])
-        one_centre_id = franchise_ids[0] if target_scope == PublishScope.ONE_CENTRE and franchise_ids else None
-        franchises = resolve_franchises_for_publish(
-            self.request.user,
-            scope=target_scope,
-            franchise_id=one_centre_id,
-            franchise_ids=franchise_ids,
-            target_states=target_states,
-            target_cities=target_cities,
-        )
-        announcement = serializer.save()
-        if announcement.franchise_id is None:
-            sync_announcement_centre_notifications(announcement, franchises)
-            if announcement.visible_to_parents:
-                Announcement.objects.filter(pk=announcement.pk).update(email_dispatched_at=None)
-                _after_announcement_saved(announcement)
-        elif announcement.visible_to_parents:
-            _after_announcement_saved(announcement)
-
-    def perform_destroy(self, instance):
-        from students.models import FranchiseNotification
-
-        FranchiseNotification.objects.filter(
-            source=FranchiseNotification.Source.HEAD_OFFICE,
-            source_id=instance.id,
-        ).delete()
-        instance.delete()
-
-
 class FranchiseAnnouncementListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsFranchiseUser]
     serializer_class = AnnouncementSerializer
@@ -1577,8 +1751,11 @@ class FranchiseAnnouncementListCreateView(generics.ListCreateAPIView):
         f = franchise_profile_for_user(self.request.user)
         if not f:
             return Announcement.objects.none()
-        ids = _announcement_ids_visible_at_franchise(f, parents_visible=True)
-        qs = Announcement.objects.filter(pk__in=ids, is_active=True).select_related("student").order_by("-published_at")
+        qs = (
+            Announcement.objects.filter(franchise=f, visible_to_parents=True)
+            .select_related("student", "campaign")
+            .order_by("-published_at")
+        )
         date_str = (self.request.query_params.get("published_date") or "").strip()
         if date_str:
             parsed = parse_date(date_str)
@@ -1597,7 +1774,12 @@ class FranchiseAnnouncementListCreateView(generics.ListCreateAPIView):
         f = franchise_profile_for_user(self.request.user)
         if not f:
             raise PermissionDenied("Franchise profile not found")
-        raise PermissionDenied("Notifications are managed by head office.")
+        announcement = serializer.save(
+            franchise=f,
+            visible_to_parents=True,
+            visible_to_centres=False,
+        )
+        _after_announcement_saved(announcement)
 
 
 class FranchiseAnnouncementDetailView(generics.RetrieveUpdateDestroyAPIView):
@@ -1608,8 +1790,7 @@ class FranchiseAnnouncementDetailView(generics.RetrieveUpdateDestroyAPIView):
         f = franchise_profile_for_user(self.request.user)
         if not f:
             return Announcement.objects.none()
-        ids = _announcement_ids_visible_at_franchise(f, parents_visible=True)
-        return Announcement.objects.filter(pk__in=ids).select_related("student")
+        return Announcement.objects.filter(franchise=f).select_related("student")
 
     def get_serializer_context(self):
         ctx = super().get_serializer_context()
@@ -1617,16 +1798,204 @@ class FranchiseAnnouncementDetailView(generics.RetrieveUpdateDestroyAPIView):
         return ctx
 
     def perform_update(self, serializer):
-        raise PermissionDenied("Notifications are managed by head office.")
+        if serializer.instance.campaign_id:
+            raise PermissionDenied("Head-office notifications cannot be edited at the centre.")
+        announcement = serializer.save()
+        _after_announcement_saved(announcement)
 
-    def update(self, request, *args, **kwargs):
-        raise PermissionDenied("Notifications are managed by head office.")
 
-    def partial_update(self, request, *args, **kwargs):
-        raise PermissionDenied("Notifications are managed by head office.")
+class AdminAnnouncementCampaignListCreateView(generics.ListCreateAPIView):
+    """Head office: publish notifications to parents and/or centre inboxes."""
 
-    def destroy(self, request, *args, **kwargs):
-        raise PermissionDenied("Notifications are managed by head office.")
+    permission_classes = [IsAdminUser]
+    serializer_class = AdminAnnouncementCampaignSerializer
+    pagination_class = None
+
+    def get_queryset(self):
+        return AnnouncementCampaign.objects.select_related("franchise", "student").order_by("-published_at")
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx["request"] = self.request
+        return ctx
+
+
+class AdminAnnouncementCampaignDetailView(generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [IsAdminUser]
+    serializer_class = AdminAnnouncementCampaignSerializer
+    queryset = AnnouncementCampaign.objects.select_related("franchise", "student")
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx["request"] = self.request
+        return ctx
+
+
+def _franchise_ho_inbox_announcement_qs(franchise):
+    """Head-office campaigns only — not centre-authored parent notifications."""
+    return (
+        Announcement.objects.filter(
+            franchise=franchise,
+            is_active=True,
+            visible_to_centres=True,
+            campaign_id__isnull=False,
+        )
+        .filter(parent_visible_announcement_q())
+        .select_related("student", "campaign")
+        .order_by("-published_at")
+    )
+
+
+def _franchise_support_ticket_reminder_qs(franchise):
+    """Tickets head office reminded this centre to action (shown in centre inbox)."""
+    return (
+        SupportTicket.objects.filter(
+            parent__franchise=franchise,
+            ho_reminded_at__isnull=False,
+        )
+        .exclude(status=SupportTicket.Status.CLOSED)
+        .select_related("parent", "parent__user", "student")
+        .order_by("-ho_reminded_at")
+    )
+
+
+def _franchise_inbox_unread_count(franchise, read_keys: set[str] | None = None) -> int:
+    if read_keys is None:
+        read_keys = set(
+            FranchiseNotificationRead.objects.filter(franchise=franchise).values_list(
+                "notification_key", flat=True
+            )
+        )
+
+    def _key(source: str, item_id: int) -> str:
+        return f"{source}-{item_id}"
+
+    unread = 0
+    for ann_id in _franchise_ho_inbox_announcement_qs(franchise).values_list("pk", flat=True):
+        if _key("head_office", ann_id) not in read_keys:
+            unread += 1
+    for ticket_id in _franchise_support_ticket_reminder_qs(franchise).values_list("pk", flat=True):
+        if _key("support_ticket", ticket_id) not in read_keys:
+            unread += 1
+    return unread
+
+
+class FranchiseNotificationsView(APIView):
+    """Centre inbox: HO campaigns and support-ticket reminders from head office."""
+
+    permission_classes = [IsFranchiseUser]
+
+    @staticmethod
+    def _notification_key(source: str, item_id: int) -> str:
+        return f"{source}-{item_id}"
+
+    def get(self, request):
+        franchise = franchise_profile_for_user(request.user)
+        if not franchise:
+            return Response({"notifications": [], "unread_count": 0})
+
+        read_map = {
+            row["notification_key"]: row["read_at"]
+            for row in FranchiseNotificationRead.objects.filter(franchise=franchise).values(
+                "notification_key", "read_at"
+            )
+        }
+
+        notifications = []
+        for item in _franchise_ho_inbox_announcement_qs(franchise):
+            key = self._notification_key("head_office", item.id)
+            read_at = read_map.get(key)
+            if item.visible_to_parents:
+                action_path = "/dashboard/franchise/parent-portal/?tab=notifications"
+            else:
+                action_path = "/dashboard/franchise/notifications/"
+            notifications.append(
+                {
+                    "id": item.id,
+                    "source": "head_office",
+                    "source_id": item.id,
+                    "title": item.title or "Notification",
+                    "body": item.body or "",
+                    "action_path": action_path,
+                    "visible_to_parents": item.visible_to_parents,
+                    "read": read_at is not None,
+                    "read_at": read_at,
+                    "created_at": item.published_at,
+                }
+            )
+
+        for ticket in _franchise_support_ticket_reminder_qs(franchise):
+            key = self._notification_key("support_ticket", ticket.id)
+            read_at = read_map.get(key)
+            subject = (ticket.subject or "").strip() or "Parent support ticket"
+            body = (ticket.ho_reminder_message or "").strip()
+            if not body:
+                body = "Head office has asked your centre to review and respond to this parent support ticket."
+            notifications.append(
+                {
+                    "id": ticket.id,
+                    "source": "support_ticket",
+                    "source_id": ticket.id,
+                    "title": f"Action required: {subject}",
+                    "body": body,
+                    "action_path": "/dashboard/franchise/parent-tickets/",
+                    "read": read_at is not None,
+                    "read_at": read_at,
+                    "created_at": ticket.ho_reminded_at,
+                }
+            )
+
+        notifications.sort(
+            key=lambda row: (
+                row.get("created_at").timestamp()
+                if row.get("created_at") is not None and hasattr(row.get("created_at"), "timestamp")
+                else 0
+            ),
+            reverse=True,
+        )
+
+        read_keys = set(read_map.keys())
+        unread_count = _franchise_inbox_unread_count(franchise, read_keys)
+        return Response({"notifications": notifications, "unread_count": unread_count})
+
+
+class FranchiseNotificationReadView(APIView):
+    permission_classes = [IsFranchiseUser]
+
+    def post(self, request):
+        franchise = franchise_profile_for_user(request.user)
+        if not franchise:
+            return Response({"detail": "Franchise profile not found"}, status=404)
+
+        notification_id = request.data.get("notification_id") if isinstance(request.data, dict) else None
+        source = (request.data.get("source") if isinstance(request.data, dict) else None) or "head_office"
+        source = str(source).strip().lower()
+        try:
+            pk = int(notification_id)
+        except (TypeError, ValueError):
+            return Response({"detail": "notification_id is required"}, status=400)
+
+        if source == "support_ticket":
+            exists = _franchise_support_ticket_reminder_qs(franchise).filter(pk=pk).exists()
+        elif source == "head_office":
+            exists = _franchise_ho_inbox_announcement_qs(franchise).filter(pk=pk).exists()
+        else:
+            return Response({"detail": "Invalid source"}, status=400)
+
+        if not exists:
+            return Response({"detail": "Notification not found"}, status=404)
+
+        key = FranchiseNotificationsView._notification_key(source, pk)
+        FranchiseNotificationRead.objects.update_or_create(
+            franchise=franchise,
+            notification_key=key,
+            defaults={},
+        )
+        read_keys = set(
+            FranchiseNotificationRead.objects.filter(franchise=franchise).values_list("notification_key", flat=True)
+        )
+        unread_count = _franchise_inbox_unread_count(franchise, read_keys)
+        return Response({"ok": True, "unread_count": unread_count})
 
 
 @api_view(["GET"])
@@ -1647,6 +2016,74 @@ def cron_dispatch_scheduled_announcements(request):
 
     sent = dispatch_due_announcement_emails()
     return Response({"ok": True, "emails_sent": sent})
+
+
+def _attendance_month_bounds(month_str: str):
+    """``YYYY-MM`` → (first day, last day) inclusive."""
+    from datetime import date
+
+    parts = (month_str or "").strip().split("-")
+    if len(parts) != 2:
+        return None, None
+    try:
+        year_i = int(parts[0])
+        mon_i = int(parts[1])
+        if mon_i < 1 or mon_i > 12:
+            return None, None
+        start = date(year_i, mon_i, 1)
+        if mon_i == 12:
+            end = date(year_i + 1, 1, 1)
+        else:
+            end = date(year_i, mon_i + 1, 1)
+        return start, end
+    except (TypeError, ValueError):
+        return None, None
+
+
+def _student_matches_academic_year_filter(student, academic_year: str) -> bool:
+    """True when a student belongs to the selected academic year (strict roster)."""
+    ay = (academic_year or "").strip()
+    if not ay or ay.lower() == "all":
+        return True
+    suffix_match = re.search(r"(\d{2})-(\d{2})\s*$", ay.replace("AY ", "").strip())
+    if not suffix_match:
+        return True
+    suffix = f"{suffix_match.group(1)}-{suffix_match.group(2)}"
+    cn = (student.class_name or "").strip()
+    if suffix in cn:
+        return True
+    yr = (getattr(student, "Year", None) or "").strip()
+    if not yr:
+        return False
+    yr_norm = yr.lower().replace(" ", "").replace("ay", "")
+    ay_norm = ay.lower().replace(" ", "").replace("ay", "")
+    if ay_norm and (ay_norm in yr_norm or yr_norm == ay_norm):
+        return True
+    y1, y2 = int(suffix_match.group(1)), int(suffix_match.group(2))
+    for token in (f"{2000 + y1}-{2000 + y2}", f"{y1}-{y2}"):
+        token_norm = token.lower().replace(" ", "")
+        if token_norm in yr_norm or yr_norm == token_norm:
+            return True
+    return False
+
+
+def _franchise_attendance_student_ids_for_class(
+    franchise, class_name: str, academic_year: str = ""
+) -> list[int]:
+    """Student ids at this centre whose class + year match the attendance filters."""
+    target = (class_name or "").strip()
+    if not target:
+        return []
+    ids: list[int] = []
+    for student in StudentProfile.objects.filter(parent__franchise=franchise, is_active=True).only(
+        "id", "class_name", "Year"
+    ):
+        if not _class_label_matches(student.class_name, target):
+            continue
+        if not _student_matches_academic_year_filter(student, academic_year):
+            continue
+        ids.append(student.pk)
+    return ids
 
 
 class FranchiseAttendanceListCreateView(generics.ListCreateAPIView):
@@ -1680,17 +2117,49 @@ class FranchiseAttendanceListCreateView(generics.ListCreateAPIView):
         f = franchise_profile_for_user(self.request.user)
         if not f:
             return AttendanceRecord.objects.none()
-        
+
         queryset = AttendanceRecord.objects.filter(student__parent__franchise=f)
 
-        # Optional date filter (ISO YYYY-MM-DD). Raw strings can error on some DB/backends.
-        date_str = (self.request.query_params.get("date") or "").strip()
-        if date_str:
+        params = self.request.query_params
+        month_str = (params.get("month") or "").strip()
+        from_str = (params.get("from") or "").strip()
+        to_str = (params.get("to") or "").strip()
+        date_str = (params.get("date") or "").strip()
+
+        if month_str:
+            month_start, month_end = _attendance_month_bounds(month_str)
+            if month_start is not None and month_end is not None:
+                queryset = queryset.filter(date__gte=month_start, date__lt=month_end)
+            else:
+                queryset = queryset.none()
+        elif from_str and to_str:
+            from_date = parse_date(from_str)
+            to_date = parse_date(to_str)
+            if from_date is not None and to_date is not None:
+                queryset = queryset.filter(date__gte=from_date, date__lte=to_date)
+            else:
+                queryset = queryset.none()
+        elif date_str:
             parsed = parse_date(date_str)
             if parsed is not None:
                 queryset = queryset.filter(date=parsed)
             else:
                 queryset = queryset.none()
+
+        class_name = (params.get("class_name") or params.get("class") or "").strip()
+        academic_year = (params.get("academic_year") or params.get("year") or "").strip()
+        if class_name:
+            student_ids = _franchise_attendance_student_ids_for_class(f, class_name, academic_year)
+            queryset = queryset.filter(student_id__in=student_ids or [-1])
+        elif academic_year and academic_year.lower() != "all":
+            student_ids = [
+                s.pk
+                for s in StudentProfile.objects.filter(parent__franchise=f, is_active=True).only(
+                    "id", "class_name", "Year"
+                )
+                if _student_matches_academic_year_filter(s, academic_year)
+            ]
+            queryset = queryset.filter(student_id__in=student_ids or [-1])
 
         return queryset.select_related("student", "student__parent").order_by("-date", "student_id")
 
@@ -1808,6 +2277,141 @@ class FranchiseFeeListCreateView(generics.ListCreateAPIView):
         c["request"] = self.request
         return c
 
+    def create(self, request, *args, **kwargs):
+        from students.legacy_fee_service import legacy_fee_db_configured
+
+        if legacy_fee_db_configured():
+            return Response(
+                {
+                    "detail": (
+                        "Fee amounts are loaded from TiKES. Select a student on the Fees tab "
+                        "and update status only."
+                    )
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        return super().create(request, *args, **kwargs)
+
+
+class FranchiseFeeSummaryView(APIView):
+    """Centre fee view — TiKES amounts with optional centre status overrides."""
+
+    permission_classes = [IsFranchiseUser]
+
+    def get(self, request):
+        from students.fee_summary import build_fee_summary_from_records, merge_centre_status_overrides
+        from students.legacy_fee_service import fetch_legacy_fee_summary, legacy_fee_db_configured
+
+        franchise = franchise_profile_for_user(request.user)
+        if not franchise:
+            return Response({"detail": "Franchise profile not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        student_id = (request.query_params.get("student_id") or request.query_params.get("student") or "").strip()
+        if not student_id:
+            return Response({"detail": "student_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            sid = int(student_id)
+        except (TypeError, ValueError):
+            return Response({"detail": "Invalid student_id"}, status=status.HTTP_400_BAD_REQUEST)
+
+        student = students_at_franchise(franchise).filter(pk=sid).first()
+        if not student:
+            return Response({"detail": "Student not found at your centre"}, status=status.HTTP_404_NOT_FOUND)
+
+        centre_name = (franchise.name or "").strip() or (student.Centre or "").strip()
+        id_card_no = (student.Idcardno or "").strip()
+        legacy_summary = None
+        legacy_lookup_error = ""
+        if id_card_no and legacy_fee_db_configured():
+            legacy_summary, legacy_lookup_error = fetch_legacy_fee_summary(id_card_no)
+
+        summary = legacy_summary or build_fee_summary_from_records(student, centre_name=centre_name)
+        summary = merge_centre_status_overrides(student, summary)
+        summary["legacy_configured"] = legacy_fee_db_configured()
+        summary["student_id"] = student.id
+        if legacy_lookup_error and not summary.get("lines"):
+            summary["lookup_message"] = legacy_lookup_error
+        elif not summary.get("lines") and legacy_fee_db_configured() and id_card_no:
+            summary["lookup_message"] = (
+                f"TiKES is connected but fee_payment has no active records for ID card {id_card_no}."
+            )
+        return Response(summary)
+
+
+class FranchiseFeeLineStatusView(APIView):
+    """Centre may update status (and optional paid_on / notes) for one TiKES fee line."""
+
+    permission_classes = [IsFranchiseUser]
+
+    def patch(self, request):
+        from students.fee_summary import (
+            build_fee_summary_from_records,
+            fee_record_defaults_from_summary_line,
+        )
+        from students.legacy_fee_service import fetch_legacy_fee_summary, legacy_fee_db_configured
+
+        franchise = franchise_profile_for_user(request.user)
+        if not franchise:
+            return Response({"detail": "Franchise profile not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        student_id = request.data.get("student") or request.data.get("student_id")
+        line_serial = request.data.get("line_serial")
+        status_val = (request.data.get("status") or "").strip().upper()
+        if not student_id:
+            return Response({"detail": "student is required"}, status=status.HTTP_400_BAD_REQUEST)
+        if line_serial is None:
+            return Response({"detail": "line_serial is required"}, status=status.HTTP_400_BAD_REQUEST)
+        if status_val not in FeeRecord.Status.values:
+            return Response({"detail": "Invalid status"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            sid = int(student_id)
+            serial = int(line_serial)
+        except (TypeError, ValueError):
+            return Response({"detail": "Invalid student or line_serial"}, status=status.HTTP_400_BAD_REQUEST)
+
+        student = students_at_franchise(franchise).filter(pk=sid).first()
+        if not student:
+            return Response({"detail": "Student not found at your centre"}, status=status.HTTP_404_NOT_FOUND)
+
+        centre_name = (franchise.name or "").strip() or (student.Centre or "").strip()
+        id_card_no = (student.Idcardno or "").strip()
+        summary = None
+        if id_card_no and legacy_fee_db_configured():
+            summary, _err = fetch_legacy_fee_summary(id_card_no)
+        if not summary or not summary.get("lines"):
+            summary = build_fee_summary_from_records(student, centre_name=centre_name)
+
+        line = next(
+            (row for row in (summary.get("lines") or []) if int(row.get("serial") or 0) == serial),
+            None,
+        )
+        if not line:
+            return Response({"detail": "Fee line not found for this student"}, status=status.HTTP_404_NOT_FOUND)
+
+        defaults = fee_record_defaults_from_summary_line(student, summary, line)
+        defaults["status"] = status_val
+        paid_on_raw = request.data.get("paid_on")
+        if paid_on_raw:
+            parsed_paid = parse_date(str(paid_on_raw))
+            if not parsed_paid:
+                return Response({"detail": "Invalid paid_on date"}, status=status.HTTP_400_BAD_REQUEST)
+            defaults["paid_on"] = parsed_paid
+        elif status_val == FeeRecord.Status.PAID:
+            defaults["paid_on"] = date.today()
+        else:
+            defaults["paid_on"] = None
+        defaults["notes"] = (request.data.get("notes") or "").strip()
+
+        record, _created = FeeRecord.objects.update_or_create(
+            student=student,
+            source=FeeRecord.Source.TIKES,
+            line_serial=serial,
+            defaults=defaults,
+        )
+        serializer = FeeRecordSerializer(record, context={"request": request})
+        return Response(serializer.data)
+
 
 class FranchiseFeeDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsFranchiseUser]
@@ -1823,6 +2427,22 @@ class FranchiseFeeDetailView(generics.RetrieveUpdateDestroyAPIView):
         c = super().get_serializer_context()
         c["request"] = self.request
         return c
+
+    def partial_update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        if instance.source == FeeRecord.Source.TIKES:
+            allowed = {"status", "paid_on", "notes"}
+            data = {k: v for k, v in request.data.items() if k in allowed}
+            if not data:
+                return Response(
+                    {"detail": "TiKES fee lines only allow status, paid_on, and notes updates."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            serializer = self.get_serializer(instance, data=data, partial=True)
+            serializer.is_valid(raise_exception=True)
+            self.perform_update(serializer)
+            return Response(serializer.data)
+        return super().partial_update(request, *args, **kwargs)
 
 
 class FranchiseTransportListCreateView(generics.ListCreateAPIView):
@@ -1887,163 +2507,6 @@ class FranchiseTransportAssignmentDetailView(generics.RetrieveUpdateDestroyAPIVi
         return c
 
 
-class AdminSupportTicketListView(generics.ListAPIView):
-    """Head office: all parent support tickets across centres."""
-
-    permission_classes = [IsAdminUser]
-    serializer_class = AdminSupportTicketSerializer
-    pagination_class = None
-
-    def get_queryset(self):
-        qs = (
-            SupportTicket.objects.filter(parent__franchise__admin=self.request.user)
-            .select_related("parent", "parent__franchise", "parent__user")
-            .order_by("-created_at")
-        )
-        franchise_id = (self.request.query_params.get("franchise") or "").strip()
-        if franchise_id.isdigit():
-            qs = qs.filter(parent__franchise_id=int(franchise_id))
-        status = (self.request.query_params.get("status") or "").strip().upper()
-        if status in SupportTicket.Status.values:
-            qs = qs.filter(status=status)
-        if (self.request.query_params.get("unresolved") or "").strip().lower() in ("1", "true", "yes"):
-            qs = qs.exclude(status=SupportTicket.Status.RESOLVED)
-        return qs
-
-
-class AdminSupportTicketRemindCentreView(APIView):
-    """Head office: remind a centre to resolve an open parent support ticket."""
-
-    permission_classes = [IsAdminUser]
-
-    def post(self, request, pk: int):
-        ticket = (
-            SupportTicket.objects.filter(
-                pk=pk,
-                parent__franchise__admin=request.user,
-            )
-            .select_related("parent", "parent__franchise", "parent__franchise__user")
-            .first()
-        )
-        if not ticket:
-            return Response({"detail": "Ticket not found"}, status=status.HTTP_404_NOT_FOUND)
-        if ticket.status == SupportTicket.Status.RESOLVED:
-            return Response({"detail": "Ticket is already resolved"}, status=status.HTTP_400_BAD_REQUEST)
-
-        default_message = (
-            f'This parent support ticket "{ticket.subject}" is still {ticket_status_label(ticket.status)}. '
-            "Please reply to the parent and update the ticket status in Parent Support."
-        )
-        message = ""
-        try:
-            if hasattr(request, "data") and isinstance(request.data, dict):
-                message = str(request.data.get("message") or "").strip()
-        except Exception:
-            pass
-        if not message:
-            message = default_message
-
-        ticket.ho_reminder_message = message
-        ticket.ho_reminded_at = timezone.now()
-        ticket.save(update_fields=["ho_reminder_message", "ho_reminded_at", "updated_at"])
-
-        from students.franchise_notifications import create_support_ticket_ho_notification
-
-        create_support_ticket_ho_notification(ticket, message=message)
-
-        from students.emails import notify_franchise_unresolved_ticket
-
-        emailed = notify_franchise_unresolved_ticket(ticket, message=message)
-        out = AdminSupportTicketSerializer(ticket, context={"request": request})
-        return Response(
-            {
-                **out.data,
-                "centre_emailed": emailed,
-                "detail": "Centre notified." if emailed else "Reminder saved; centre will see it on login (email not sent).",
-            }
-        )
-
-
-class FranchiseNotificationsView(APIView):
-    """Centre inbox: head office reminders and other franchise alerts."""
-
-    permission_classes = [IsFranchiseUser]
-
-    def get(self, request):
-        franchise = franchise_profile_for_user(request.user)
-        if not franchise:
-            return Response({"notifications": [], "unread_count": 0})
-
-        from students.franchise_notifications import (
-            sync_announcement_centre_notifications_for_franchise,
-            sync_support_ticket_ho_notifications,
-        )
-
-        try:
-            sync_support_ticket_ho_notifications(franchise)
-            sync_announcement_centre_notifications_for_franchise(franchise)
-            qs = FranchiseNotification.objects.filter(franchise=franchise).order_by("-created_at")
-            notifications = FranchiseNotificationSerializer(qs, many=True).data
-            unread_count = qs.filter(read_at__isnull=True).count()
-        except (ProgrammingError, OperationalError):
-            return Response({"notifications": [], "unread_count": 0})
-
-        return Response({"notifications": notifications, "unread_count": unread_count})
-
-
-class FranchiseNotificationReadView(APIView):
-    permission_classes = [IsFranchiseUser]
-
-    def post(self, request):
-        franchise = franchise_profile_for_user(request.user)
-        if not franchise:
-            return Response({"detail": "Franchise profile not found"}, status=404)
-
-        notification_id = ""
-        try:
-            if hasattr(request, "data") and isinstance(request.data, dict):
-                notification_id = str(request.data.get("notification_id") or "").strip()
-        except Exception:
-            pass
-        if not notification_id:
-            try:
-                raw = (request.body or b"").decode("utf-8").strip()
-                if raw:
-                    payload = json.loads(raw)
-                    if isinstance(payload, dict):
-                        notification_id = str(payload.get("notification_id") or "").strip()
-            except Exception:
-                pass
-
-        if not notification_id:
-            return Response({"detail": "notification_id is required"}, status=400)
-
-        try:
-            notif_id = int(notification_id)
-        except ValueError:
-            return Response({"detail": "Invalid notification_id"}, status=400)
-
-        try:
-            updated = FranchiseNotification.objects.filter(
-                pk=notif_id,
-                franchise=franchise,
-                read_at__isnull=True,
-            ).update(read_at=timezone.now())
-        except (ProgrammingError, OperationalError):
-            return Response({"ok": False, "detail": "Notifications table not ready"}, status=503)
-
-        unread_count = 0
-        try:
-            unread_count = FranchiseNotification.objects.filter(
-                franchise=franchise,
-                read_at__isnull=True,
-            ).count()
-        except (ProgrammingError, OperationalError):
-            pass
-
-        return Response({"ok": True, "marked": updated > 0, "unread_count": unread_count})
-
-
 class FranchiseSupportTicketListView(generics.ListAPIView):
     permission_classes = [IsFranchiseUser]
     serializer_class = SupportTicketFranchiseSerializer
@@ -2053,13 +2516,7 @@ class FranchiseSupportTicketListView(generics.ListAPIView):
         f = franchise_profile_for_user(self.request.user)
         if not f:
             return SupportTicket.objects.none()
-        from django.db.models import F
-
-        return (
-            SupportTicket.objects.filter(parent__franchise=f)
-            .select_related("parent", "parent__user")
-            .order_by(F("ho_reminded_at").desc(nulls_last=True), "-created_at")
-        )
+        return SupportTicket.objects.filter(parent__franchise=f).select_related("parent", "parent__user", "student").order_by("-created_at")
 
 
 class FranchiseSupportTicketDetailView(generics.RetrieveUpdateAPIView):
@@ -2070,8 +2527,83 @@ class FranchiseSupportTicketDetailView(generics.RetrieveUpdateAPIView):
         f = franchise_profile_for_user(self.request.user)
         if not f:
             return SupportTicket.objects.none()
-        qs = SupportTicket.objects.filter(parent__franchise=f).select_related("parent", "parent__user")
+        qs = SupportTicket.objects.filter(parent__franchise=f).select_related("parent", "parent__user", "student")
         return qs
+
+
+class AdminSupportTicketListView(generics.ListAPIView):
+    permission_classes = [IsAdminUser]
+    serializer_class = SupportTicketAdminSerializer
+    pagination_class = None
+
+    def get_queryset(self):
+        qs = (
+            SupportTicket.objects.select_related(
+                "parent",
+                "parent__franchise",
+                "parent__user",
+                "student",
+            )
+            .order_by("-created_at")
+        )
+
+        franchise_id = (self.request.query_params.get("franchise") or "").strip()
+        if franchise_id.isdigit():
+            qs = qs.filter(parent__franchise_id=int(franchise_id))
+
+        status = (self.request.query_params.get("status") or "").strip().upper()
+        if status == "RESOLVED":
+            status = SupportTicket.Status.CLOSED
+        if status in (
+            SupportTicket.Status.OPEN,
+            SupportTicket.Status.IN_PROGRESS,
+            SupportTicket.Status.CLOSED,
+        ):
+            qs = qs.filter(status=status)
+
+        if (self.request.query_params.get("unresolved") or "").lower() in ("1", "true", "yes"):
+            qs = qs.exclude(status=SupportTicket.Status.CLOSED)
+
+        return qs
+
+
+@api_view(["POST"])
+@permission_classes([IsAdminUser])
+def admin_remind_support_ticket_centre(request, pk):
+    ticket = get_object_or_404(
+        SupportTicket.objects.select_related(
+            "parent",
+            "parent__franchise",
+            "parent__user",
+            "parent__franchise__user",
+            "student",
+        ),
+        pk=pk,
+    )
+
+    message = ""
+    if isinstance(request.data, dict):
+        message = (request.data.get("message") or "").strip()
+
+    default_message = (
+        "Head office has asked your centre to review and respond to this parent support ticket."
+    )
+    ticket.ho_reminder_message = message or default_message
+    ticket.ho_reminded_at = timezone.now()
+    ticket.save(update_fields=["ho_reminder_message", "ho_reminded_at", "updated_at"])
+
+    from students.emails import send_support_ticket_centre_reminder
+
+    emailed = send_support_ticket_centre_reminder(ticket)
+
+    if emailed:
+        detail = "Centre notified in Centre inbox and by email."
+    elif ticket.ho_reminded_at:
+        detail = "Reminder saved — centre will see it in Centre inbox and Parent Support. Email was not sent (check SendGrid or centre contact email)."
+    else:
+        detail = "Could not notify centre."
+
+    return Response({"detail": detail, "centre_emailed": emailed})
 
 
 def _route_from_driver_token(token):

@@ -6,7 +6,7 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ("franchises", "0013_alter_franchise_latitude_alter_franchise_longitude"),
-        ("students", "0026_announcement_global_publish"),
+        ("students", "0028_supportticket_ho_reminder_fields"),
     ]
 
     operations = [

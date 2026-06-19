@@ -100,6 +100,8 @@ class EventSerializer(serializers.ModelSerializer):
         data["description"] = strip_event_video_links(instance.description)
         if not (data.get("class_name") or "").strip():
             data["class_name"] = "All classes"
+        if data.get("start_date"):
+            data["date"] = data["start_date"]
         return data
 
     def validate_class_name(self, value):
