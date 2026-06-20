@@ -23,7 +23,7 @@ from .download_names import (
 )
 from .models import ParentDocument, DocumentCategory, FranchiseDocument, FranchiseDocumentCategory, IndentRequest
 from .newsletter_dates import filter_newsletters_by_date
-from .parent_document_mobile import parent_documents_api_response
+from .parent_document_mobile import category_documents_api_response, parent_documents_api_response
 from .serializers import (
     ParentDocumentSerializer,
     AdminParentDocumentSerializer,
@@ -85,13 +85,15 @@ def parent_documents_by_category(request, category):
         documents = documents.order_by("-period_start", "-created_at")
     elif category == DocumentCategory.HOLIDAY_LISTS:
         documents = documents.order_by("state", "-academic_year", "-updated_at")
+    elif category == DocumentCategory.PARENTING_TIPS:
+        documents = documents.order_by("-updated_at", "-created_at")
 
     serializer = ParentDocumentSerializer(
         documents,
         many=True,
         context={"request": request, "merge_holiday_for_parent": True},
     )
-    payload = parent_documents_api_response(request, serializer.data)
+    payload = category_documents_api_response(request, category, serializer.data)
     return Response(payload)
 
 
@@ -399,6 +401,15 @@ class FranchiseParentDocumentListCreateView(generics.ListCreateAPIView):
             to_date = (self.request.query_params.get("to") or "").strip()[:10]
             qs = filter_newsletters_by_date(qs, track_date=track_date, from_date=from_date, to_date=to_date)
             return qs.select_related("franchise").order_by("-period_start", "-created_at")
+        if manage == "parental_tips":
+            qs = ParentDocument.objects.filter(
+                is_active=True,
+                category=DocumentCategory.PARENTING_TIPS,
+            ).filter(franchise_documents_base_q(franchise_profile))
+            qs = filter_documents_for_franchise(qs.select_related("franchise"), franchise_profile)
+            track_date = (self.request.query_params.get("date") or "").strip()[:10]
+            qs = _filter_holiday_docs_by_track_date(qs, track_date)
+            return qs.order_by("-updated_at", "-created_at")
         return (
             ParentDocument.objects.filter(is_active=True)
             .filter(Q(franchise__isnull=True) | Q(franchise=franchise_profile))
@@ -436,7 +447,11 @@ class FranchiseParentDocumentDetailView(generics.RetrieveUpdateDestroyAPIView):
             return ParentDocument.objects.none()
         return ParentDocument.objects.filter(
             franchise=franchise_profile,
-            category__in=[DocumentCategory.CLASS_TIMETABLE, DocumentCategory.HOLIDAY_LISTS],
+            category__in=[
+                DocumentCategory.CLASS_TIMETABLE,
+                DocumentCategory.HOLIDAY_LISTS,
+                DocumentCategory.PARENTING_TIPS,
+            ],
         ).select_related("franchise")
 
     def get_serializer_context(self):
@@ -469,7 +484,11 @@ class AdminParentDocumentListCreateView(generics.ListCreateAPIView):
             qs = qs.filter(is_active=True, category=DocumentCategory.HOLIDAY_LISTS)
             state = (self.request.query_params.get("state") or "").strip()
             if state:
-                qs = qs.filter(state=state)
+                qs = qs.filter(
+                    Q(state=state)
+                    | Q(publish_scope=ParentDocument.PublishScope.PAN_INDIA)
+                    | Q(publish_scope=ParentDocument.PublishScope.STATE, target_states__contains=[state])
+                )
             track_date = (self.request.query_params.get("date") or "").strip()[:10]
             qs = _filter_holiday_docs_by_track_date(qs, track_date)
             return qs.order_by("-academic_year", "state", "-updated_at")
@@ -480,6 +499,11 @@ class AdminParentDocumentListCreateView(generics.ListCreateAPIView):
             to_date = (self.request.query_params.get("to") or "").strip()[:10]
             qs = filter_newsletters_by_date(qs, track_date=track_date, from_date=from_date, to_date=to_date)
             return qs.order_by("-period_start", "-created_at")
+        if manage == "parental_tips":
+            qs = qs.filter(is_active=True, category=DocumentCategory.PARENTING_TIPS)
+            track_date = (self.request.query_params.get("date") or "").strip()[:10]
+            qs = _filter_holiday_docs_by_track_date(qs, track_date)
+            return qs.order_by("-updated_at", "-created_at")
         return qs.order_by("category", "order", "-created_at")
         cat = (self.request.query_params.get("category") or "").strip()
         if cat:

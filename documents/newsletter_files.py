@@ -108,6 +108,15 @@ def is_video_upload_file(file_obj) -> bool:
     return content_type.startswith("video/")
 
 
+def is_parenting_tips_upload_file(file_obj) -> bool:
+    """Parental tips: PDF, Word, or uploaded video file (not audio — use audio_file)."""
+    if is_newsletter_upload_file(file_obj):
+        return True
+    if is_video_upload_file(file_obj):
+        return True
+    return False
+
+
 def is_audio_upload_file(file_obj) -> bool:
     name = (getattr(file_obj, "name", "") or "").lower()
     if Path(name).suffix in AUDIO_EXTENSIONS:

@@ -93,15 +93,18 @@ def apply_publish_target_attrs(attrs: dict, raw_data: dict | None = None) -> dic
 
     franchise = attrs.get("franchise")
     if scope == ParentDocument.PublishScope.ONE_CENTRE and franchise is not None:
-        attrs["target_franchise_ids"] = [franchise.pk]
+        franchise_id = franchise.pk if hasattr(franchise, "pk") else franchise
+        attrs["target_franchise_ids"] = [int(franchise_id)]
     elif scope == ParentDocument.PublishScope.FRANCHISES and not attrs.get("target_franchise_ids"):
         attrs["target_franchise_ids"] = []
-    elif scope in (ParentDocument.PublishScope.PAN_INDIA, ParentDocument.PublishScope.STATE, ParentDocument.PublishScope.CITY):
-        if scope != ParentDocument.PublishScope.ONE_CENTRE:
-            attrs["franchise"] = None
+
+    # Head-office rows use publish_scope + targets only. franchise FK = centre upload.
+    attrs["franchise"] = None
 
     if scope == ParentDocument.PublishScope.STATE and attrs.get("target_states") and not attrs.get("state"):
         attrs["state"] = attrs["target_states"][0]
+    elif scope == ParentDocument.PublishScope.STATE and attrs.get("state") and not attrs.get("target_states"):
+        attrs["target_states"] = [attrs["state"]]
 
     return attrs
 
@@ -110,6 +113,7 @@ from .newsletter_files import (
     is_audio_rhymes_upload_file,
     is_newsletter_audio_upload_file,
     is_newsletter_upload_file,
+    is_parenting_tips_upload_file,
     is_pdf_upload_file,
 )
 from common.fields import RelativeFileField, RelativeImageField
@@ -294,7 +298,11 @@ class FranchiseParentDocumentWriteSerializer(serializers.ModelSerializer):
     file = RelativeFileField(required=False, allow_null=True)
     audio_file = RelativeFileField(required=False, allow_null=True)
     category = serializers.ChoiceField(
-        choices=[DocumentCategory.CLASS_TIMETABLE, DocumentCategory.HOLIDAY_LISTS],
+        choices=[
+            DocumentCategory.CLASS_TIMETABLE,
+            DocumentCategory.HOLIDAY_LISTS,
+            DocumentCategory.PARENTING_TIPS,
+        ],
         required=False,
         default=DocumentCategory.CLASS_TIMETABLE,
     )
@@ -480,7 +488,35 @@ class FranchiseParentDocumentWriteSerializer(serializers.ModelSerializer):
             if period_start and period_end and period_end < period_start:
                 raise serializers.ValidationError({"period_end": "End date must be on or after start date."})
             normalize_newsletter_period_attrs(attrs)
-        elif self.instance is None and not file_obj:
+        elif category == DocumentCategory.PARENTING_TIPS:
+            video_embed = (attrs.get("video_embed_url") or "").strip()
+            if self.instance is not None and "video_embed_url" not in attrs:
+                video_embed = (self.instance.video_embed_url or "").strip()
+            audio_embed = (attrs.get("audio_embed_url") or "").strip()
+            if self.instance is not None and "audio_embed_url" not in attrs:
+                audio_embed = (self.instance.audio_embed_url or "").strip()
+            if self.instance is None and not file_obj and not video_embed and not audio_obj and not audio_embed:
+                raise serializers.ValidationError(
+                    {"file": "Upload a PDF or Word file, add a video link, or add audio (file or link)."}
+                )
+            if file_obj is not None and not is_parenting_tips_upload_file(file_obj):
+                raise serializers.ValidationError(
+                    {"file": "Parental tip file must be a PDF, Word document, or video file."}
+                )
+            if audio_obj is not None and not is_newsletter_audio_upload_file(audio_obj):
+                raise serializers.ValidationError(
+                    {"audio_file": "Audio must be MP3, M4A, MP4 (audio), WAV, AMR, or another common audio format."}
+                )
+            title = (attrs.get("title") or "").strip()
+            if self.instance is None and not title:
+                if file_obj is not None:
+                    attrs["title"] = Path(getattr(file_obj, "name", "")).stem or "Parental Tips"
+                else:
+                    attrs["title"] = "Parental Tips"
+        elif self.instance is None and not file_obj and category not in (
+            DocumentCategory.CLASS_TIMETABLE,
+            DocumentCategory.PARENTING_TIPS,
+        ):
             raise serializers.ValidationError({"file": "Choose a file to upload."})
         else:
             raise serializers.ValidationError({"category": "Invalid document category for centre upload."})
@@ -596,10 +632,14 @@ class AdminParentDocumentSerializer(ParentDocumentSerializer):
         return validated_data
 
     def create(self, validated_data):
-        return super().create(self._merge_uploaded_files(validated_data))
+        validated_data = self._merge_uploaded_files(validated_data)
+        validated_data["franchise"] = None
+        return super().create(validated_data)
 
     def update(self, instance, validated_data):
-        return super().update(instance, self._merge_uploaded_files(validated_data))
+        validated_data = self._merge_uploaded_files(validated_data)
+        validated_data["franchise"] = None
+        return super().update(instance, validated_data)
 
     def validate(self, attrs):
         uploaded = self._incoming_file()
@@ -618,11 +658,12 @@ class AdminParentDocumentSerializer(ParentDocumentSerializer):
         if not audio_embed and self.instance is not None and "audio_embed_url" not in attrs:
             audio_embed = (self.instance.audio_embed_url or "").strip()
         has_audio = bool(audio_obj or audio_embed)
-        if category == DocumentCategory.CLASS_TIMETABLE and has_upload and has_embed:
+        rich_media_categories = {DocumentCategory.CLASS_TIMETABLE, DocumentCategory.PARENTING_TIPS}
+        if category in rich_media_categories and has_upload and has_embed:
             raise serializers.ValidationError(
-                {"detail": "Use one newsletter type: PDF, video link, or audio — not multiple."}
+                {"detail": "Use one media type: PDF/Word, video link, or audio — not multiple."}
             )
-        if category != DocumentCategory.CLASS_TIMETABLE and has_upload and has_embed:
+        if category not in rich_media_categories and has_upload and has_embed:
             raise serializers.ValidationError(
                 {"detail": "Use either a file upload or a video/embed link, not both."}
             )
@@ -631,13 +672,41 @@ class AdminParentDocumentSerializer(ParentDocumentSerializer):
         if franchise is None and self.instance is not None:
             franchise = self.instance.franchise
         if category == "HOLIDAY_LISTS":
-            if not state and not (self.instance and self.instance.state):
-                inferred = franchise_state_code(franchise) if franchise else None
-                if inferred:
-                    attrs["state"] = inferred
-                    state = inferred
-            if not state and not (self.instance and self.instance.state):
-                raise serializers.ValidationError({"state": "State is required for holiday lists."})
+            scope = (
+                attrs.get("publish_scope")
+                or (self.instance.publish_scope if self.instance else None)
+                or ParentDocument.PublishScope.PAN_INDIA
+            )
+            target_states = attrs.get("target_states")
+            if target_states is None and self.instance is not None:
+                target_states = self.instance.target_states or []
+            target_states = list(target_states or [])
+            target_cities = attrs.get("target_cities")
+            if target_cities is None and self.instance is not None:
+                target_cities = self.instance.target_cities or []
+            target_cities = list(target_cities or [])
+
+            if scope == ParentDocument.PublishScope.STATE:
+                if not target_states and not state and not (self.instance and self.instance.state):
+                    raise serializers.ValidationError(
+                        {"target_states": "Select at least one state for state-wise publish."}
+                    )
+                if target_states and not state:
+                    attrs["state"] = target_states[0]
+            elif scope == ParentDocument.PublishScope.CITY:
+                if not target_cities:
+                    raise serializers.ValidationError(
+                        {"target_cities": "Select at least one city for city-wise publish."}
+                    )
+                attrs["state"] = None
+            elif scope == ParentDocument.PublishScope.PAN_INDIA:
+                attrs["state"] = None
+            elif scope in (
+                ParentDocument.PublishScope.ONE_CENTRE,
+                ParentDocument.PublishScope.FRANCHISES,
+            ):
+                attrs["state"] = state or (self.instance.state if self.instance else None)
+
             if not (attrs.get("academic_year") or "").strip():
                 if self.instance and (self.instance.academic_year or "").strip():
                     attrs["academic_year"] = self.instance.academic_year
@@ -654,7 +723,6 @@ class AdminParentDocumentSerializer(ParentDocumentSerializer):
                 DocumentCategory.STUDENT_TRANSFER_POLICY,
                 DocumentCategory.CONTACT_US,
                 DocumentCategory.GENERAL_RHYMES,
-                DocumentCategory.PARENTING_TIPS,
             ) and not is_pdf_upload_file(file_obj):
                 raise serializers.ValidationError({"file": "This section accepts PDF files only."})
         if category == DocumentCategory.CLASS_TIMETABLE:
@@ -692,6 +760,40 @@ class AdminParentDocumentSerializer(ParentDocumentSerializer):
                     {"file": "Upload a PDF, add a video link, or add audio (file or link)."}
                 )
             normalize_newsletter_period_attrs(attrs)
+        elif category == DocumentCategory.PARENTING_TIPS:
+            if has_upload and has_audio:
+                raise serializers.ValidationError(
+                    {"detail": "Use one media type: PDF/Word, video link, or audio — not multiple."}
+                )
+            if has_embed and has_audio:
+                raise serializers.ValidationError(
+                    {"detail": "Use one media type: PDF/Word, video link, or audio — not multiple."}
+                )
+            if file_obj is not None and not is_parenting_tips_upload_file(file_obj):
+                raise serializers.ValidationError({"file": "Parental tip must be a PDF, Word document, or video file."})
+            if audio_obj is not None and not is_newsletter_audio_upload_file(audio_obj):
+                raise serializers.ValidationError(
+                    {"audio_file": "Audio must be MP3, M4A, MP4 (audio), WAV, AMR, or another common audio format."}
+                )
+            if self.instance is None and not has_upload and not has_embed and not has_audio:
+                raise serializers.ValidationError(
+                    {"file": "Upload a PDF or Word file, add a video link, or add audio (file or link)."}
+                )
+            if (
+                self.instance is not None
+                and not has_upload
+                and not has_embed
+                and not has_audio
+                and not (
+                    self.instance.file
+                    or self.instance.video_embed_url
+                    or self.instance.audio_file
+                    or self.instance.audio_embed_url
+                )
+            ):
+                raise serializers.ValidationError(
+                    {"file": "Upload a PDF or Word file, add a video link, or add audio (file or link)."}
+                )
         elif category == "HOLIDAY_LISTS":
             holiday_entries = self._resolved_holiday_entries(attrs)
             attrs["holiday_entries"] = holiday_entries

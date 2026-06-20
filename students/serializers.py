@@ -8,6 +8,7 @@ from .models import (
     Announcement,
     AnnouncementCampaign,
     AttendanceRecord,
+    CentreAttendanceClosedDay,
     FeeRecord,
     Grade,
     HomeworkAssignment,
@@ -816,11 +817,27 @@ class FranchiseAttendanceUpsertSerializer(AttendanceRecordSerializer):
     class Meta(AttendanceRecordSerializer.Meta):
         validators = []
 
+    def validate_status(self, value):
+        allowed = {
+            AttendanceRecord.Status.PRESENT,
+            AttendanceRecord.Status.ABSENT,
+            AttendanceRecord.Status.HOLIDAY,
+        }
+        if value not in allowed:
+            raise serializers.ValidationError("Status must be Present, Absent, or Holiday.")
+        return value
+
 
 class FranchiseAttendanceBulkItemSerializer(serializers.Serializer):
     student = serializers.PrimaryKeyRelatedField(queryset=StudentProfile.objects.all())
     date = serializers.DateField()
-    status = serializers.ChoiceField(choices=AttendanceRecord.Status.choices)
+    status = serializers.ChoiceField(
+        choices=[
+            (AttendanceRecord.Status.PRESENT, "Present"),
+            (AttendanceRecord.Status.ABSENT, "Absent"),
+            (AttendanceRecord.Status.HOLIDAY, "Holiday"),
+        ]
+    )
     note = serializers.CharField(required=False, allow_blank=True, default="")
 
     def validate_student(self, value):
@@ -833,6 +850,25 @@ class FranchiseAttendanceBulkItemSerializer(serializers.Serializer):
 
 class FranchiseAttendanceBulkSerializer(serializers.Serializer):
     records = FranchiseAttendanceBulkItemSerializer(many=True, allow_empty=False)
+
+
+class CentreAttendanceClosedDaySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CentreAttendanceClosedDay
+        fields = ["id", "date", "label", "created_at", "updated_at"]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+    def validate(self, attrs):
+        request = self.context.get("request")
+        franchise = franchise_profile_for_user(getattr(request, "user", None))
+        if not franchise:
+            raise serializers.ValidationError("Franchise profile not found.")
+        attrs["franchise"] = franchise
+        return attrs
+
+    def create(self, validated_data):
+        franchise = validated_data.pop("franchise")
+        return CentreAttendanceClosedDay.objects.create(franchise=franchise, **validated_data)
 
 
 class FeeRecordSerializer(serializers.ModelSerializer):

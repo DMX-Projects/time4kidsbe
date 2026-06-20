@@ -21,6 +21,15 @@ DEBUG = os.getenv("DJANGO_DEBUG", "True" if ENVIRONMENT == "development" else "F
 
 # Shared secret for /leads/ report pages (query ?key= or X-Landing-Leads-Key header)
 LANDING_LEADS_REPORT_KEY = os.getenv("LANDING_LEADS_REPORT_KEY", "").strip()
+# TiKES / PLP push enrollment (POST /api/plp/create-enrollment/ with header X-API-Key)
+PLP_API_KEY = os.getenv("PLP_API_KEY", "").strip()
+if not PLP_API_KEY:
+    try:
+        from plp_api.plp_api_config import PLP_API_KEY as _PLP_API_KEY_DEFAULT
+
+        PLP_API_KEY = _PLP_API_KEY_DEFAULT
+    except ImportError:
+        PLP_API_KEY = ""
 ALLOWED_HOSTS = [host.strip() for host in os.getenv("DJANGO_ALLOWED_HOSTS", "*").split(",") if host.strip()]
 
 # CORS Configuration
@@ -76,6 +85,7 @@ INSTALLED_APPS = [
     "gallery",
     "students",
     "documents",
+    "plp_api",
 ]
 
 MIDDLEWARE = [

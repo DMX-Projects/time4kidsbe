@@ -60,6 +60,7 @@ urlpatterns = [
     path("api/media/", include("gallery.urls")),
     path("api/students/", include("students.urls")),
     path("api/documents/", include("documents.urls")),
+    path("api/plp/", include("plp_api.urls")),
     path("api/cms-files/<path:relative_path>", cms_public_media_file, name="cms-public-media-file"),
 ]
 
