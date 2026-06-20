@@ -43,6 +43,7 @@ from .models import (
     Announcement,
     AnnouncementCampaign,
     AttendanceRecord,
+    CentreAttendanceClosedDay,
     FeeRecord,
     FranchiseNotificationRead,
     Grade,
@@ -69,6 +70,7 @@ from .serializers import (
     AdminAnnouncementCampaignSerializer,
     AnnouncementSerializer,
     AttendanceRecordSerializer,
+    CentreAttendanceClosedDaySerializer,
     FranchiseAttendanceBulkSerializer,
     FranchiseAttendanceUpsertSerializer,
     FeeRecordSerializer,
@@ -346,7 +348,13 @@ def _parent_focus_student(request, parent_profile):
     )
 
 
-def _parent_attendance_api_payload(request, rows: list, focus: StudentProfile | None) -> dict | list:
+def _parent_attendance_api_payload(
+    request,
+    rows: list,
+    focus: StudentProfile | None,
+    *,
+    centre=None,
+) -> dict | list:
     """Mobile envelope; ``?wrap=list`` keeps bare array for legacy/web."""
     params = getattr(request, "query_params", None) or getattr(request, "GET", None)
     wrap = ((params.get("wrap") if params else None) or "").strip().lower()
@@ -361,6 +369,38 @@ def _parent_attendance_api_payload(request, rows: list, focus: StudentProfile | 
     }
     if focus is None and params is not None:
         payload["requires_student"] = True
+    if focus is not None and centre is not None:
+        from students.attendance_logic import (
+            build_summaries_for_student,
+            collect_holiday_map,
+            holiday_dates_payload,
+            month_bounds,
+            resolved_attendance_row,
+        )
+
+        month_str = ((params.get("month") if params else None) or "").strip()
+        if month_str:
+            start, end = month_bounds(month_str)
+        else:
+            start, end = month_bounds(date.today().strftime("%Y-%m"))
+        if start is not None and end is not None:
+            holiday_map = collect_holiday_map(centre, start, end)
+            payload["holiday_dates"] = holiday_dates_payload(holiday_map)
+            payload["attendance_summary"] = build_summaries_for_student(
+                focus,
+                centre,
+                months=[month_str] if month_str else None,
+                records=rows,
+            ).get(month_str or date.today().strftime("%Y-%m"))
+            selected_day = _selected_date_from_request(request)
+            if selected_day is not None:
+                record = next((row for row in rows if _row_on_date(row, selected_day.isoformat())), None)
+                payload["resolved_attendance"] = resolved_attendance_row(
+                    focus,
+                    selected_day,
+                    record=record,
+                    holiday_map=holiday_map,
+                )
     return payload
 
 
@@ -491,6 +531,93 @@ def _build_parent_calendar_items(
     return items
 
 
+def _parent_parental_tips_notification_qs(request, pp, focus=None):
+    """Recent parental tips visible to this parent (for the notifications feed)."""
+    from documents.models import DocumentCategory
+    from documents.views import _parent_documents_visible_queryset
+
+    if not pp:
+        return []
+
+    qs = _parent_documents_visible_queryset(request.user, student=focus).filter(
+        category=DocumentCategory.PARENTING_TIPS,
+    )
+    cutoff = timezone.now() - timedelta(days=30)
+    qs = qs.filter(Q(updated_at__gte=cutoff) | Q(created_at__gte=cutoff))
+    return list(qs.order_by("-updated_at", "-created_at")[:50])
+
+
+def _parent_parental_tips_calendar_items(request, focus) -> list[dict]:
+    """Parental tip rows for parent calendar (upload / update date)."""
+    from documents.models import DocumentCategory
+    from documents.serializers import ParentDocumentSerializer
+    from documents.views import _parent_documents_visible_queryset
+
+    qs = _parent_documents_visible_queryset(request.user, student=focus).filter(
+        category=DocumentCategory.PARENTING_TIPS,
+    )
+    rows = ParentDocumentSerializer(
+        qs.order_by("-updated_at", "-created_at"),
+        many=True,
+        context={"request": request, "merge_holiday_for_parent": True},
+    ).data
+
+    items: list[dict] = []
+    for row in rows:
+        pk = int(row["id"])
+        updated = str(row.get("updated_at") or row.get("created_at") or "")[:10]
+        if not updated:
+            continue
+        title = str(row.get("display_title") or row.get("title") or "Parental tip")
+        detail = (row.get("description") or row.get("source_label") or "").strip()
+        items.append(
+            _calendar_item_row(
+                item_type="parental_tip",
+                item_id=pk,
+                title=title,
+                date_str=updated,
+                detail=detail,
+            )
+        )
+    return items
+
+
+def _parent_holiday_lists_payload(request, focus) -> list[dict]:
+    """Grouped holiday list cards for calendar-attendance / mobile."""
+    from documents.models import DocumentCategory
+    from documents.parent_document_mobile import build_holiday_list_cards
+    from documents.serializers import ParentDocumentSerializer
+    from documents.views import _parent_documents_visible_queryset
+
+    qs = _parent_documents_visible_queryset(request.user, student=focus).filter(
+        category=DocumentCategory.HOLIDAY_LISTS,
+    )
+    rows = ParentDocumentSerializer(
+        qs.order_by("state", "-academic_year", "-updated_at"),
+        many=True,
+        context={"request": request, "merge_holiday_for_parent": True},
+    ).data
+    return build_holiday_list_cards(rows)
+
+
+def _parent_parental_tips_payload(request, focus) -> list[dict]:
+    """Mobile parental tip rows for calendar-attendance."""
+    from documents.models import DocumentCategory
+    from documents.parent_document_mobile import parent_document_mobile_row
+    from documents.serializers import ParentDocumentSerializer
+    from documents.views import _parent_documents_visible_queryset
+
+    qs = _parent_documents_visible_queryset(request.user, student=focus).filter(
+        category=DocumentCategory.PARENTING_TIPS,
+    )
+    rows = ParentDocumentSerializer(
+        qs.order_by("-updated_at", "-created_at"),
+        many=True,
+        context={"request": request, "merge_holiday_for_parent": True},
+    ).data
+    return [parent_document_mobile_row(row) for row in rows]
+
+
 def _parent_newsletter_calendar_items(request, focus) -> list[dict]:
     """Newsletter rows for parent calendar (block date and upload date when they differ)."""
     from documents.models import DocumentCategory
@@ -616,15 +743,75 @@ def _parent_calendar_attendance_payload(
     if focus is not None:
         attendance_qs = attendance_qs.filter(student_id=focus.pk)
     attendance_rows = AttendanceRecordSerializer(attendance_qs, many=True).data
+    all_attendance_rows = attendance_rows
+
+    from students.attendance_logic import (
+        build_summaries_for_student,
+        collect_holiday_map,
+        holiday_dates_payload,
+        month_bounds,
+        resolved_attendance_row,
+    )
+
+    summary_month = (selected_date or date.today()).strftime("%Y-%m")
+    month_start, month_end = month_bounds(summary_month)
+    holiday_map: dict[date, str] = {}
+    if month_start is not None and month_end is not None and centre is not None:
+        holiday_map = collect_holiday_map(centre, month_start, month_end)
 
     calendar_items = _build_parent_calendar_items(events_data, homework_data, announcement_data)
     calendar_items.extend(_parent_newsletter_calendar_items(request, focus))
+    calendar_items.extend(_parent_parental_tips_calendar_items(request, focus))
+    holiday_lists = _parent_holiday_lists_payload(request, focus)
+    parental_tips = _parent_parental_tips_payload(request, focus)
+    if holiday_map:
+        for holiday_day, label in sorted(holiday_map.items(), key=lambda item: item[0]):
+            calendar_items.append(
+                {
+                    "id": f"holiday-{holiday_day.isoformat()}",
+                    "type": "holiday",
+                    "title": label,
+                    "date": holiday_day.isoformat(),
+                    "detail": "Holiday",
+                    "source_id": None,
+                }
+            )
     calendar_items.sort(key=lambda row: (row["date"], row["type"], row["title"].lower()))
 
     selected_day = selected_date.isoformat() if selected_date else None
     if selected_day:
         calendar_items = [row for row in calendar_items if _calendar_item_on_date(row, selected_day)]
         attendance_rows = [row for row in attendance_rows if _row_on_date(row, selected_day)]
+
+    attendance_summary = None
+    attendance_summary_by_month = None
+    holiday_dates = holiday_dates_payload(holiday_map) if holiday_map else []
+    resolved_attendance = None
+    if focus is not None and centre is not None:
+        attendance_summary_by_month = build_summaries_for_student(
+            focus,
+            centre,
+            records=all_attendance_rows,
+        )
+        attendance_summary = attendance_summary_by_month.get(summary_month)
+        if selected_date is not None:
+            record = next((row for row in attendance_rows), None)
+            resolved_attendance = resolved_attendance_row(
+                focus,
+                selected_date,
+                record=record,
+                holiday_map=holiday_map,
+            )
+            if resolved_attendance and not attendance_rows:
+                attendance_rows = [resolved_attendance]
+            elif resolved_attendance and attendance_rows:
+                attendance_rows[0] = {
+                    **attendance_rows[0],
+                    "status": resolved_attendance["status"],
+                    "resolved_status": resolved_attendance["resolved_status"],
+                    "is_holiday": resolved_attendance["is_holiday"],
+                    "holiday_label": resolved_attendance.get("holiday_label") or "",
+                }
 
     # calendar_items is the canonical list for calendar UI. Omit parallel detail arrays
     # so mobile apps that merge calendar_items + calendar_events/homework/announcements
@@ -653,6 +840,12 @@ def _parent_calendar_attendance_payload(
         "attendance": attendance_rows,
         "attendance_count": len(attendance_rows),
         "attendance_for_date": None,
+        "attendance_summary": attendance_summary,
+        "attendance_summary_by_month": attendance_summary_by_month,
+        "holiday_dates": holiday_dates,
+        "holiday_lists": holiday_lists,
+        "parental_tips": parental_tips,
+        "resolved_attendance": resolved_attendance,
         "student_id": focus.pk if focus else None,
         "student_name": focus.full_name if focus else "",
         "class_name": ((focus.class_name or "").strip() if focus else ""),
@@ -807,7 +1000,8 @@ class ParentAttendanceListView(generics.ListAPIView):
         serializer = self.get_serializer(queryset, many=True)
         pp = resolved_parent_profile_for_user(request.user)
         focus = _parent_focus_student(request, pp)
-        payload = _parent_attendance_api_payload(request, serializer.data, focus)
+        centre = _parent_centre(pp)
+        payload = _parent_attendance_api_payload(request, serializer.data, focus, centre=centre)
         if isinstance(payload, list):
             return Response(payload)
         return Response(payload)
@@ -845,6 +1039,12 @@ class ParentCalendarAttendanceView(APIView):
                     "attendance": [],
                     "attendance_count": 0,
                     "attendance_for_date": None,
+                    "attendance_summary": None,
+                    "attendance_summary_by_month": None,
+                    "holiday_dates": [],
+                    "holiday_lists": [],
+                    "parental_tips": [],
+                    "resolved_attendance": None,
                     "student_id": None,
                     "student_name": "",
                     "class_name": "",
@@ -1402,6 +1602,7 @@ class ParentNotificationsView(APIView):
                     "events": [],
                     "achievements": [],
                     "attendance": [],
+                    "parental_tips": [],
                     "notifications": [],
                     "unread_count": 0,
                 }
@@ -1470,6 +1671,8 @@ class ParentNotificationsView(APIView):
             homework_qs = _filter_homework_queryset_for_student(homework_qs, homework_focus)
         if attendance_focus is not None:
             attendance_qs = attendance_qs.filter(student_id=attendance_focus.pk)
+
+        parental_tips_qs = _parent_parental_tips_notification_qs(request, pp, focus=focus)
 
         try:
             read_map = {
@@ -1597,6 +1800,26 @@ class ParentNotificationsView(APIView):
                 }
             )
 
+        for item in parental_tips_qs:
+            key = self._notification_key("parental_tip", item.id)
+            read_at = read_map.get(key)
+            targets = [str(c).strip() for c in (item.target_class_names or []) if str(c).strip()]
+            class_label = ", ".join(targets) if targets else ""
+            notifications.append(
+                {
+                    "id": key,
+                    "source": "parental_tip",
+                    "source_id": item.id,
+                    "title": item.title or "New parental tip",
+                    "body": (item.description or "").strip(),
+                    "class_name": class_label or None,
+                    "published_at": item.updated_at or item.created_at,
+                    "read": read_at is not None,
+                    "read_at": read_at,
+                    "action_path": "/dashboard/parent/parental-tips",
+                }
+            )
+
         notifications = [
             n for n in notifications if (not n["read"]) or (n.get("read_at") and n["read_at"] >= hide_read_before)
         ]
@@ -1605,6 +1828,8 @@ class ParentNotificationsView(APIView):
             reverse=True,
         )
         unread_count = sum(1 for n in notifications if not n["read"])
+
+        from documents.serializers import ParentDocumentSerializer
 
         return Response(
             {
@@ -1615,6 +1840,11 @@ class ParentNotificationsView(APIView):
                 "events": EventSerializer(events_qs, many=True).data,
                 "achievements": ParentStudentAchievementSerializer(achievements_qs, many=True).data,
                 "attendance": AttendanceRecordSerializer(attendance_qs, many=True).data,
+                "parental_tips": ParentDocumentSerializer(
+                    parental_tips_qs,
+                    many=True,
+                    context={"request": request, "merge_holiday_for_parent": True},
+                ).data,
                 "notifications": notifications,
                 "unread_count": unread_count,
             }
@@ -2163,6 +2393,56 @@ class FranchiseAttendanceListCreateView(generics.ListCreateAPIView):
 
         return queryset.select_related("student", "student__parent").order_by("-date", "student_id")
 
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        serializer = self.get_serializer(queryset, many=True)
+        rows = serializer.data
+        franchise = franchise_profile_for_user(request.user)
+        params = request.query_params
+        date_str = (params.get("date") or "").strip()
+        month_str = (params.get("month") or "").strip()
+        student_id = (params.get("student_id") or params.get("student") or "").strip()
+
+        from students.attendance_logic import (
+            build_month_summary_for_student,
+            collect_holiday_map,
+            day_is_holiday,
+            holiday_dates_payload,
+            month_bounds,
+        )
+
+        payload: dict = {"attendance": rows, "count": len(rows)}
+
+        if franchise and date_str:
+            parsed = parse_date(date_str)
+            if parsed is not None:
+                is_holiday, label = day_is_holiday(franchise, parsed)
+                payload["day_info"] = {
+                    "date": date_str,
+                    "is_holiday": is_holiday,
+                    "holiday_label": label,
+                }
+
+        if franchise and month_str and student_id.isdigit():
+            student = StudentProfile.objects.filter(
+                pk=int(student_id),
+                parent__franchise=franchise,
+                is_active=True,
+            ).first()
+            if student:
+                summary = build_month_summary_for_student(student, franchise, month_str)
+                if summary:
+                    payload["attendance_summary"] = summary
+                start, end = month_bounds(month_str)
+                if start is not None and end is not None:
+                    payload["holiday_dates"] = holiday_dates_payload(
+                        collect_holiday_map(franchise, start, end)
+                    )
+
+        if (params.get("wrap") or "").strip().lower() in ("list", "array"):
+            return Response(rows)
+        return Response(payload)
+
     def get_serializer_context(self):
         c = super().get_serializer_context()
         c["request"] = self.request
@@ -2259,6 +2539,80 @@ class FranchiseAttendanceDetailView(generics.RetrieveUpdateDestroyAPIView):
         c = super().get_serializer_context()
         c["request"] = self.request
         return c
+
+
+class FranchiseAttendanceClosedDayListCreateView(generics.ListCreateAPIView):
+    """Centre-declared special holidays (rain closure, summer break, local holiday, etc.)."""
+
+    permission_classes = [IsFranchiseUser]
+    serializer_class = CentreAttendanceClosedDaySerializer
+    pagination_class = None
+
+    def get_queryset(self):
+        franchise = franchise_profile_for_user(self.request.user)
+        if not franchise:
+            return CentreAttendanceClosedDay.objects.none()
+        qs = CentreAttendanceClosedDay.objects.filter(franchise=franchise).order_by("-date")
+        month_str = (self.request.query_params.get("month") or "").strip()
+        if month_str:
+            start, end = _attendance_month_bounds(month_str)
+            if start is not None and end is not None:
+                qs = qs.filter(date__gte=start, date__lt=end)
+        return qs
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx["request"] = self.request
+        return ctx
+
+
+class FranchiseAttendanceClosedDayDetailView(generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [IsFranchiseUser]
+    serializer_class = CentreAttendanceClosedDaySerializer
+
+    def get_queryset(self):
+        franchise = franchise_profile_for_user(self.request.user)
+        if not franchise:
+            return CentreAttendanceClosedDay.objects.none()
+        return CentreAttendanceClosedDay.objects.filter(franchise=franchise)
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx["request"] = self.request
+        return ctx
+
+
+class FranchiseAttendanceHolidaysView(APIView):
+    """
+    Merged holiday calendar for a centre month: weekends + HO/state holiday CMS + centre CMS + special closed days.
+    Used by centre Parent App calendar and attendance.
+    """
+
+    permission_classes = [IsFranchiseUser]
+
+    def get(self, request):
+        from students.attendance_logic import collect_holiday_map, holiday_dates_payload, month_bounds
+
+        franchise = franchise_profile_for_user(request.user)
+        month_str = (request.query_params.get("month") or date.today().strftime("%Y-%m")).strip()
+        if not franchise:
+            return Response({"month": month_str, "holiday_dates": []})
+
+        start, end = month_bounds(month_str)
+        if start is None or end is None:
+            return Response(
+                {"detail": "Invalid month. Use YYYY-MM."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        holiday_map = collect_holiday_map(franchise, start, end)
+        return Response(
+            {
+                "month": month_str,
+                "holiday_dates": holiday_dates_payload(holiday_map),
+                "includes_weekends": True,
+            }
+        )
 
 
 class FranchiseFeeListCreateView(generics.ListCreateAPIView):

@@ -26,7 +26,6 @@ PDF_ONLY_CATEGORIES = {
     DocumentCategory.STUDENT_TRANSFER_POLICY,
     DocumentCategory.CONTACT_US,
     DocumentCategory.GENERAL_RHYMES,
-    DocumentCategory.PARENTING_TIPS,
 }
 MIXED_MEDIA_CATEGORIES = {DocumentCategory.VIDEOS}
 AUDIO_ONLY_CATEGORIES = {
@@ -131,6 +130,16 @@ def parent_document_matches_category_media(doc: ParentDocument) -> bool:
             return False
         kind = parent_document_media_kind(doc.file.name)
         return kind not in ("video", "audio")
+
+    if category == DocumentCategory.PARENTING_TIPS:
+        if parent_document_has_newsletter_video_embed(doc) or parent_document_has_newsletter_audio(doc):
+            return True
+        if not parent_document_has_listable_file(doc):
+            return False
+        kind = parent_document_media_kind(doc.file.name)
+        if kind == "audio":
+            return False
+        return True
 
     if category in MIXED_MEDIA_CATEGORIES:
         if parent_document_has_video_embed(doc):
