@@ -539,7 +539,8 @@ def ensure_parent_profile_for_user(user):
                 if email and "@" in email
                 else (student_email[:254] if student_email and "@" in student_email else None)
             ),
-            "phone": re.sub(r"\D", "", (student.Mobileno or ""))[-10:],
+            "phone": _phone10_from_raw(str(student.Mobileno or "")),
+            "city": ((student.City or "").strip())[:100],
         },
     )
     if not _created and franchise and profile.franchise_id != franchise.id:
@@ -548,12 +549,93 @@ def ensure_parent_profile_for_user(user):
     if not student.parent_id:
         student.parent = profile
         student.save(update_fields=["parent_id"])
+    parent_name = (student.ParentName or "").strip()
+    if parent_name and not (getattr(user, "full_name", None) or "").strip():
+        user.full_name = parent_name[:255]
+        user.save(update_fields=["full_name"])
+    enrich_parent_contact_fields(profile, user)
     return profile
+
+
+def _phone10_from_raw(value: str) -> str:
+    digits = re.sub(r"\D", "", value or "")
+    if len(digits) >= 10:
+        return digits[-10:]
+    return digits if len(digits) == 10 else ""
+
+
+def enrich_parent_contact_fields(pp, user, *, persist: bool = True) -> dict[str, str]:
+    """
+    Fill empty parent contact fields from linked student / TiKES columns.
+    When ``persist`` is true, saves discovered values on ParentProfile and User.
+    """
+    full_name = (getattr(user, "full_name", None) or "").strip()
+    phone = (getattr(pp, "phone", None) or "").strip() if pp else ""
+    city = (getattr(pp, "city", None) or "").strip() if pp else ""
+    address = (getattr(pp, "address", None) or "").strip() if pp else ""
+
+    from students.models import StudentProfile
+
+    students_qs = StudentProfile.objects.none()
+    if pp:
+        students_qs = StudentProfile.objects.filter(parent=pp, is_active=True).order_by("id")
+    else:
+        student, _ = primary_student_for_parent_user(user)
+        if student:
+            students_qs = StudentProfile.objects.filter(pk=student.pk)
+
+    for student in students_qs:
+        if not phone and student.Mobileno:
+            phone = _phone10_from_raw(str(student.Mobileno))
+        if not city and student.City:
+            city = str(student.City).strip()[:100]
+        if not full_name and student.ParentName:
+            full_name = str(student.ParentName).strip()[:255]
+        if not address:
+            parts = [
+                p
+                for p in (
+                    (getattr(student, "Centre", None) or "").strip(),
+                    (getattr(student, "City", None) or "").strip(),
+                    (getattr(student, "State", None) or "").strip(),
+                )
+                if p
+            ]
+            if parts:
+                address = ", ".join(dict.fromkeys(parts))
+        if phone and city and full_name and address:
+            break
+
+    if persist and pp:
+        updates_pp: dict[str, str] = {}
+        if not (pp.phone or "").strip() and phone:
+            updates_pp["phone"] = phone
+        if not (pp.city or "").strip() and city:
+            updates_pp["city"] = city
+        if not (pp.address or "").strip() and address:
+            updates_pp["address"] = address
+        if updates_pp:
+            for key, val in updates_pp.items():
+                setattr(pp, key, val)
+            pp.save(update_fields=list(updates_pp.keys()))
+        if not (getattr(user, "full_name", None) or "").strip() and full_name:
+            user.full_name = full_name[:255]
+            user.save(update_fields=["full_name"])
+
+    return {
+        "full_name": full_name,
+        "phone": phone,
+        "city": city,
+        "address": address,
+    }
 
 
 def resolved_parent_profile_for_user(user):
     """Parent profile for portal APIs; auto-links legacy student rows when needed."""
-    return ensure_parent_profile_for_user(user) or parent_profile_for_user(user)
+    profile = ensure_parent_profile_for_user(user) or parent_profile_for_user(user)
+    if profile:
+        enrich_parent_contact_fields(profile, user)
+    return profile
 
 
 def primary_student_for_parent_user(user):
@@ -592,7 +674,7 @@ def primary_student_for_parent_user(user):
 
 def parent_students_list_for_user(user) -> list[dict]:
     """All active linked children for parent login / mobile child switcher."""
-    pp = parent_profile_for_user(user)
+    pp = resolved_parent_profile_for_user(user)
     if not pp:
         return []
 
@@ -643,7 +725,7 @@ def parent_login_context(user) -> dict:
 
     Single source for centre + linked children — no duplicate child_name blocks.
     """
-    pp = parent_profile_for_user(user)
+    pp = resolved_parent_profile_for_user(user)
     student, _ = primary_student_for_parent_user(user)
 
     franchise_name = ""

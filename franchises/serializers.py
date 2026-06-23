@@ -258,10 +258,23 @@ class FranchiseUpdateSerializer(FranchiseSerializer):
 
 class FranchiseProfileSerializer(FranchiseSerializer):
     centre_access = serializers.SerializerMethodField()
+    # Accept legacy values like "+91 9876543210" from imports; normalize on save.
+    contact_phone = serializers.CharField(required=False, allow_blank=True, max_length=40)
 
     class Meta(FranchiseSerializer.Meta):
         fields = FranchiseSerializer.Meta.fields + ["centre_access"]
         read_only_fields = ["id", "slug", "created_at", "updated_at", "admin", "user", "is_active", "centre_access"]
+
+    def validate_contact_phone(self, value):
+        if not value:
+            return ""
+        primary = str(value).split(",")[0].strip()
+        digits = re.sub(r"\D", "", primary)
+        if len(digits) >= 10:
+            digits = digits[-10:]
+        if len(digits) != 10:
+            raise serializers.ValidationError("Phone number must be exactly 10 digits.")
+        return digits
 
     def get_centre_access(self, obj):
         from accounts.profile_access import franchise_centre_diagnostics
