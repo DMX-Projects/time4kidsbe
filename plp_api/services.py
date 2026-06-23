@@ -177,7 +177,14 @@ def upsert_student_enrollment(
         parent_profile.Emailid = emailid[:254]
     if phone:
         parent_profile.phone = phone
+    city_norm = _norm(city)
+    if city_norm:
+        parent_profile.city = city_norm[:100]
     parent_profile.save()
+
+    if parentname:
+        user.full_name = parentname[:255]
+        user.save(update_fields=["full_name"])
 
     student = (
         StudentProfile.objects.filter(Idcardno__iexact=idcardno).select_related("parent").first()

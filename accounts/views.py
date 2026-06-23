@@ -289,14 +289,15 @@ class ParentSelfProfileView(APIView):
         pp = resolved_parent_profile_for_user(request.user)
         child_ctx = parent_login_context(request.user)
         if not pp:
+            contact = enrich_parent_contact_fields(None, request.user, persist=False)
             return Response(
                 {
                     "id": request.user.id,
                     "email": request.user.email,
-                    "full_name": request.user.full_name or "",
-                    "phone": "",
-                    "address": "",
-                    "city": "",
+                    "full_name": contact["full_name"] or request.user.full_name or "",
+                    "phone": contact["phone"],
+                    "address": contact["address"],
+                    "city": contact["city"],
                     "photo_url": "",
                     "franchise_name": child_ctx.get("franchise") or "",
                     "franchise_contact_phone": "",
@@ -305,15 +306,16 @@ class ParentSelfProfileView(APIView):
                     **child_ctx,
                 }
             )
+        contact = enrich_parent_contact_fields(pp, request.user)
         f = pp.franchise
         return Response(
             {
                 "id": request.user.id,
                 "email": request.user.email,
-                "full_name": request.user.full_name or "",
-                "phone": pp.phone or "",
-                "address": pp.address or "",
-                "city": pp.city or "",
+                "full_name": contact["full_name"],
+                "phone": contact["phone"],
+                "address": contact["address"],
+                "city": contact["city"],
                 "photo_url": pp.photo_url or "",
                 "franchise_name": f.name,
                 "franchise_contact_phone": f.contact_phone or "",
