@@ -567,6 +567,7 @@ def _phone10_from_raw(value: str) -> str:
 def enrich_parent_contact_fields(pp, user, *, persist: bool = True) -> dict[str, str]:
     """
     Fill empty parent contact fields from linked student / TiKES columns.
+    Home address is never inferred from TiKES (``Centre`` is the preschool name).
     When ``persist`` is true, saves discovered values on ParentProfile and User.
     """
     full_name = (getattr(user, "full_name", None) or "").strip()
@@ -584,6 +585,28 @@ def enrich_parent_contact_fields(pp, user, *, persist: bool = True) -> dict[str,
         if student:
             students_qs = StudentProfile.objects.filter(pk=student.pk)
 
+    if pp and address:
+        franchise_name = ""
+        try:
+            franchise_name = (pp.franchise.name or "").strip()
+        except Exception:
+            franchise_name = ""
+        for student in students_qs:
+            centre_label = (getattr(student, "Centre", None) or "").strip()
+            for label in (centre_label, franchise_name):
+                if not label:
+                    continue
+                low_addr = address.lower()
+                low_label = label.lower()
+                if low_addr == low_label or low_addr.startswith(f"{low_label},"):
+                    address = ""
+                    if persist and (pp.address or "").strip():
+                        pp.address = ""
+                        pp.save(update_fields=["address"])
+                    break
+            if not address:
+                break
+
     for student in students_qs:
         if not phone and student.Mobileno:
             phone = _phone10_from_raw(str(student.Mobileno))
@@ -591,19 +614,8 @@ def enrich_parent_contact_fields(pp, user, *, persist: bool = True) -> dict[str,
             city = str(student.City).strip()[:100]
         if not full_name and student.ParentName:
             full_name = str(student.ParentName).strip()[:255]
-        if not address:
-            parts = [
-                p
-                for p in (
-                    (getattr(student, "Centre", None) or "").strip(),
-                    (getattr(student, "City", None) or "").strip(),
-                    (getattr(student, "State", None) or "").strip(),
-                )
-                if p
-            ]
-            if parts:
-                address = ", ".join(dict.fromkeys(parts))
-        if phone and city and full_name and address:
+        # Home address is not imported from TiKES (Centre column is the preschool, not residence).
+        if phone and city and full_name:
             break
 
     if persist and pp:

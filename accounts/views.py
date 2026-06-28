@@ -10,7 +10,12 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 
 from accounts.emails import find_user_for_password_reset, send_password_reset_email, send_registration_emails
 from accounts.permissions import IsAdminUser, IsParentUser
-from accounts.profile_access import parent_login_context, driver_profile_for_user, resolved_parent_profile_for_user
+from accounts.profile_access import (
+    driver_profile_for_user,
+    enrich_parent_contact_fields,
+    parent_login_context,
+    resolved_parent_profile_for_user,
+)
 from accounts.registration_checks import ALREADY_REGISTERED_MESSAGE, email_has_parent_account
 
 from django.db import transaction
