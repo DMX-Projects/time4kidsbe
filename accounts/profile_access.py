@@ -18,12 +18,26 @@ def _norm_role(user) -> str:
     return str(getattr(user, "role", "") or "").strip().upper()
 
 
+def _normalize_centre_login_key(raw: str | None) -> str:
+    """Lowercase centre login token with legacy ``_new`` / ``-new`` suffix removed."""
+    key = (raw or "").strip().lower()
+    for suffix in ("_new", "-new"):
+        if key.endswith(suffix):
+            key = key[: -len(suffix)]
+            break
+    return key
+
+
 def franchise_slug_login_key(slug: str) -> str:
     """First segment of a centre slug (e.g. ``kondapur`` from ``kondapur-timekids...``)."""
     s = (slug or "").strip().lower()
     if "-timekid" in s:
         s = s.split("-timekid", 1)[0]
-    return s.split("-")[0] if s else ""
+    s = s.split("-")[0] if s else ""
+    # e.g. ``tkvennala-timekids...`` → ``vennala`` for legacy TiKES centre logins.
+    if s.startswith("tk") and len(s) > 2:
+        s = s[2:]
+    return _normalize_centre_login_key(s)
 
 
 def _login_keys_for_franchise_user(user) -> list[str]:
@@ -32,8 +46,11 @@ def _login_keys_for_franchise_user(user) -> list[str]:
 
     def add(raw: str | None) -> None:
         key = (raw or "").strip().lower()
-        if key and key not in keys:
-            keys.append(key)
+        if not key:
+            return
+        for variant in (key, _normalize_centre_login_key(key)):
+            if variant and variant not in keys:
+                keys.append(variant)
 
     add(getattr(user, "username", None) or "")
 
@@ -50,7 +67,7 @@ def _login_keys_for_franchise_user(user) -> list[str]:
 
 def _slug_matches_login_key(slug: str, key: str) -> bool:
     slug_key = franchise_slug_login_key(slug)
-    key = (key or "").strip().lower()
+    key = _normalize_centre_login_key(key)
     if not slug_key or not key:
         return False
     if slug_key == key:
