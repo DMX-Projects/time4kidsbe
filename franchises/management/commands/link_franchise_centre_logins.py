@@ -11,7 +11,7 @@ from django.core.management.base import BaseCommand
 from django.db import transaction
 
 from accounts.models import UserRole
-from accounts.profile_access import franchise_slug_login_key
+from accounts.profile_access import franchise_slug_login_key, _normalize_centre_login_key
 from franchises.models import Franchise
 
 User = get_user_model()
@@ -54,15 +54,26 @@ class Command(BaseCommand):
                 candidates = list(
                     User.objects.filter(role__iexact=franchise_role, username__iexact=key)
                 )
+                if len(candidates) == 0:
+                    candidates = [
+                        u
+                        for u in User.objects.filter(role__iexact=franchise_role).only(
+                            "id", "username", "last_login"
+                        )
+                        if _normalize_centre_login_key(u.username) == key
+                    ]
                 if len(candidates) > 1:
-                    ambiguous += 1
+                    candidates.sort(
+                        key=lambda u: (u.last_login is not None, u.last_login or u.pk),
+                        reverse=True,
+                    )
                     self.stdout.write(
                         self.style.WARNING(
-                            f"Skip franchise #{franchise.id} ({franchise.slug}): "
-                            f"{len(candidates)} users named {key!r}"
+                            f"Franchise #{franchise.id} ({franchise.slug}): "
+                            f"multiple users match key {key!r}; using {candidates[0].username!r}"
                         )
                     )
-                    continue
+                    candidates = candidates[:1]
                 if len(candidates) == 0:
                     skipped += 1
                     continue
