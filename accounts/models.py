@@ -8,6 +8,7 @@ from django.utils import timezone
 class UserRole(models.TextChoices):
     ADMIN = "ADMIN", "Admin"
     APPROVER = "APPROVER", "Approver"
+    CRM = "CRM", "CRM"
     FRANCHISE = "FRANCHISE", "Franchise"
     PARENT = "PARENT", "Parent"
     DRIVER = "DRIVER", "Driver"
@@ -117,6 +118,10 @@ class User(AbstractBaseUser, PermissionsMixin):
     @property
     def is_approver(self) -> bool:
         return self.normalized_role() == UserRole.APPROVER.value
+
+    @property
+    def is_crm(self) -> bool:
+        return self.normalized_role() == UserRole.CRM.value
 
     @property
     def is_franchise(self) -> bool:

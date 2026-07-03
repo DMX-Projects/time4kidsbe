@@ -25,6 +25,15 @@ class IsAdminOrApproverUser(BasePermission):
         return r in (UserRole.ADMIN.value, UserRole.APPROVER.value)
 
 
+class IsCrmUser(BasePermission):
+    def has_permission(self, request, view):
+        return bool(
+            request.user
+            and request.user.is_authenticated
+            and _norm_role(request.user) == UserRole.CRM.value
+        )
+
+
 class IsFranchiseUser(BasePermission):
     def has_permission(self, request, view):
         return bool(

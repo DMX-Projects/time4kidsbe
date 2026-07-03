@@ -2,7 +2,15 @@ from django.urls import path
 
 from .views import (
     AdminAllEnquiryListView,
+    AdminCrmCentresView,
+    AdminCrmLeadDetailView,
+    AdminCrmLeadListView,
+    AdminCrmLeadNoteCreateView,
+    AdminCrmLeadRemindersView,
+    AdminCrmLeadStatsView,
+    AdminCrmSendReminderView,
     AdminEnquiryListView,
+    CrmLeadCreateView,
     EnquiryCreateView,
     EnquiryUpdateView,
     FranchiseEnquiryCreateView,
@@ -17,6 +25,14 @@ from .views import (
 )
 
 urlpatterns = [
+    path("crm-leads/", CrmLeadCreateView.as_view(), name="crm-lead-create"),
+    path("admin/crm-leads/", AdminCrmLeadListView.as_view(), name="admin-crm-leads"),
+    path("admin/crm-leads/stats/", AdminCrmLeadStatsView.as_view(), name="admin-crm-leads-stats"),
+    path("admin/crm-leads/reminders/", AdminCrmLeadRemindersView.as_view(), name="admin-crm-leads-reminders"),
+    path("admin/crm-leads/send-reminder/", AdminCrmSendReminderView.as_view(), name="admin-crm-send-reminder"),
+    path("admin/crm-centres/", AdminCrmCentresView.as_view(), name="admin-crm-centres"),
+    path("admin/crm-leads/<int:pk>/", AdminCrmLeadDetailView.as_view(), name="admin-crm-lead-detail"),
+    path("admin/crm-leads/<int:pk>/notes/", AdminCrmLeadNoteCreateView.as_view(), name="admin-crm-lead-note"),
     path("landing-submit/", LandingEnquirySubmitView.as_view(), name="landing-enquiry-submit"),
     path("landing-leads/", LandingKidsEnquiryListView.as_view(), name="landing-kids-enquiry-list"),
     path("send-otp/", SendOTPView.as_view(), name="send-otp"),

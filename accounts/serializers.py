@@ -228,6 +228,11 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         if not user.is_active:
             raise AuthenticationFailed("User account is disabled")
 
+        if user.normalized_role() == UserRole.CRM.value:
+            raise PermissionDenied(
+                "CRM accounts must sign in from the CRM login page (/crm-admin/login), not the main website login."
+            )
+
         # We've authenticated the user manually.
         # SimpleJWT TokenObtainPairSerializer uses self.user to generate tokens.
         self.user = user
@@ -335,3 +340,45 @@ class ParentTokenObtainPairSerializer(TokenObtainPairSerializer):
         }
 
         return data
+
+
+class CrmTokenObtainPairSerializer(TokenObtainPairSerializer):
+    """CRM-only login — same email/password flow as timekids_crm_clone admin login."""
+
+    username_field = "email"
+
+    def validate(self, attrs):
+        identifier = attrs.get("email")
+        password = attrs.get("password")
+
+        user = _authenticate_with_identifier(identifier, password) if identifier else None
+
+        if not user:
+            if _inactive_user_with_valid_password(identifier or "", password or ""):
+                raise AuthenticationFailed("User account is disabled")
+            raise AuthenticationFailed("Invalid credentials")
+
+        if not user.is_active:
+            raise AuthenticationFailed("User account is disabled")
+
+        if user.normalized_role() != UserRole.CRM.value:
+            raise PermissionDenied(
+                "This login is for CRM accounts only. Use the main website login for admin, centre, or parent users."
+            )
+
+        self.user = user
+
+        from rest_framework_simplejwt.tokens import RefreshToken
+
+        refresh = RefreshToken.for_user(user)
+
+        return {
+            "refresh": str(refresh),
+            "access": str(refresh.access_token),
+            "user": {
+                "id": user.id,
+                "email": user.email,
+                "full_name": user.full_name,
+                "role": user.role,
+            },
+        }

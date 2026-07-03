@@ -3,7 +3,7 @@ from rest_framework import serializers
 from accounts.registration_checks import ALREADY_REGISTERED_MESSAGE, email_has_parent_account
 from franchises.models import Franchise
 
-from .models import Enquiry, EnquiryType, FranchiseEnquiry, KidsEnquiry
+from .models import CrmLead, Enquiry, EnquiryType, FranchiseEnquiry, KidsEnquiry
 
 
 class EnquirySerializer(serializers.ModelSerializer):
@@ -196,3 +196,87 @@ class KidsEnquirySerializer(serializers.ModelSerializer):
             "raw_payload",
         ]
         read_only_fields = fields
+
+
+class CrmLeadSerializer(serializers.ModelSerializer):
+    """CRM leads stored separately from landing leads and enquiries."""
+
+    fullName = serializers.CharField(source="full_name", required=False, allow_blank=True, write_only=True)
+    preferredCentreLocation = serializers.CharField(
+        source="preferred_centre_location", required=False, allow_blank=True, write_only=True
+    )
+    franchiseType = serializers.CharField(source="franchise_type", required=False, allow_blank=True, write_only=True)
+    investmentRange = serializers.CharField(source="investment_range", required=False, allow_blank=True, write_only=True)
+    expectedStartDate = serializers.CharField(source="expected_start_date", required=False, allow_blank=True, write_only=True)
+    landingPageUrl = serializers.CharField(source="landing_page_url", required=False, allow_blank=True, write_only=True)
+    utmSource = serializers.CharField(source="utm_source", required=False, allow_blank=True, write_only=True)
+    utmMedium = serializers.CharField(source="utm_medium", required=False, allow_blank=True, write_only=True)
+    utmCampaign = serializers.CharField(source="utm_campaign", required=False, allow_blank=True, write_only=True)
+
+    class Meta:
+        model = CrmLead
+        fields = [
+            "id",
+            "full_name",
+            "fullName",
+            "mobile",
+            "email",
+            "state",
+            "city",
+            "preferred_centre_location",
+            "preferredCentreLocation",
+            "franchise_type",
+            "franchiseType",
+            "investment_range",
+            "investmentRange",
+            "expected_start_date",
+            "expectedStartDate",
+            "comments",
+            "source",
+            "landing_page_url",
+            "landingPageUrl",
+            "utm_source",
+            "utmSource",
+            "utm_medium",
+            "utmMedium",
+            "utm_campaign",
+            "utmCampaign",
+            "status",
+            "raw_payload",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "status", "raw_payload", "created_at", "updated_at"]
+        extra_kwargs = {
+            "full_name": {"required": False, "allow_blank": True},
+            "email": {"required": False, "allow_blank": True},
+            "state": {"required": False, "allow_blank": True},
+            "city": {"required": False, "allow_blank": True},
+            "preferred_centre_location": {"required": False, "allow_blank": True},
+            "franchise_type": {"required": False, "allow_blank": True},
+            "investment_range": {"required": False, "allow_blank": True},
+            "expected_start_date": {"required": False, "allow_blank": True},
+            "comments": {"required": False, "allow_blank": True},
+            "landing_page_url": {"required": False, "allow_blank": True},
+            "utm_source": {"required": False, "allow_blank": True},
+            "utm_medium": {"required": False, "allow_blank": True},
+            "utm_campaign": {"required": False, "allow_blank": True},
+        }
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        full_name = (attrs.get("full_name") or "").strip()
+        mobile = (attrs.get("mobile") or "").strip()
+        if not full_name:
+            raise serializers.ValidationError({"full_name": "Name is required."})
+        if not mobile:
+            raise serializers.ValidationError({"mobile": "Mobile number is required."})
+        attrs["full_name"] = full_name
+        attrs["mobile"] = mobile
+        return attrs
+
+    def create(self, validated_data):
+        request = self.context.get("request")
+        if request is not None:
+            validated_data["raw_payload"] = getattr(request, "data", {}) or {}
+        return super().create(validated_data)
