@@ -111,6 +111,76 @@ class KidsEnquiry(models.Model):
         return f"{self.name} ({self.enquiry_type})"
 
 
+class CrmLeadSource(models.TextChoices):
+    WEB = "web", "Website"
+    FB = "fb", "Facebook"
+    INSTA = "insta", "Instagram"
+
+
+class CrmLeadStatus(models.TextChoices):
+    NEW = "new", "New"
+    CONTACTED = "contacted", "Contacted"
+    CALLED = "called", "Called"
+    FOLLOW_UP = "follow_up", "Follow Up"
+    INTERESTED = "interested", "Interested"
+    MEETING_SCHEDULED = "meeting_scheduled", "Meeting Scheduled"
+    CONVERTED = "converted", "Converted"
+    DROPPED = "dropped", "Dropped"
+    NOT_INTERESTED = "not_interested", "Not Interested"
+
+
+class CrmLead(models.Model):
+    """Separate CRM leads for /crm/web, /crm/fb, and /crm/insta."""
+
+    full_name = models.CharField(max_length=255)
+    mobile = models.CharField(max_length=20)
+    email = models.EmailField(blank=True, default="")
+    state = models.CharField(max_length=100, blank=True, default="")
+    city = models.CharField(max_length=100, blank=True, default="")
+    preferred_centre_location = models.CharField(max_length=255, blank=True, default="")
+    franchise_type = models.CharField(max_length=100, blank=True, default="")
+    investment_range = models.CharField(max_length=100, blank=True, default="")
+    expected_start_date = models.CharField(max_length=100, blank=True, default="")
+    comments = models.TextField(blank=True, default="")
+    source = models.CharField(max_length=20, choices=CrmLeadSource.choices, default=CrmLeadSource.WEB)
+    landing_page_url = models.URLField(max_length=500, blank=True, default="")
+    utm_source = models.CharField(max_length=150, blank=True, default="")
+    utm_medium = models.CharField(max_length=150, blank=True, default="")
+    utm_campaign = models.CharField(max_length=150, blank=True, default="")
+    status = models.CharField(max_length=30, choices=CrmLeadStatus.choices, default=CrmLeadStatus.NEW)
+    meeting_date = models.DateTimeField(null=True, blank=True)
+    next_follow_up_date = models.DateTimeField(null=True, blank=True)
+    raw_payload = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "crm_leads"
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["created_at"], name="idx_crm_leads_created_at"),
+            models.Index(fields=["source"], name="idx_crm_leads_source"),
+            models.Index(fields=["status"], name="idx_crm_leads_status"),
+            models.Index(fields=["mobile"], name="idx_crm_leads_mobile"),
+        ]
+
+    def __str__(self) -> str:
+        return f"CRM lead from {self.full_name} ({self.source})"
+
+
+class CrmLeadNote(models.Model):
+    lead = models.ForeignKey(CrmLead, on_delete=models.CASCADE, related_name="notes")
+    content = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "crm_lead_notes"
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return f"Note for CRM lead {self.lead_id}"
+
+
 class OTPVerification(models.Model):
     phone = models.CharField(max_length=20, unique=True)
     code = models.CharField(max_length=6)

@@ -8,12 +8,13 @@ from rest_framework.views import APIView
 
 from accounts.authentication import LenientJWTAuthentication
 from accounts.permissions import IsAdminUser, IsFranchiseUser
-from .permissions import can_view_landing_leads
+from .permissions import can_view_crm_leads, can_view_landing_leads
 from accounts.profile_access import franchise_profile_for_user
 
 from .landing_submit import handle_landing_enquiry_post
-from .models import Enquiry, FranchiseEnquiry, KidsEnquiry, OTPVerification
+from .models import CrmLead, Enquiry, FranchiseEnquiry, KidsEnquiry, OTPVerification
 from .serializers import (
+    CrmLeadSerializer,
     EnquirySerializer,
     FranchiseEnquiryCreateSerializer,
     FranchiseEnquiryReadSerializer,
@@ -300,6 +301,169 @@ class LandingKidsEnquiryListView(APIView):
                 "results": data,
             }
         )
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class CrmLeadCreateView(generics.CreateAPIView):
+    """Public CRM form submit for /crm/web, /crm/fb, and /crm/insta."""
+
+    serializer_class = CrmLeadSerializer
+    permission_classes = [permissions.AllowAny]
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx["request"] = self.request
+        return ctx
+
+
+class AdminCrmLeadListView(APIView):
+    """Paginated CRM leads list — clone-compatible `{ leads, total }` response."""
+
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        if not can_view_crm_leads(request):
+            return Response(
+                {"detail": "CRM login required. Sign in with a CRM account to view CRM leads."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        from .crm_api import apply_lead_filters, lead_to_dict
+
+        qs = apply_lead_filters(CrmLead.objects.all().order_by("-created_at"), request)
+        try:
+            page = max(1, int(request.query_params.get("page") or 1))
+        except ValueError:
+            page = 1
+        try:
+            limit = min(100, max(1, int(request.query_params.get("limit") or 10)))
+        except ValueError:
+            limit = 10
+
+        total = qs.count()
+        offset = (page - 1) * limit
+        leads = [lead_to_dict(lead) for lead in qs[offset : offset + limit]]
+        return Response({"leads": leads, "total": total})
+
+
+class AdminCrmLeadDetailView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, pk):
+        if not can_view_crm_leads(request):
+            return Response({"detail": "CRM login required."}, status=status.HTTP_403_FORBIDDEN)
+        from .crm_api import lead_to_dict
+
+        lead = CrmLead.objects.filter(pk=pk).prefetch_related("notes").first()
+        if not lead:
+            return Response({"message": "Lead not found"}, status=status.HTTP_404_NOT_FOUND)
+        return Response(lead_to_dict(lead, include_detail=True))
+
+    def patch(self, request, pk):
+        if not can_view_crm_leads(request):
+            return Response({"detail": "CRM login required."}, status=status.HTTP_403_FORBIDDEN)
+
+        from .crm_api import lead_to_dict, parse_update_payload
+        from .models import CrmLeadStatus
+
+        lead = CrmLead.objects.filter(pk=pk).first()
+        if not lead:
+            return Response({"message": "Lead not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        updates = parse_update_payload(request.data or {})
+        if "status" in updates:
+            valid = {choice.value for choice in CrmLeadStatus}
+            if updates["status"] not in valid:
+                return Response(
+                    {"message": f"Invalid status. Allowed: {', '.join(sorted(valid))}."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        for field, value in updates.items():
+            setattr(lead, field, value)
+        lead.save()
+        return Response(lead_to_dict(lead, include_detail=True))
+
+
+class AdminCrmLeadStatsView(APIView):
+    """CRM dashboard stats — clone-compatible response."""
+
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        if not can_view_crm_leads(request):
+            return Response(
+                {"detail": "CRM login required. Sign in with a CRM account to view CRM leads."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        from .crm_api import apply_lead_filters, dashboard_stats
+
+        qs = apply_lead_filters(CrmLead.objects.all(), request)
+        return Response(dashboard_stats(qs))
+
+
+class AdminCrmLeadRemindersView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        if not can_view_crm_leads(request):
+            return Response({"detail": "CRM login required."}, status=status.HTTP_403_FORBIDDEN)
+
+        from .crm_api import apply_lead_filters, reminders_for_qs
+
+        qs = apply_lead_filters(CrmLead.objects.all(), request)
+        return Response(reminders_for_qs(qs))
+
+
+class AdminCrmLeadNoteCreateView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, pk):
+        if not can_view_crm_leads(request):
+            return Response({"detail": "CRM login required."}, status=status.HTTP_403_FORBIDDEN)
+
+        from .crm_api import note_to_dict
+
+        lead = CrmLead.objects.filter(pk=pk).first()
+        if not lead:
+            return Response({"message": "Lead not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        content = (request.data.get("content") or "").strip()
+        if not content:
+            return Response({"message": "Note content is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        from .models import CrmLeadNote
+
+        note = CrmLeadNote.objects.create(lead=lead, content=content)
+        return Response(note_to_dict(note), status=status.HTTP_201_CREATED)
+
+
+class AdminCrmSendReminderView(APIView):
+    """Stub — clone UI expects success; actual email/WhatsApp handled client-side."""
+
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        if not can_view_crm_leads(request):
+            return Response({"detail": "CRM login required."}, status=status.HTTP_403_FORBIDDEN)
+        return Response({"success": True})
+
+
+class AdminCrmCentresView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        if not can_view_crm_leads(request):
+            return Response({"detail": "CRM login required."}, status=status.HTTP_403_FORBIDDEN)
+
+        from franchises.models import Franchise
+
+        centres = [
+            {"id": str(f.id), "name": f.name}
+            for f in Franchise.objects.filter(is_active=True).order_by("name")
+        ]
+        return Response(centres)
 
 
 import os

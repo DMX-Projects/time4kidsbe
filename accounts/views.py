@@ -20,7 +20,12 @@ from accounts.registration_checks import ALREADY_REGISTERED_MESSAGE, email_has_p
 
 from django.db import transaction
 
-from .serializers import CustomTokenObtainPairSerializer, ParentTokenObtainPairSerializer, UserSerializer
+from .serializers import (
+    CrmTokenObtainPairSerializer,
+    CustomTokenObtainPairSerializer,
+    ParentTokenObtainPairSerializer,
+    UserSerializer,
+)
 from .models import ParentRegistration, User
 from django.contrib.auth.password_validation import validate_password
 from django.db.models import Q
@@ -69,6 +74,12 @@ class CustomTokenObtainPairView(TokenObtainPairView):
 class ParentLoginView(TokenObtainPairView):
     """Parent-specific login endpoint"""
     serializer_class = ParentTokenObtainPairSerializer
+
+
+@method_decorator(csrf_exempt, name='dispatch')
+class CrmLoginView(TokenObtainPairView):
+    """CRM-only login endpoint (timekids_crm_clone admin login equivalent)."""
+    serializer_class = CrmTokenObtainPairSerializer
 
 
 @method_decorator(csrf_exempt, name='dispatch')
