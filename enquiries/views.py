@@ -78,6 +78,13 @@ class EnquiryStatusSyncMixin:
         _sync_enquiry_status_siblings(instance, instance.status)
 
 
+def _admin_enquiry_scope(qs, admin_user):
+    """HO super admins see every enquiry; other admins are scoped to franchises they own."""
+    if getattr(admin_user, "is_superuser", False):
+        return qs
+    return qs.filter(Q(franchise__isnull=True) | Q(franchise__admin=admin_user))
+
+
 def _merge_enquiry_rows(
     enquiry_qs,
     franchise_qs,
@@ -169,12 +176,12 @@ class AdminEnquiryListView(APIView):
     def get(self, request, *args, **kwargs):
         admin_user = request.user
         e_qs = (
-            Enquiry.objects.filter(Q(franchise__isnull=True) | Q(franchise__admin=admin_user))
+            _admin_enquiry_scope(Enquiry.objects.all(), admin_user)
             .select_related("franchise")
             .order_by("-created_at")
         )
         f_qs = (
-            FranchiseEnquiry.objects.filter(Q(franchise__isnull=True) | Q(franchise__admin=admin_user))
+            _admin_enquiry_scope(FranchiseEnquiry.objects.all(), admin_user)
             .select_related("franchise")
             .order_by("-created_at")
         )
@@ -203,12 +210,12 @@ class AdminAllEnquiryListView(APIView):
     def get(self, request, *args, **kwargs):
         admin_user = request.user
         e_qs = (
-            Enquiry.objects.filter(Q(franchise__isnull=True) | Q(franchise__admin=admin_user))
+            _admin_enquiry_scope(Enquiry.objects.all(), admin_user)
             .select_related("franchise")
             .order_by("-created_at")
         )
         f_qs = (
-            FranchiseEnquiry.objects.filter(Q(franchise__isnull=True) | Q(franchise__admin=admin_user))
+            _admin_enquiry_scope(FranchiseEnquiry.objects.all(), admin_user)
             .select_related("franchise")
             .order_by("-created_at")
         )
@@ -224,8 +231,8 @@ class EnquiryUpdateView(EnquiryStatusSyncMixin, generics.UpdateAPIView):
 
     def get_queryset(self):
         admin_user = self.request.user
-        return Enquiry.objects.filter(
-            Q(franchise__isnull=True) | Q(franchise__admin=admin_user)
+        return _admin_enquiry_scope(
+            Enquiry.objects.all(), admin_user
         ).select_related("franchise")
 
 
@@ -249,8 +256,8 @@ class FranchiseLeadAdminUpdateView(EnquiryStatusSyncMixin, generics.UpdateAPIVie
 
     def get_queryset(self):
         admin_user = self.request.user
-        return FranchiseEnquiry.objects.filter(
-            Q(franchise__isnull=True) | Q(franchise__admin=admin_user)
+        return _admin_enquiry_scope(
+            FranchiseEnquiry.objects.all(), admin_user
         ).select_related("franchise")
 
 
@@ -328,9 +335,8 @@ class AdminCrmLeadListView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        from .crm_api import apply_lead_filters, lead_to_dict
+        from .crm_api import unified_leads_page, unified_leads_total
 
-        qs = apply_lead_filters(CrmLead.objects.all().order_by("-created_at"), request)
         try:
             page = max(1, int(request.query_params.get("page") or 1))
         except ValueError:
@@ -340,9 +346,8 @@ class AdminCrmLeadListView(APIView):
         except ValueError:
             limit = 10
 
-        total = qs.count()
-        offset = (page - 1) * limit
-        leads = [lead_to_dict(lead) for lead in qs[offset : offset + limit]]
+        total = unified_leads_total(request)
+        leads = unified_leads_page(request, page=page, limit=limit)
         return Response({"leads": leads, "total": total})
 
 
@@ -352,37 +357,34 @@ class AdminCrmLeadDetailView(APIView):
     def get(self, request, pk):
         if not can_view_crm_leads(request):
             return Response({"detail": "CRM login required."}, status=status.HTTP_403_FORBIDDEN)
-        from .crm_api import lead_to_dict
+        from .crm_api import lead_to_dict, parse_lead_id, unified_lead_detail
 
-        lead = CrmLead.objects.filter(pk=pk).prefetch_related("notes").first()
-        if not lead:
+        kind, _ = parse_lead_id(pk)
+        if kind == "crm":
+            lead = CrmLead.objects.filter(pk=parse_lead_id(pk)[1]).prefetch_related("notes").first()
+            if not lead:
+                return Response({"message": "Lead not found"}, status=status.HTTP_404_NOT_FOUND)
+            return Response(lead_to_dict(lead, include_detail=True))
+
+        data = unified_lead_detail(pk, include_detail=True)
+        if not data:
             return Response({"message": "Lead not found"}, status=status.HTTP_404_NOT_FOUND)
-        return Response(lead_to_dict(lead, include_detail=True))
+        return Response(data)
 
     def patch(self, request, pk):
         if not can_view_crm_leads(request):
             return Response({"detail": "CRM login required."}, status=status.HTTP_403_FORBIDDEN)
 
-        from .crm_api import lead_to_dict, parse_update_payload
-        from .models import CrmLeadStatus
+        from .crm_api import update_unified_lead
 
-        lead = CrmLead.objects.filter(pk=pk).first()
-        if not lead:
+        try:
+            data = update_unified_lead(pk, request.data or {}, include_detail=True)
+        except ValueError as exc:
+            return Response({"message": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not data:
             return Response({"message": "Lead not found"}, status=status.HTTP_404_NOT_FOUND)
-
-        updates = parse_update_payload(request.data or {})
-        if "status" in updates:
-            valid = {choice.value for choice in CrmLeadStatus}
-            if updates["status"] not in valid:
-                return Response(
-                    {"message": f"Invalid status. Allowed: {', '.join(sorted(valid))}."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-        for field, value in updates.items():
-            setattr(lead, field, value)
-        lead.save()
-        return Response(lead_to_dict(lead, include_detail=True))
+        return Response(data)
 
 
 class AdminCrmLeadStatsView(APIView):
@@ -397,10 +399,9 @@ class AdminCrmLeadStatsView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        from .crm_api import apply_lead_filters, dashboard_stats
+        from .crm_api import unified_dashboard_stats
 
-        qs = apply_lead_filters(CrmLead.objects.all(), request)
-        return Response(dashboard_stats(qs))
+        return Response(unified_dashboard_stats(request))
 
 
 class AdminCrmLeadRemindersView(APIView):
@@ -410,10 +411,9 @@ class AdminCrmLeadRemindersView(APIView):
         if not can_view_crm_leads(request):
             return Response({"detail": "CRM login required."}, status=status.HTTP_403_FORBIDDEN)
 
-        from .crm_api import apply_lead_filters, reminders_for_qs
+        from .crm_api import unified_reminders
 
-        qs = apply_lead_filters(CrmLead.objects.all(), request)
-        return Response(reminders_for_qs(qs))
+        return Response(unified_reminders(request))
 
 
 class AdminCrmLeadNoteCreateView(APIView):
@@ -423,9 +423,16 @@ class AdminCrmLeadNoteCreateView(APIView):
         if not can_view_crm_leads(request):
             return Response({"detail": "CRM login required."}, status=status.HTTP_403_FORBIDDEN)
 
-        from .crm_api import note_to_dict
+        from .crm_api import note_to_dict, parse_lead_id
 
-        lead = CrmLead.objects.filter(pk=pk).first()
+        kind, numeric_id = parse_lead_id(pk)
+        if kind != "crm":
+            return Response(
+                {"message": "Notes can only be added to CRM campaign leads."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        lead = CrmLead.objects.filter(pk=numeric_id).first()
         if not lead:
             return Response({"message": "Lead not found"}, status=status.HTTP_404_NOT_FOUND)
 
@@ -457,13 +464,29 @@ class AdminCrmCentresView(APIView):
         if not can_view_crm_leads(request):
             return Response({"detail": "CRM login required."}, status=status.HTTP_403_FORBIDDEN)
 
+        from franchises.franchise_geo import filter_queryset_by_city
         from franchises.models import Franchise
 
-        centres = [
-            {"id": str(f.id), "name": f.name}
-            for f in Franchise.objects.filter(is_active=True).order_by("name")
-        ]
+        qs = Franchise.objects.filter(is_active=True).order_by("name")
+        city = (request.query_params.get("city") or "").strip()
+        if city:
+            qs = filter_queryset_by_city(qs, city)
+
+        centres = [{"id": str(f.id), "name": f.name} for f in qs]
         return Response(centres)
+
+
+class AdminCrmCitiesView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        if not can_view_crm_leads(request):
+            return Response({"detail": "CRM login required."}, status=status.HTTP_403_FORBIDDEN)
+
+        from .crm_api import unified_crm_cities
+
+        cities = unified_crm_cities()
+        return Response([{"name": city} for city in cities])
 
 
 import os

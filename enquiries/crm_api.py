@@ -8,7 +8,7 @@ from django.db.models import Count, Q
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
 
-from .models import CrmLead, CrmLeadNote, CrmLeadSource, CrmLeadStatus
+from .models import CrmLead, CrmLeadNote, CrmLeadSource, CrmLeadStatus, Enquiry, EnquiryType, KidsEnquiry, FranchiseEnquiry
 
 CRM_SOURCE_FROM_API = {
     "website": CrmLeadSource.WEB,
@@ -17,6 +17,10 @@ CRM_SOURCE_FROM_API = {
     "web": CrmLeadSource.WEB,
     "fb": CrmLeadSource.FB,
     "insta": CrmLeadSource.INSTA,
+    "admission": "admission",
+    "contact": "contact",
+    "landing": "landing",
+    "campaign": "campaign",
 }
 
 CRM_SOURCE_TO_API = {
@@ -55,14 +59,24 @@ def note_to_dict(note: CrmLeadNote) -> dict:
 
 
 def lead_to_dict(lead: CrmLead, *, include_detail: bool = False) -> dict:
+    franchise = _resolved_franchise_for_crm_lead(lead)
+    centre_name, centre_phone, centre_email = _franchise_centre_contact(franchise)
+    from franchises.franchise_geo import effective_city
+
+    city = effective_city(franchise) if franchise else (lead.city or "")
+    state = _franchise_state(franchise) if franchise else (lead.state or "")
+    if not centre_name:
+        centre_name = (lead.preferred_centre_location or "").strip()
     data = {
-        "id": str(lead.id),
+        "id": f"crm-{lead.id}",
+        "leadKind": "crm",
+        "editable": True,
         "fullName": lead.full_name,
         "mobile": lead.mobile,
         "email": lead.email or "",
-        "city": lead.city or "",
-        "state": lead.state or "",
-        "preferredCentreLocation": lead.preferred_centre_location or "",
+        "city": city,
+        "state": state,
+        "preferredCentreLocation": centre_name,
         "franchiseType": lead.franchise_type or None,
         "investmentRange": lead.investment_range or None,
         "expectedStartDate": lead.expected_start_date or None,
@@ -80,6 +94,742 @@ def lead_to_dict(lead: CrmLead, *, include_detail: bool = False) -> dict:
         data["notificationLogs"] = []
         data["callHistory"] = []
     return data
+
+
+def _query_params(request):
+    return getattr(request, "query_params", None) or request.GET
+
+
+def _parse_request_dates(request):
+    params = _query_params(request)
+    raw_start = (params.get("startDate") or "").strip()
+    raw_end = (params.get("endDate") or "").strip()
+    start = parse_datetime(raw_start) or (parse_date(raw_start) if raw_start else None)
+    end = parse_datetime(raw_end) or (parse_date(raw_end) if raw_end else None)
+    return start, end
+
+
+def _request_centre_filter(request) -> int | None:
+    raw = (_query_params(request).get("centreId") or _query_params(request).get("centre_id") or "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+def _franchise_for_centre_filter(request):
+    centre_id = _request_centre_filter(request)
+    if not centre_id:
+        return None
+    from franchises.models import Franchise
+
+    return Franchise.objects.filter(pk=centre_id, is_active=True).first()
+
+
+def _filter_enquiry_qs_by_centre(qs, request):
+    centre_id = _request_centre_filter(request)
+    if not centre_id:
+        return qs
+    return qs.filter(franchise_id=centre_id)
+
+
+def _filter_landing_qs_by_centre(qs, request):
+    franchise = _franchise_for_centre_filter(request)
+    if not franchise:
+        return qs
+    name = (franchise.name or "").strip()
+    if not name:
+        return qs.none()
+    return qs.filter(Q(location__iexact=name) | Q(centre_name__iexact=name))
+
+
+def _filter_crm_qs_by_centre(qs, request):
+    franchise = _franchise_for_centre_filter(request)
+    if not franchise:
+        return qs
+    name = (franchise.name or "").strip()
+    if not name:
+        return qs.none()
+    return qs.filter(preferred_centre_location__iexact=name)
+
+
+def _request_city_filter(request) -> str | None:
+    city = (_query_params(request).get("city") or "").strip()
+    return city or None
+
+
+def _franchise_state(franchise) -> str:
+    if not franchise:
+        return ""
+    from franchises.franchise_geo import state_to_display
+
+    raw = (getattr(franchise, "statename", None) or getattr(franchise, "state", None) or "").strip()
+    return state_to_display(raw) if raw else ""
+
+
+def _franchise_centre_contact(franchise) -> tuple[str, str, str]:
+    if not franchise:
+        return "", "", ""
+    name = (getattr(franchise, "name", None) or "").strip()
+    phone = (getattr(franchise, "contact_phone", None) or getattr(franchise, "phoneno", None) or "").strip()
+    email = (getattr(franchise, "contact_email", None) or getattr(franchise, "email", None) or "").strip()
+    return name, phone, email
+
+
+def _resolved_franchise_for_landing(row: KidsEnquiry):
+    from enquiries.landing_submit import _lookup_franchise
+
+    city = (row.city or "").strip()
+    location = (row.location or row.centre_name or "").strip()
+    return _lookup_franchise(city, location)
+
+
+def _resolved_franchise_for_crm_lead(lead: CrmLead):
+    from enquiries.landing_submit import _lookup_franchise
+
+    city = (lead.city or "").strip()
+    location = (lead.preferred_centre_location or "").strip()
+    if not location:
+        return None
+    return _lookup_franchise(city, location)
+
+
+def _centre_names_in_city(city: str) -> list[str]:
+    from franchises.franchise_geo import filter_queryset_by_city
+    from franchises.models import Franchise
+
+    return list(
+        filter_queryset_by_city(Franchise.objects.filter(is_active=True), city)
+        .values_list("name", flat=True)
+        .distinct()
+    )
+
+
+def _filter_qs_by_city(
+    qs,
+    request,
+    *,
+    field_name: str = "city",
+    franchise_city_fields: tuple[str, ...] = (),
+):
+    city = _request_city_filter(request)
+    if not city:
+        return qs
+    from franchises.franchise_geo import city_query_variants
+
+    city_q = Q()
+    for variant in city_query_variants(city):
+        city_q |= Q(**{f"{field_name}__iexact": variant})
+        for franchise_field in franchise_city_fields:
+            city_q |= Q(**{f"{franchise_field}__iexact": variant})
+    return qs.filter(city_q)
+
+
+def _filter_landing_qs_by_city(qs, request):
+    city = _request_city_filter(request)
+    if not city:
+        return qs
+    from franchises.franchise_geo import city_query_variants
+
+    city_q = Q()
+    for variant in city_query_variants(city):
+        city_q |= Q(city__iexact=variant)
+    centre_names = _centre_names_in_city(city)
+    if centre_names:
+        city_q |= Q(location__in=centre_names) | Q(centre_name__in=centre_names)
+    return qs.filter(city_q)
+
+
+def _filter_crm_qs_by_city(qs, request):
+    city = _request_city_filter(request)
+    if not city:
+        return qs
+    from franchises.franchise_geo import city_query_variants
+
+    city_q = Q()
+    for variant in city_query_variants(city):
+        city_q |= Q(city__iexact=variant)
+    centre_names = _centre_names_in_city(city)
+    if centre_names:
+        city_q |= Q(preferred_centre_location__in=centre_names)
+    return qs.filter(city_q)
+
+
+def unified_crm_cities() -> list[str]:
+    """City names for CRM filter dropdown (franchise locations)."""
+    from franchises.franchise_geo import cities_from_franchises
+
+    cities: set[str] = set()
+    for loc in cities_from_franchises():
+        name = (loc.get("city_name") or loc.get("city") or "").strip()
+        if name:
+            cities.add(name)
+    return sorted(cities, key=str.casefold)
+
+
+def _request_source_filter(request) -> str | None:
+    return (_query_params(request).get("source") or "").strip().lower() or None
+
+
+def _include_crm(source_filter: str | None) -> bool:
+    if not source_filter:
+        return True
+    if source_filter == "campaign":
+        return True
+    return source_filter in {
+        "website", "facebook", "instagram", "web", "fb", "insta"
+    }
+
+
+def _include_franchise_enquiry(source_filter: str | None) -> bool:
+    return not source_filter or source_filter == "franchise"
+
+
+def _include_admission(source_filter: str | None) -> bool:
+    return not source_filter or source_filter == "admission"
+
+
+def _include_contact(source_filter: str | None) -> bool:
+    return not source_filter or source_filter == "contact"
+
+
+def _include_landing(source_filter: str | None) -> bool:
+    """``kids_enquiry`` landing leads use the separate landing-leads report, not unified CRM."""
+    return False
+
+
+def _enquiry_status_to_crm(status: str) -> str:
+    if status == "in-progress":
+        return "contacted"
+    if status == "closed":
+        return "converted"
+    return status
+
+
+def _crm_status_matches_enquiry(crm_status: str, enquiry_status: str) -> bool:
+    mapped = _enquiry_status_to_crm(enquiry_status)
+    return mapped == crm_status
+
+
+def _crm_status_to_enquiry(crm_status: str) -> str:
+    return crm_status
+
+
+def _landing_crm_status(row: KidsEnquiry) -> str:
+    payload = row.raw_payload if isinstance(row.raw_payload, dict) else {}
+    value = str(payload.get("crm_status") or "").strip()
+    return value or "new"
+
+
+def _valid_crm_statuses() -> set[str]:
+    return {choice.value for choice in CrmLeadStatus}
+
+
+def enquiry_to_dict(enquiry: Enquiry, *, include_detail: bool = False) -> dict:
+    franchise = enquiry.franchise if enquiry.franchise_id else None
+    centre_name, centre_phone, centre_email = _franchise_centre_contact(franchise)
+    from franchises.franchise_geo import effective_city
+
+    city = effective_city(franchise) if franchise else (enquiry.city or "")
+    state = _franchise_state(franchise) if franchise else ""
+    source = "admission" if enquiry.enquiry_type == EnquiryType.ADMISSION else "contact"
+    data = {
+        "id": f"enquiry-{enquiry.id}",
+        "leadKind": "enquiry",
+        "editable": True,
+        "fullName": enquiry.name,
+        "mobile": enquiry.phone or "",
+        "email": enquiry.email or "",
+        "city": city,
+        "state": state,
+        "preferredCentreLocation": centre_name,
+        "franchiseType": None,
+        "investmentRange": None,
+        "expectedStartDate": None,
+        "source": source,
+        "enquiryType": enquiry.enquiry_type,
+        "childAge": enquiry.child_age or "",
+        "comments": enquiry.message or "",
+        "status": _enquiry_status_to_crm(enquiry.status),
+        "meetingDate": None,
+        "nextFollowUpDate": None,
+        "createdAt": _dt(enquiry.created_at),
+        "updatedAt": _dt(enquiry.created_at),
+    }
+    if include_detail:
+        data["notes"] = []
+        data["auditLogs"] = []
+        data["notificationLogs"] = []
+        data["callHistory"] = []
+    return data
+
+
+def franchise_enquiry_to_dict(enquiry: FranchiseEnquiry, *, include_detail: bool = False) -> dict:
+    franchise = enquiry.franchise if enquiry.franchise_id else None
+    centre_name, centre_phone, centre_email = _franchise_centre_contact(franchise)
+    from franchises.franchise_geo import effective_city
+
+    city = effective_city(franchise) if franchise else (enquiry.city or "")
+    state = _franchise_state(franchise) if franchise else ""
+    data = {
+        "id": f"franchiseenquiry-{enquiry.id}",
+        "leadKind": "franchiseenquiry",
+        "editable": True,
+        "fullName": enquiry.name,
+        "mobile": enquiry.phone or "",
+        "email": enquiry.email or "",
+        "city": city,
+        "state": state,
+        "preferredCentreLocation": centre_name,
+        "franchiseType": None,
+        "investmentRange": None,
+        "expectedStartDate": None,
+        "source": "franchise",
+        "enquiryType": "FRANCHISE",
+        "comments": enquiry.message or "",
+        "status": enquiry.status,
+        "meetingDate": None,
+        "nextFollowUpDate": None,
+        "createdAt": _dt(enquiry.created_at),
+        "updatedAt": _dt(enquiry.created_at),
+    }
+    if include_detail:
+        data["notes"] = []
+        data["auditLogs"] = []
+        data["notificationLogs"] = []
+        data["callHistory"] = []
+    return data
+
+
+def landing_to_dict(row: KidsEnquiry, *, include_detail: bool = False) -> dict:
+    mobile = (row.mobileno or row.mobile or "").strip()
+    franchise = _resolved_franchise_for_landing(row)
+    centre_name, centre_phone, centre_email = _franchise_centre_contact(franchise)
+    from franchises.franchise_geo import effective_city
+
+    city = effective_city(franchise) if franchise else (row.city or "").strip()
+    state = _franchise_state(franchise) if franchise else (row.state or "").strip()
+    if not centre_name:
+        centre_name = (row.centre_name or row.location or "").strip()
+    if not centre_phone:
+        centre_phone = (row.centre_phone or "").strip()
+    if not centre_email:
+        centre_email = (row.centre_email or "").strip()
+    data = {
+        "id": f"landing-{row.id}",
+        "leadKind": "landing",
+        "editable": True,
+        "fullName": row.name or "",
+        "mobile": mobile,
+        "email": (row.email or "").strip(),
+        "city": city,
+        "state": state,
+        "preferredCentreLocation": centre_name,
+        "franchiseType": None,
+        "investmentRange": None,
+        "expectedStartDate": None,
+        "source": "landing",
+        "landingSource": (row.source or "").strip(),
+        "enquiryType": (row.enquiry_type or "").strip(),
+        "comments": "",
+        "status": _landing_crm_status(row),
+        "meetingDate": None,
+        "nextFollowUpDate": None,
+        "createdAt": _dt(row.created_date),
+        "updatedAt": _dt(row.created_date),
+    }
+    if include_detail:
+        data["notes"] = []
+        data["auditLogs"] = []
+        data["notificationLogs"] = []
+        data["callHistory"] = []
+        data["centrePhone"] = centre_phone
+        data["centreEmail"] = centre_email
+    return data
+
+
+def parse_lead_id(raw_id: str) -> tuple[str, int]:
+    value = str(raw_id or "").strip()
+    if "-" in value:
+        kind, pk = value.split("-", 1)
+        return kind.lower(), int(pk)
+    return "crm", int(value)
+
+
+def _filter_crm_qs(request):
+    params = _query_params(request)
+    qs = CrmLead.objects.all()
+    source_filter = _request_source_filter(request)
+    if source_filter and _include_crm(source_filter):
+        if source_filter != "campaign":
+            mapped = normalize_source_from_api(source_filter)
+            if mapped in {CrmLeadSource.WEB, CrmLeadSource.FB, CrmLeadSource.INSTA}:
+                qs = qs.filter(source=mapped)
+    elif source_filter and not _include_crm(source_filter):
+        return CrmLead.objects.none()
+
+    status_value = (params.get("status") or "").strip()
+    if status_value:
+        qs = qs.filter(status=status_value)
+
+    search = (params.get("search") or "").strip()
+    if search:
+        qs = qs.filter(
+            Q(full_name__icontains=search)
+            | Q(mobile__icontains=search)
+            | Q(email__icontains=search)
+            | Q(city__icontains=search)
+            | Q(state__icontains=search)
+            | Q(preferred_centre_location__icontains=search)
+        )
+
+    start, end = _parse_request_dates(request)
+    if start:
+        qs = qs.filter(created_at__gte=start)
+    if end:
+        qs = qs.filter(created_at__lte=end)
+
+    qs = _filter_crm_qs_by_city(qs, request)
+    qs = _filter_crm_qs_by_centre(qs, request)
+    return qs.order_by("-created_at")
+
+
+def _filter_enquiry_qs(request, enquiry_type: str):
+    params = _query_params(request)
+    source_filter = _request_source_filter(request)
+    if enquiry_type == EnquiryType.ADMISSION and not _include_admission(source_filter):
+        return Enquiry.objects.none()
+    if enquiry_type == EnquiryType.CONTACT and not _include_contact(source_filter):
+        return Enquiry.objects.none()
+
+    qs = Enquiry.objects.filter(enquiry_type=enquiry_type).select_related("franchise")
+
+    status_value = (params.get("status") or "").strip()
+    if status_value:
+        matching = [
+            row["status"]
+            for row in Enquiry.objects.filter(enquiry_type=enquiry_type).values("status").distinct()
+            if _crm_status_matches_enquiry(status_value, row["status"])
+        ]
+        if matching:
+            qs = qs.filter(status__in=matching)
+        else:
+            return Enquiry.objects.none()
+
+    search = (params.get("search") or "").strip()
+    if search:
+        qs = qs.filter(
+            Q(name__icontains=search)
+            | Q(phone__icontains=search)
+            | Q(email__icontains=search)
+            | Q(city__icontains=search)
+            | Q(message__icontains=search)
+            | Q(franchise__name__icontains=search)
+        )
+
+    start, end = _parse_request_dates(request)
+    if start:
+        qs = qs.filter(created_at__gte=start)
+    if end:
+        qs = qs.filter(created_at__lte=end)
+
+    qs = _filter_qs_by_city(
+        qs,
+        request,
+        field_name="city",
+        franchise_city_fields=("franchise__city", "franchise__cityname"),
+    )
+    qs = _filter_enquiry_qs_by_centre(qs, request)
+    return qs.order_by("-created_at")
+
+
+def _filter_franchise_enquiry_qs(request):
+    params = _query_params(request)
+    source_filter = _request_source_filter(request)
+    if not _include_franchise_enquiry(source_filter):
+        return FranchiseEnquiry.objects.none()
+
+    qs = FranchiseEnquiry.objects.select_related("franchise")
+
+    status_value = (params.get("status") or "").strip()
+    if status_value:
+        qs = qs.filter(status=status_value)
+
+    search = (params.get("search") or "").strip()
+    if search:
+        qs = qs.filter(
+            Q(name__icontains=search)
+            | Q(phone__icontains=search)
+            | Q(email__icontains=search)
+            | Q(city__icontains=search)
+            | Q(message__icontains=search)
+            | Q(franchise__name__icontains=search)
+        )
+
+    start, end = _parse_request_dates(request)
+    if start:
+        qs = qs.filter(created_at__gte=start)
+    if end:
+        qs = qs.filter(created_at__lte=end)
+
+    qs = _filter_qs_by_city(
+        qs,
+        request,
+        field_name="city",
+        franchise_city_fields=("franchise__city", "franchise__cityname"),
+    )
+    qs = _filter_enquiry_qs_by_centre(qs, request)
+    return qs.order_by("-created_at")
+
+
+def _filter_landing_qs(request):
+    params = _query_params(request)
+    if not _include_landing(_request_source_filter(request)):
+        return KidsEnquiry.objects.none()
+
+    qs = KidsEnquiry.objects.all()
+
+    status_value = (params.get("status") or "").strip()
+    if status_value:
+        if status_value == "new":
+            qs = qs.filter(
+                Q(raw_payload__crm_status__isnull=True)
+                | Q(raw_payload__crm_status="")
+                | Q(raw_payload__crm_status="new")
+            )
+        else:
+            qs = qs.filter(raw_payload__crm_status=status_value)
+
+    search = (params.get("search") or "").strip()
+    if search:
+        qs = qs.filter(
+            Q(name__icontains=search)
+            | Q(mobileno__icontains=search)
+            | Q(mobile__icontains=search)
+            | Q(email__icontains=search)
+            | Q(city__icontains=search)
+            | Q(state__icontains=search)
+            | Q(location__icontains=search)
+            | Q(centre_name__icontains=search)
+        )
+
+    start, end = _parse_request_dates(request)
+    if start:
+        qs = qs.filter(created_date__gte=start)
+    if end:
+        qs = qs.filter(created_date__lte=end)
+
+    qs = _filter_landing_qs_by_city(qs, request)
+    qs = _filter_landing_qs_by_centre(qs, request)
+    return qs.order_by("-created_date")
+
+
+def unified_leads_total(request) -> int:
+    total = 0
+    if _include_crm(_request_source_filter(request)):
+        total += _filter_crm_qs(request).count()
+    if _include_admission(_request_source_filter(request)):
+        total += _filter_enquiry_qs(request, EnquiryType.ADMISSION).count()
+    if _include_contact(_request_source_filter(request)):
+        total += _filter_enquiry_qs(request, EnquiryType.CONTACT).count()
+    if _include_franchise_enquiry(_request_source_filter(request)):
+        total += _filter_franchise_enquiry_qs(request).count()
+    if _include_landing(_request_source_filter(request)):
+        total += _filter_landing_qs(request).count()
+    return total
+
+
+def unified_leads_page(request, *, page: int, limit: int) -> list[dict]:
+    offset = (page - 1) * limit
+    fetch_count = offset + limit
+    merged: list[dict] = []
+
+    if _include_crm(_request_source_filter(request)):
+        merged.extend(lead_to_dict(row) for row in _filter_crm_qs(request)[:fetch_count])
+    if _include_admission(_request_source_filter(request)):
+        merged.extend(
+            enquiry_to_dict(row) for row in _filter_enquiry_qs(request, EnquiryType.ADMISSION)[:fetch_count]
+        )
+    if _include_contact(_request_source_filter(request)):
+        merged.extend(
+            enquiry_to_dict(row) for row in _filter_enquiry_qs(request, EnquiryType.CONTACT)[:fetch_count]
+        )
+    if _include_franchise_enquiry(_request_source_filter(request)):
+        merged.extend(
+            franchise_enquiry_to_dict(row) for row in _filter_franchise_enquiry_qs(request)[:fetch_count]
+        )
+    if _include_landing(_request_source_filter(request)):
+        merged.extend(landing_to_dict(row) for row in _filter_landing_qs(request)[:fetch_count])
+
+    merged.sort(key=lambda row: row.get("createdAt") or "", reverse=True)
+    return merged[offset : offset + limit]
+
+
+def unified_dashboard_stats(request) -> dict:
+    today = timezone.localdate()
+    source_counts: dict[str, int] = {}
+    status_counts: dict[str, int] = {}
+    today_count = 0
+    follow_ups = 0
+    converted = 0
+
+    if _include_crm(_request_source_filter(request)):
+        crm_qs = _filter_crm_qs(request)
+        source_filter = _request_source_filter(request)
+        if not source_filter or source_filter == "campaign":
+            crm_count = crm_qs.count()
+            if crm_count:
+                source_counts["campaign"] = source_counts.get("campaign", 0) + crm_count
+        else:
+            for row in crm_qs.values("source").annotate(count=Count("id")):
+                api_source = source_to_api(row["source"])
+                source_counts[api_source] = source_counts.get(api_source, 0) + row["count"]
+        for row in crm_qs.values("status").annotate(count=Count("id")):
+            status_counts[row["status"]] = status_counts.get(row["status"], 0) + row["count"]
+        today_count += crm_qs.filter(created_at__date=today).count()
+        follow_ups += crm_qs.filter(
+            status__in=[CrmLeadStatus.FOLLOW_UP, CrmLeadStatus.MEETING_SCHEDULED]
+        ).count()
+        converted += crm_qs.filter(status=CrmLeadStatus.CONVERTED).count()
+
+    if _include_admission(_request_source_filter(request)):
+        admission_qs = _filter_enquiry_qs(request, EnquiryType.ADMISSION)
+        admission_count = admission_qs.count()
+        if admission_count:
+            source_counts["admission"] = source_counts.get("admission", 0) + admission_count
+        for row in admission_qs.values("status").annotate(count=Count("id")):
+            mapped = _enquiry_status_to_crm(row["status"])
+            status_counts[mapped] = status_counts.get(mapped, 0) + row["count"]
+        today_count += admission_qs.filter(created_at__date=today).count()
+        follow_ups += admission_qs.filter(status="in-progress").count()
+        follow_ups += admission_qs.filter(status="in-progress").count()
+        converted += admission_qs.filter(status="closed").count()
+
+    if _include_contact(_request_source_filter(request)):
+        contact_qs = _filter_enquiry_qs(request, EnquiryType.CONTACT)
+        contact_count = contact_qs.count()
+        if contact_count:
+            source_counts["contact"] = source_counts.get("contact", 0) + contact_count
+        for row in contact_qs.values("status").annotate(count=Count("id")):
+            mapped = _enquiry_status_to_crm(row["status"])
+            status_counts[mapped] = status_counts.get(mapped, 0) + row["count"]
+        today_count += contact_qs.filter(created_at__date=today).count()
+        follow_ups += contact_qs.filter(status="in-progress").count()
+        converted += contact_qs.filter(status="closed").count()
+
+    if _include_franchise_enquiry(_request_source_filter(request)):
+        franchise_qs = _filter_franchise_enquiry_qs(request)
+        franchise_count = franchise_qs.count()
+        if franchise_count:
+            source_counts["franchise"] = source_counts.get("franchise", 0) + franchise_count
+        for row in franchise_qs.values("status").annotate(count=Count("id")):
+            status_counts[row["status"]] = status_counts.get(row["status"], 0) + row["count"]
+        today_count += franchise_qs.filter(created_at__date=today).count()
+        follow_ups += franchise_qs.filter(status__in=[CrmLeadStatus.FOLLOW_UP, CrmLeadStatus.MEETING_SCHEDULED]).count()
+        converted += franchise_qs.filter(status=CrmLeadStatus.CONVERTED).count()
+
+    if _include_landing(_request_source_filter(request)):
+        landing_qs = _filter_landing_qs(request)
+        landing_count = landing_qs.count()
+        if landing_count:
+            source_counts["landing"] = source_counts.get("landing", 0) + landing_count
+        for row in landing_qs.only("raw_payload").iterator():
+            mapped = _landing_crm_status(row)
+            status_counts[mapped] = status_counts.get(mapped, 0) + 1
+            if mapped in (CrmLeadStatus.FOLLOW_UP, CrmLeadStatus.MEETING_SCHEDULED):
+                follow_ups += 1
+            if mapped == CrmLeadStatus.CONVERTED:
+                converted += 1
+        today_count += landing_qs.filter(created_date__date=today).count()
+
+    return {
+        "totalEnquiries": unified_leads_total(request),
+        "todayLeads": today_count,
+        "followUps": follow_ups,
+        "converted": converted,
+        "sourceBreakdown": [
+            {"source": source, "count": count}
+            for source, count in sorted(source_counts.items(), key=lambda item: item[1], reverse=True)
+        ],
+        "statusBreakdown": [
+            {"status": status, "count": count}
+            for status, count in sorted(status_counts.items(), key=lambda item: item[1], reverse=True)
+        ],
+    }
+
+
+def unified_reminders(request) -> dict:
+    qs = _filter_crm_qs(request)
+    return reminders_for_qs(qs)
+
+
+def unified_lead_detail(raw_id: str, *, include_detail: bool = False) -> dict | None:
+    kind, pk = parse_lead_id(raw_id)
+    if kind == "crm":
+        lead = CrmLead.objects.filter(pk=pk).prefetch_related("notes").first()
+        return lead_to_dict(lead, include_detail=include_detail) if lead else None
+    if kind == "enquiry":
+        enquiry = Enquiry.objects.select_related("franchise").filter(pk=pk).first()
+        return enquiry_to_dict(enquiry, include_detail=include_detail) if enquiry else None
+    if kind == "franchiseenquiry":
+        franchise_enq = FranchiseEnquiry.objects.select_related("franchise").filter(pk=pk).first()
+        return franchise_enquiry_to_dict(franchise_enq, include_detail=include_detail) if franchise_enq else None
+    if kind == "landing":
+        row = KidsEnquiry.objects.filter(pk=pk).first()
+        return landing_to_dict(row, include_detail=include_detail) if row else None
+    return None
+
+
+def update_unified_lead(raw_id: str, data: dict, *, include_detail: bool = False) -> dict | None:
+    kind, numeric_id = parse_lead_id(raw_id)
+    status = (data.get("status") or "").strip()
+    if status and status not in _valid_crm_statuses():
+        raise ValueError(f"Invalid status: {status}")
+
+    if kind == "crm":
+        lead = CrmLead.objects.filter(pk=numeric_id).prefetch_related("notes").first()
+        if not lead:
+            return None
+        updates = parse_update_payload(data)
+        if "status" in updates and updates["status"] not in _valid_crm_statuses():
+            raise ValueError(f"Invalid status: {updates['status']}")
+        for field, value in updates.items():
+            setattr(lead, field, value)
+        lead.save()
+        return lead_to_dict(lead, include_detail=include_detail)
+
+    if kind == "enquiry":
+        enquiry = Enquiry.objects.select_related("franchise").filter(pk=numeric_id).first()
+        if not enquiry:
+            return None
+        if status:
+            enquiry.status = _crm_status_to_enquiry(status)
+            enquiry.save(update_fields=["status"])
+        return enquiry_to_dict(enquiry, include_detail=include_detail)
+
+    if kind == "franchiseenquiry":
+        franchise_enq = FranchiseEnquiry.objects.select_related("franchise").filter(pk=numeric_id).first()
+        if not franchise_enq:
+            return None
+        if status:
+            franchise_enq.status = status
+            franchise_enq.save(update_fields=["status"])
+        return franchise_enquiry_to_dict(franchise_enq, include_detail=include_detail)
+
+    if kind == "landing":
+        row = KidsEnquiry.objects.filter(pk=numeric_id).first()
+        if not row:
+            return None
+        if status:
+            payload = dict(row.raw_payload) if isinstance(row.raw_payload, dict) else {}
+            payload["crm_status"] = status
+            row.raw_payload = payload
+            row.save(update_fields=["raw_payload"])
+        return landing_to_dict(row, include_detail=include_detail)
+
+    return None
 
 
 def apply_lead_filters(qs, request):

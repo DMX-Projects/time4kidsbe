@@ -31,10 +31,14 @@ def _jwt_admin_or_approver(request) -> bool:
 
 
 def can_view_landing_leads(request) -> bool:
-    """Report ``?key=`` / header, or admin/approver JWT (optional Bearer)."""
+    """Report ``?key=`` / header, admin/approver JWT, or CRM user."""
     if _report_key_valid(request):
         return True
-    return _jwt_admin_or_approver(request)
+    user = getattr(request, "user", None)
+    if not user or not user.is_authenticated:
+        return False
+    role = _norm_role(user)
+    return role in (UserRole.ADMIN.value, UserRole.APPROVER.value, UserRole.CRM.value)
 
 
 class CanViewLandingLeads:

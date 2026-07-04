@@ -207,8 +207,8 @@ def _authenticate_with_identifier(identifier: str, password: str):
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ["id", "email", "username", "full_name", "role", "is_active"]
-        read_only_fields = ["id", "role", "is_active"]
+        fields = ["id", "email", "username", "full_name", "role", "is_active", "is_superuser"]
+        read_only_fields = ["id", "role", "is_active", "is_superuser"]
 
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
@@ -231,6 +231,12 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         if user.normalized_role() == UserRole.CRM.value:
             raise PermissionDenied(
                 "CRM accounts must sign in from the CRM login page (/crm-admin/login), not the main website login."
+            )
+
+        if user.normalized_role() == UserRole.ADMIN.value and not user.is_superuser:
+            raise PermissionDenied(
+                "Website content admin accounts must sign in from the content admin login page "
+                "(/content-admin/login), not the main website login."
             )
 
         # We've authenticated the user manually.
@@ -267,6 +273,7 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
             "email": user.email,
             "full_name": user.full_name,
             "role": user.role,
+            "is_superuser": user.is_superuser,
         }
         if user.normalized_role() == UserRole.PARENT.value:
             data["user"].update(parent_login_context(user))
@@ -380,5 +387,50 @@ class CrmTokenObtainPairSerializer(TokenObtainPairSerializer):
                 "email": user.email,
                 "full_name": user.full_name,
                 "role": user.role,
+                "is_superuser": user.is_superuser,
+            },
+        }
+
+
+class ContentAdminTokenObtainPairSerializer(TokenObtainPairSerializer):
+    """Website content admin login — ADMIN role only (non-superuser content editors)."""
+
+    username_field = "email"
+
+    def validate(self, attrs):
+        identifier = attrs.get("email")
+        password = attrs.get("password")
+
+        user = _authenticate_with_identifier(identifier, password) if identifier else None
+
+        if not user:
+            if _inactive_user_with_valid_password(identifier or "", password or ""):
+                raise AuthenticationFailed("User account is disabled")
+            raise AuthenticationFailed("Invalid credentials")
+
+        if not user.is_active:
+            raise AuthenticationFailed("User account is disabled")
+
+        if user.normalized_role() != UserRole.ADMIN.value or user.is_superuser:
+            raise PermissionDenied(
+                "This login is for website content admin accounts only. "
+                "Use the main website login for head-office super admin, centre, or parent users."
+            )
+
+        self.user = user
+
+        from rest_framework_simplejwt.tokens import RefreshToken
+
+        refresh = RefreshToken.for_user(user)
+
+        return {
+            "refresh": str(refresh),
+            "access": str(refresh.access_token),
+            "user": {
+                "id": user.id,
+                "email": user.email,
+                "full_name": user.full_name,
+                "role": user.role,
+                "is_superuser": user.is_superuser,
             },
         }

@@ -21,6 +21,7 @@ from accounts.registration_checks import ALREADY_REGISTERED_MESSAGE, email_has_p
 from django.db import transaction
 
 from .serializers import (
+    ContentAdminTokenObtainPairSerializer,
     CrmTokenObtainPairSerializer,
     CustomTokenObtainPairSerializer,
     ParentTokenObtainPairSerializer,
@@ -80,6 +81,12 @@ class ParentLoginView(TokenObtainPairView):
 class CrmLoginView(TokenObtainPairView):
     """CRM-only login endpoint (timekids_crm_clone admin login equivalent)."""
     serializer_class = CrmTokenObtainPairSerializer
+
+
+@method_decorator(csrf_exempt, name='dispatch')
+class ContentAdminLoginView(TokenObtainPairView):
+    """Website content admin login — edit home, programs, FAQ, etc."""
+    serializer_class = ContentAdminTokenObtainPairSerializer
 
 
 @method_decorator(csrf_exempt, name='dispatch')
