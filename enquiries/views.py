@@ -12,7 +12,7 @@ from .permissions import can_view_crm_leads, can_view_landing_leads
 from accounts.profile_access import franchise_profile_for_user
 
 from .landing_submit import handle_landing_enquiry_post
-from .models import CrmLead, Enquiry, FranchiseEnquiry, KidsEnquiry, OTPVerification
+from .models import CrmLead, Enquiry, EnquiryType, FranchiseEnquiry, KidsEnquiry, OTPVerification
 from .serializers import (
     CrmLeadSerializer,
     EnquirySerializer,
@@ -85,6 +85,91 @@ def _admin_enquiry_scope(qs, admin_user):
     return qs.filter(Q(franchise__isnull=True) | Q(franchise__admin=admin_user))
 
 
+def _ho_admin_enquiry_qs(qs):
+    """HO/CRM meaningful leads only — exclude legacy imported rows (e.g. enquiry_type='general')."""
+    return qs.filter(enquiry_type__in=[EnquiryType.ADMISSION, EnquiryType.CONTACT])
+
+
+def _normalize_admin_type_filter(raw: str | None) -> str | None:
+    if not raw:
+        return None
+    value = raw.strip().upper()
+    if value in ("ADMISSION", "CONTACT", "FRANCHISE"):
+        return value
+    return None
+
+
+def _parse_admin_list_params(request) -> tuple[int, int]:
+    try:
+        page = max(1, int(request.query_params.get("page") or 1))
+    except ValueError:
+        page = 1
+    try:
+        limit = min(100, max(1, int(request.query_params.get("limit") or 20)))
+    except ValueError:
+        limit = 20
+    return page, limit
+
+
+def _apply_admin_enquiry_search(qs, search: str | None):
+    term = (search or "").strip()
+    if not term:
+        return qs
+    return qs.filter(
+        Q(name__icontains=term)
+        | Q(email__icontains=term)
+        | Q(phone__icontains=term)
+        | Q(city__icontains=term)
+        | Q(message__icontains=term)
+        | Q(franchise__name__icontains=term)
+    )
+
+
+def _admin_enquiry_tab_counts(admin_user) -> dict[str, int]:
+    e_qs = _ho_admin_enquiry_qs(_admin_enquiry_scope(Enquiry.objects.all(), admin_user))
+    f_qs = _admin_enquiry_scope(FranchiseEnquiry.objects.all(), admin_user)
+    admission = e_qs.filter(enquiry_type=EnquiryType.ADMISSION).count()
+    contact = e_qs.filter(enquiry_type=EnquiryType.CONTACT).count()
+    franchise = f_qs.count()
+    return {
+        "all": admission + contact + franchise,
+        "admission": admission,
+        "contact": contact,
+        "franchise": franchise,
+    }
+
+
+def _scoped_admin_enquiry_lists(
+    admin_user,
+    *,
+    enquiry_type_filter: str | None,
+    status_filter: str | None,
+    search: str | None,
+):
+    e_qs = _ho_admin_enquiry_qs(
+        _admin_enquiry_scope(Enquiry.objects.all(), admin_user)
+    ).select_related("franchise")
+    f_qs = _admin_enquiry_scope(FranchiseEnquiry.objects.all(), admin_user).select_related("franchise")
+
+    if enquiry_type_filter == "FRANCHISE":
+        e_qs = e_qs.none()
+    elif enquiry_type_filter == "ADMISSION":
+        e_qs = e_qs.filter(enquiry_type=EnquiryType.ADMISSION)
+        f_qs = f_qs.none()
+    elif enquiry_type_filter == "CONTACT":
+        e_qs = e_qs.filter(enquiry_type=EnquiryType.CONTACT)
+        f_qs = f_qs.none()
+
+    status_value = (status_filter or "").strip()
+    if status_value and status_value.lower() != "all":
+        e_qs = e_qs.filter(status=status_value)
+        f_qs = f_qs.filter(status=status_value)
+
+    e_qs = _apply_admin_enquiry_search(e_qs, search)
+    f_qs = _apply_admin_enquiry_search(f_qs, search)
+    return e_qs.order_by("-created_at"), f_qs.order_by("-created_at")
+
+
 def _merge_enquiry_rows(
     enquiry_qs,
     franchise_qs,
@@ -102,6 +187,37 @@ def _merge_enquiry_rows(
     if enquiry_type_filter in ("ADMISSION", "CONTACT"):
         return [p for p in payload if p.get("enquiry_type") == enquiry_type_filter]
     return payload
+
+
+def _paginated_admin_enquiry_response(request, admin_user) -> dict:
+    page, limit = _parse_admin_list_params(request)
+    params = request.query_params
+    enquiry_type = _normalize_admin_type_filter(params.get("type"))
+    status_filter = (params.get("status") or "").strip() or None
+    search = (params.get("search") or "").strip() or None
+
+    e_qs, f_qs = _scoped_admin_enquiry_lists(
+        admin_user,
+        enquiry_type_filter=enquiry_type,
+        status_filter=status_filter,
+        search=search,
+    )
+    rows: list[tuple] = []
+    for obj in e_qs:
+        rows.append((obj.created_at, EnquirySerializer(obj).data))
+    for obj in f_qs:
+        rows.append((obj.created_at, FranchiseEnquiryReadSerializer(obj).data))
+    rows.sort(key=lambda row: row[0], reverse=True)
+    total = len(rows)
+    offset = (page - 1) * limit
+    results = [row[1] for row in rows[offset : offset + limit]]
+    return {
+        "results": results,
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "counts": _admin_enquiry_tab_counts(admin_user),
+    }
 
 
 @method_decorator(csrf_exempt, name="dispatch")
@@ -174,19 +290,7 @@ class AdminEnquiryListView(APIView):
     permission_classes = [IsAdminUser]
 
     def get(self, request, *args, **kwargs):
-        admin_user = request.user
-        e_qs = (
-            _admin_enquiry_scope(Enquiry.objects.all(), admin_user)
-            .select_related("franchise")
-            .order_by("-created_at")
-        )
-        f_qs = (
-            _admin_enquiry_scope(FranchiseEnquiry.objects.all(), admin_user)
-            .select_related("franchise")
-            .order_by("-created_at")
-        )
-        data = _merge_enquiry_rows(e_qs, f_qs, None)
-        return Response(data)
+        return Response(_paginated_admin_enquiry_response(request, request.user))
 
 
 class FranchiseEnquiryListView(APIView):
@@ -208,20 +312,7 @@ class AdminAllEnquiryListView(APIView):
     permission_classes = [IsAdminUser]
 
     def get(self, request, *args, **kwargs):
-        admin_user = request.user
-        e_qs = (
-            _admin_enquiry_scope(Enquiry.objects.all(), admin_user)
-            .select_related("franchise")
-            .order_by("-created_at")
-        )
-        f_qs = (
-            _admin_enquiry_scope(FranchiseEnquiry.objects.all(), admin_user)
-            .select_related("franchise")
-            .order_by("-created_at")
-        )
-        enquiry_type = request.query_params.get("type")
-        data = _merge_enquiry_rows(e_qs, f_qs, enquiry_type)
-        return Response(data)
+        return Response(_paginated_admin_enquiry_response(request, request.user))
 
 
 class EnquiryUpdateView(EnquiryStatusSyncMixin, generics.UpdateAPIView):
