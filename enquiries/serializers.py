@@ -100,6 +100,7 @@ class FranchiseEnquiryReadSerializer(serializers.ModelSerializer):
             "email",
             "phone",
             "message",
+            "state",
             "city",
             "child_age",
             "franchise",
@@ -115,6 +116,7 @@ class FranchiseEnquiryReadSerializer(serializers.ModelSerializer):
             "email",
             "phone",
             "message",
+            "state",
             "city",
             "child_age",
             "franchise",
@@ -137,7 +139,7 @@ class FranchiseEnquiryReadSerializer(serializers.ModelSerializer):
 class FranchiseEnquiryCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = FranchiseEnquiry
-        fields = ["name", "email", "phone", "message", "city"]
+        fields = ["name", "email", "phone", "message", "state", "city"]
 
     def create(self, validated_data):
         city = validated_data.get("city", "").strip()

@@ -8,6 +8,7 @@ from django.views.generic import RedirectView
 
 from accounts.views import (
     CheckParentEmailView,
+    ContentAdminLoginView,
     CrmLoginView,
     CurrentUserView,
     CustomTokenObtainPairView,
@@ -37,6 +38,8 @@ urlpatterns = [
     path("api/auth/parent/login/", ParentLoginView.as_view(), name="parent_login"),
     path("api/auth/crm/login", CrmLoginView.as_view()),
     path("api/auth/crm/login/", CrmLoginView.as_view(), name="crm_login"),
+    path("api/auth/content-admin/login", ContentAdminLoginView.as_view()),
+    path("api/auth/content-admin/login/", ContentAdminLoginView.as_view(), name="content_admin_login"),
     path("api/auth/password-reset", PasswordResetRequestView.as_view()),
     path("api/auth/password-reset/", PasswordResetRequestView.as_view(), name="password_reset_request"),
     path("api/auth/password-reset-confirm", PasswordResetConfirmView.as_view()),

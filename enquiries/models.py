@@ -23,8 +23,20 @@ class Enquiry(models.Model):
     city = models.CharField(max_length=100, blank=True)
     child_age = models.CharField(max_length=50, blank=True)
     status = models.CharField(
-        max_length=20,
-        choices=[("new", "New"), ("in-progress", "In Progress"), ("closed", "Closed")],
+        max_length=30,
+        choices=[
+            ("new", "New"),
+            ("contacted", "Contacted"),
+            ("called", "Called"),
+            ("follow_up", "Follow Up"),
+            ("interested", "Interested"),
+            ("meeting_scheduled", "Meeting Scheduled"),
+            ("dropped", "Dropped"),
+            ("not_interested", "Not Interested"),
+            ("converted", "Converted"),
+            ("in-progress", "In Progress"),
+            ("closed", "Closed"),
+        ],
         default="new",
     )
     created_at = models.DateTimeField(auto_now_add=True)
@@ -56,9 +68,22 @@ class FranchiseEnquiry(models.Model):
         related_name="franchise_enquiries",
     )
     city = models.CharField(max_length=100, blank=True)
+    state = models.CharField(max_length=100, blank=True)
     status = models.CharField(
-        max_length=20,
-        choices=[("new", "New"), ("in-progress", "In Progress"), ("closed", "Closed")],
+        max_length=30,
+        choices=[
+            ("new", "New"),
+            ("contacted", "Contacted"),
+            ("called", "Called"),
+            ("follow_up", "Follow Up"),
+            ("interested", "Interested"),
+            ("meeting_scheduled", "Meeting Scheduled"),
+            ("dropped", "Dropped"),
+            ("not_interested", "Not Interested"),
+            ("converted", "Converted"),
+            ("in-progress", "In Progress"),
+            ("closed", "Closed"),
+        ],
         default="new",
     )
     created_at = models.DateTimeField(auto_now_add=True)
