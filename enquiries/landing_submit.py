@@ -134,6 +134,11 @@ def save_landing_enquiry(post_data: Any) -> LandingEnquiryRecord:
     if not location or location.lower() in ("select location", "select centre", "select center"):
         raise ValueError("Please select a location.")
 
+    if KidsEnquiry.objects.filter(mobileno=telephone, source=source).exists() or KidsEnquiry.objects.filter(mobile=telephone, source=source).exists():
+        raise ValueError(f"An enquiry with this phone number has already been submitted for {source} forms.")
+    if KidsEnquiry.objects.filter(email=email, source=source).exists():
+        raise ValueError(f"An enquiry with this email address has already been submitted for {source} forms.")
+
     franchise = _lookup_franchise(city, location)
     centre_name, centre_phone, centre_email = _centre_contact(franchise)
     state = (franchise.state if franchise else "") or ""

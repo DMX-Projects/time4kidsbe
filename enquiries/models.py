@@ -39,6 +39,8 @@ class Enquiry(models.Model):
         ],
         default="new",
     )
+    meeting_date = models.DateTimeField(null=True, blank=True)
+    next_follow_up_date = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -86,6 +88,8 @@ class FranchiseEnquiry(models.Model):
         ],
         default="new",
     )
+    meeting_date = models.DateTimeField(null=True, blank=True)
+    next_follow_up_date = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -119,6 +123,8 @@ class KidsEnquiry(models.Model):
     centre_email = models.TextField(blank=True, null=True)
     email_status = models.TextField(blank=True, null=True)
     whatsapp_status = models.TextField(blank=True, null=True)
+    meeting_date = models.DateTimeField(null=True, blank=True)
+    next_follow_up_date = models.DateTimeField(null=True, blank=True)
     raw_payload = models.JSONField(default=dict)
 
     class Meta:
@@ -200,6 +206,17 @@ class CrmLeadNote(models.Model):
 
     class Meta:
         db_table = "crm_lead_notes"
+        ordering = ["-created_at"]
+
+
+class UnifiedLeadNote(models.Model):
+    """Generic notes for all lead types, identified by kind_id (e.g. 'enquiry_5')."""
+    lead_id = models.CharField(max_length=100, db_index=True)
+    content = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "unified_lead_notes"
         ordering = ["-created_at"]
 
     def __str__(self) -> str:
