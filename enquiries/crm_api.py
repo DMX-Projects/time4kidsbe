@@ -57,6 +57,19 @@ def note_to_dict(note: CrmLeadNote) -> dict:
         "createdAt": _dt(note.created_at),
     }
 
+def unified_note_to_dict(note) -> dict:
+    return {
+        "id": str(note.id),
+        "content": note.content,
+        "createdAt": _dt(note.created_at),
+    }
+
+def _get_unified_notes(lead_kind: str, numeric_id: int) -> list:
+    from .models import UnifiedLeadNote
+    lead_id = f"{lead_kind}_{numeric_id}"
+    notes = UnifiedLeadNote.objects.filter(lead_id=lead_id)
+    return [unified_note_to_dict(n) for n in notes]
+
 
 def lead_to_dict(lead: CrmLead, *, include_detail: bool = False) -> dict:
     franchise = _resolved_franchise_for_crm_lead(lead)
@@ -89,7 +102,9 @@ def lead_to_dict(lead: CrmLead, *, include_detail: bool = False) -> dict:
         "updatedAt": _dt(lead.updated_at),
     }
     if include_detail:
-        data["notes"] = [note_to_dict(n) for n in lead.notes.all()]
+        legacy_notes = [note_to_dict(n) for n in lead.notes.all()]
+        new_notes = _get_unified_notes("crm", lead.id)
+        data["notes"] = legacy_notes + new_notes
         data["auditLogs"] = []
         data["notificationLogs"] = []
         data["callHistory"] = []
@@ -220,10 +235,11 @@ def _filter_qs_by_city(
     from franchises.franchise_geo import city_query_variants
 
     city_q = Q()
-    for variant in city_query_variants(city):
-        city_q |= Q(**{f"{field_name}__iexact": variant})
-        for franchise_field in franchise_city_fields:
-            city_q |= Q(**{f"{franchise_field}__iexact": variant})
+    for c in [x.strip() for x in city.split(",") if x.strip()]:
+        for variant in city_query_variants(c):
+            city_q |= Q(**{f"{field_name}__iexact": variant})
+            for franchise_field in franchise_city_fields:
+                city_q |= Q(**{f"{franchise_field}__iexact": variant})
     return qs.filter(city_q)
 
 
@@ -234,11 +250,12 @@ def _filter_landing_qs_by_city(qs, request):
     from franchises.franchise_geo import city_query_variants
 
     city_q = Q()
-    for variant in city_query_variants(city):
-        city_q |= Q(city__iexact=variant)
-    centre_names = _centre_names_in_city(city)
-    if centre_names:
-        city_q |= Q(location__in=centre_names) | Q(centre_name__in=centre_names)
+    for c in [x.strip() for x in city.split(",") if x.strip()]:
+        for variant in city_query_variants(c):
+            city_q |= Q(city__iexact=variant)
+        centre_names = _centre_names_in_city(c)
+        if centre_names:
+            city_q |= Q(location__in=centre_names) | Q(centre_name__in=centre_names)
     return qs.filter(city_q)
 
 
@@ -249,11 +266,12 @@ def _filter_crm_qs_by_city(qs, request):
     from franchises.franchise_geo import city_query_variants
 
     city_q = Q()
-    for variant in city_query_variants(city):
-        city_q |= Q(city__iexact=variant)
-    centre_names = _centre_names_in_city(city)
-    if centre_names:
-        city_q |= Q(preferred_centre_location__in=centre_names)
+    for c in [x.strip() for x in city.split(",") if x.strip()]:
+        for variant in city_query_variants(c):
+            city_q |= Q(city__iexact=variant)
+        centre_names = _centre_names_in_city(c)
+        if centre_names:
+            city_q |= Q(preferred_centre_location__in=centre_names)
     return qs.filter(city_q)
 
 
@@ -353,13 +371,13 @@ def enquiry_to_dict(enquiry: Enquiry, *, include_detail: bool = False) -> dict:
         "childAge": enquiry.child_age or "",
         "comments": enquiry.message or "",
         "status": _enquiry_status_to_crm(enquiry.status),
-        "meetingDate": None,
-        "nextFollowUpDate": None,
+        "meetingDate": _dt(enquiry.meeting_date),
+        "nextFollowUpDate": _dt(enquiry.next_follow_up_date),
         "createdAt": _dt(enquiry.created_at),
         "updatedAt": _dt(enquiry.created_at),
     }
     if include_detail:
-        data["notes"] = []
+        data["notes"] = _get_unified_notes("enquiry", enquiry.id)
         data["auditLogs"] = []
         data["notificationLogs"] = []
         data["callHistory"] = []
@@ -390,13 +408,13 @@ def franchise_enquiry_to_dict(enquiry: FranchiseEnquiry, *, include_detail: bool
         "enquiryType": "FRANCHISE",
         "comments": enquiry.message or "",
         "status": enquiry.status,
-        "meetingDate": None,
-        "nextFollowUpDate": None,
+        "meetingDate": _dt(enquiry.meeting_date),
+        "nextFollowUpDate": _dt(enquiry.next_follow_up_date),
         "createdAt": _dt(enquiry.created_at),
         "updatedAt": _dt(enquiry.created_at),
     }
     if include_detail:
-        data["notes"] = []
+        data["notes"] = _get_unified_notes("franchiseenquiry", enquiry.id)
         data["auditLogs"] = []
         data["notificationLogs"] = []
         data["callHistory"] = []
@@ -435,13 +453,13 @@ def landing_to_dict(row: KidsEnquiry, *, include_detail: bool = False) -> dict:
         "enquiryType": (row.enquiry_type or "").strip(),
         "comments": "",
         "status": _landing_crm_status(row),
-        "meetingDate": None,
-        "nextFollowUpDate": None,
+        "meetingDate": _dt(row.meeting_date),
+        "nextFollowUpDate": _dt(row.next_follow_up_date),
         "createdAt": _dt(row.created_date),
         "updatedAt": _dt(row.created_date),
     }
     if include_detail:
-        data["notes"] = []
+        data["notes"] = _get_unified_notes("landing", row.id)
         data["auditLogs"] = []
         data["notificationLogs"] = []
         data["callHistory"] = []
@@ -483,6 +501,7 @@ def _filter_crm_qs(request):
             | Q(city__icontains=search)
             | Q(state__icontains=search)
             | Q(preferred_centre_location__icontains=search)
+            | Q(source__icontains=search)
         )
 
     start, end = _parse_request_dates(request)
@@ -527,6 +546,7 @@ def _filter_enquiry_qs(request, enquiry_type: str):
             | Q(city__icontains=search)
             | Q(message__icontains=search)
             | Q(franchise__name__icontains=search)
+            | Q(enquiry_type__icontains=search)
         )
 
     start, end = _parse_request_dates(request)
@@ -703,9 +723,10 @@ def unified_dashboard_stats(request) -> dict:
             mapped = _enquiry_status_to_crm(row["status"])
             status_counts[mapped] = status_counts.get(mapped, 0) + row["count"]
         today_count += admission_qs.filter(created_at__date=today).count()
-        follow_ups += admission_qs.filter(status="in-progress").count()
-        follow_ups += admission_qs.filter(status="in-progress").count()
-        converted += admission_qs.filter(status="closed").count()
+        follow_ups += admission_qs.filter(
+            status__in=[CrmLeadStatus.FOLLOW_UP, CrmLeadStatus.MEETING_SCHEDULED, "in-progress"]
+        ).count()
+        converted += admission_qs.filter(status__in=[CrmLeadStatus.CONVERTED, "closed"]).count()
 
     if _include_contact(_request_source_filter(request)):
         contact_qs = _filter_enquiry_qs(request, EnquiryType.CONTACT)
@@ -716,8 +737,10 @@ def unified_dashboard_stats(request) -> dict:
             mapped = _enquiry_status_to_crm(row["status"])
             status_counts[mapped] = status_counts.get(mapped, 0) + row["count"]
         today_count += contact_qs.filter(created_at__date=today).count()
-        follow_ups += contact_qs.filter(status="in-progress").count()
-        converted += contact_qs.filter(status="closed").count()
+        follow_ups += contact_qs.filter(
+            status__in=[CrmLeadStatus.FOLLOW_UP, CrmLeadStatus.MEETING_SCHEDULED, "in-progress"]
+        ).count()
+        converted += contact_qs.filter(status__in=[CrmLeadStatus.CONVERTED, "closed"]).count()
 
     if _include_franchise_enquiry(_request_source_filter(request)):
         franchise_qs = _filter_franchise_enquiry_qs(request)
@@ -760,9 +783,89 @@ def unified_dashboard_stats(request) -> dict:
     }
 
 
+def _get_reminders(qs, to_dict_func, updated_field="updated_at", status_field="status"):
+    now = timezone.now()
+    today = timezone.localdate()
+    next_week = today + timedelta(days=7)
+    yesterday = now - timedelta(days=1)
+    closed = [CrmLeadStatus.CONVERTED, CrmLeadStatus.DROPPED, CrmLeadStatus.NOT_INTERESTED, "closed"]
+
+    meetings_qs = qs.filter(
+        **{
+            status_field: CrmLeadStatus.MEETING_SCHEDULED,
+            "meeting_date__isnull": False,
+            "meeting_date__date__gte": today,
+            "meeting_date__date__lte": next_week,
+        }
+    ).order_by("meeting_date")
+
+    follow_ups_qs = qs.filter(
+        (
+            Q(next_follow_up_date__isnull=False, next_follow_up_date__lte=now)
+            & ~Q(**{f"{status_field}__in": closed})
+        )
+        | (
+            Q(next_follow_up_date__isnull=True, **{f"{updated_field}__lte": yesterday})
+            & ~Q(**{f"{status_field}__in": closed})
+            & ~Q(**{status_field: CrmLeadStatus.MEETING_SCHEDULED})
+        )
+    ).order_by("next_follow_up_date", updated_field)
+
+    return {
+        "meetings": [to_dict_func(l) for l in meetings_qs[:50]],
+        "followUps": [to_dict_func(l) for l in follow_ups_qs[:50]],
+    }
+
+
 def unified_reminders(request) -> dict:
-    qs = _filter_crm_qs(request)
-    return reminders_for_qs(qs)
+    source_filter = _request_source_filter(request)
+    
+    meetings = []
+    follow_ups = []
+
+    if not source_filter or _include_crm(source_filter):
+        crm_qs = _filter_crm_qs(request)
+        res = _get_reminders(crm_qs, lead_to_dict, "updated_at")
+        meetings.extend(res["meetings"])
+        follow_ups.extend(res["followUps"])
+
+    if not source_filter or _include_admission(source_filter) or _include_contact(source_filter):
+        enq_qs = Enquiry.objects.all()
+        enq_qs = _filter_qs_by_city(enq_qs, request, "city", ("franchise__city", "franchise__cityname"))
+        enq_qs = _filter_enquiry_qs_by_centre(enq_qs, request)
+        if source_filter:
+            if _include_admission(source_filter) and not _include_contact(source_filter):
+                enq_qs = enq_qs.filter(enquiry_type=EnquiryType.ADMISSION)
+            elif _include_contact(source_filter) and not _include_admission(source_filter):
+                enq_qs = enq_qs.filter(enquiry_type=EnquiryType.CONTACT)
+        res = _get_reminders(enq_qs, enquiry_to_dict, "created_at")
+        meetings.extend(res["meetings"])
+        follow_ups.extend(res["followUps"])
+
+    if not source_filter or _include_franchise_enquiry(source_filter):
+        fe_qs = FranchiseEnquiry.objects.all()
+        fe_qs = _filter_qs_by_city(fe_qs, request, "city", ("franchise__city", "franchise__cityname"))
+        fe_qs = _filter_enquiry_qs_by_centre(fe_qs, request)
+        res = _get_reminders(fe_qs, franchise_enquiry_to_dict, "created_at")
+        meetings.extend(res["meetings"])
+        follow_ups.extend(res["followUps"])
+
+    def _sort_meetings(m):
+        return parse_datetime(m["meetingDate"] or "") or now()
+    
+    def _sort_followups(f):
+        return parse_datetime(f["nextFollowUpDate"] or "") or parse_datetime(f["updatedAt"] or "") or now()
+
+    from django.utils.dateparse import parse_datetime
+    from django.utils.timezone import now
+
+    meetings.sort(key=_sort_meetings)
+    follow_ups.sort(key=_sort_followups)
+
+    return {
+        "meetings": meetings[:50],
+        "followUps": follow_ups[:50]
+    }
 
 
 def unified_lead_detail(raw_id: str, *, include_detail: bool = False) -> dict | None:
@@ -806,7 +909,23 @@ def update_unified_lead(raw_id: str, data: dict, *, include_detail: bool = False
             return None
         if status:
             enquiry.status = _crm_status_to_enquiry(status)
-            enquiry.save(update_fields=["status"])
+        if "fullName" in data:
+            enquiry.name = data["fullName"]
+        if "email" in data:
+            enquiry.email = data["email"]
+        if "mobile" in data:
+            enquiry.phone = data["mobile"]
+        if "city" in data:
+            enquiry.city = data["city"]
+        if "comments" in data:
+            enquiry.message = data["comments"]
+        if "childAge" in data:
+            enquiry.child_age = data["childAge"]
+        if "meetingDate" in data:
+            enquiry.meeting_date = parse_datetime(data["meetingDate"]) if data["meetingDate"] else None
+        if "nextFollowUpDate" in data:
+            enquiry.next_follow_up_date = parse_datetime(data["nextFollowUpDate"]) if data["nextFollowUpDate"] else None
+        enquiry.save()
         return enquiry_to_dict(enquiry, include_detail=include_detail)
 
     if kind == "franchiseenquiry":
@@ -815,18 +934,48 @@ def update_unified_lead(raw_id: str, data: dict, *, include_detail: bool = False
             return None
         if status:
             franchise_enq.status = status
-            franchise_enq.save(update_fields=["status"])
+        if "fullName" in data:
+            franchise_enq.name = data["fullName"]
+        if "email" in data:
+            franchise_enq.email = data["email"]
+        if "mobile" in data:
+            franchise_enq.phone = data["mobile"]
+        if "city" in data:
+            franchise_enq.city = data["city"]
+        if "state" in data:
+            franchise_enq.state = data["state"]
+        if "comments" in data:
+            franchise_enq.message = data["comments"]
+        if "meetingDate" in data:
+            franchise_enq.meeting_date = parse_datetime(data["meetingDate"]) if data["meetingDate"] else None
+        if "nextFollowUpDate" in data:
+            franchise_enq.next_follow_up_date = parse_datetime(data["nextFollowUpDate"]) if data["nextFollowUpDate"] else None
+        franchise_enq.save()
         return franchise_enquiry_to_dict(franchise_enq, include_detail=include_detail)
 
     if kind == "landing":
         row = KidsEnquiry.objects.filter(pk=numeric_id).first()
         if not row:
             return None
+        if "fullName" in data:
+            row.name = data["fullName"]
+        if "email" in data:
+            row.email = data["email"]
+        if "mobile" in data:
+            row.mobileno = data["mobile"]
+        if "city" in data:
+            row.city = data["city"]
+        if "state" in data:
+            row.state = data["state"]
+        payload = dict(row.raw_payload) if isinstance(row.raw_payload, dict) else {}
         if status:
-            payload = dict(row.raw_payload) if isinstance(row.raw_payload, dict) else {}
             payload["crm_status"] = status
-            row.raw_payload = payload
-            row.save(update_fields=["raw_payload"])
+        row.raw_payload = payload
+        if "meetingDate" in data:
+            row.meeting_date = parse_datetime(data["meetingDate"]) if data["meetingDate"] else None
+        if "nextFollowUpDate" in data:
+            row.next_follow_up_date = parse_datetime(data["nextFollowUpDate"]) if data["nextFollowUpDate"] else None
+        row.save()
         return landing_to_dict(row, include_detail=include_detail)
 
     return None
@@ -916,35 +1065,55 @@ def dashboard_stats(qs):
         "statusBreakdown": status_breakdown,
     }
 
+def unified_reports_data(request) -> dict:
+    """Returns pivot data for the Reports View grouped by City, Source, and Status."""
+    cities_data = {}
+    
+    requested_cities = [x.strip() for x in (_request_city_filter(request) or "").split(",") if x.strip()]
+    
+    for rc in requested_cities:
+        cities_data[rc] = {"admission": {}, "contact": {}, "campaign": {}, "franchise": {}}
+        
+    def _find_requested_city(db_city):
+        if not db_city:
+            return "Unknown"
+        db_city_norm = db_city.strip().lower()
+        
+        from franchises.franchise_geo import city_query_variants
+        for rc in requested_cities:
+            variants = [v.lower() for v in city_query_variants(rc)]
+            if db_city_norm in variants:
+                return rc
+        return db_city.strip().title()
+    
+    def _add_count(db_city, source, status, count):
+        city = _find_requested_city(db_city)
+        if city not in cities_data:
+            cities_data[city] = {"admission": {}, "contact": {}, "campaign": {}, "franchise": {}}
+        if source not in cities_data[city]:
+            cities_data[city][source] = {}
+        cities_data[city][source][status] = cities_data[city][source].get(status, 0) + count
 
-def reminders_for_qs(qs):
-    now = timezone.now()
-    today = timezone.localdate()
-    next_week = today + timedelta(days=7)
-    yesterday = now - timedelta(days=1)
+    # 1. Admission (EnquiryType.ADMISSION)
+    admission_qs = _filter_enquiry_qs(request, EnquiryType.ADMISSION)
+    for row in admission_qs.values("city", "status").annotate(count=Count("id")):
+        mapped_status = _enquiry_status_to_crm(row["status"])
+        _add_count(row["city"], "admission", mapped_status, row["count"])
 
-    closed = [CrmLeadStatus.CONVERTED, CrmLeadStatus.DROPPED, CrmLeadStatus.NOT_INTERESTED]
+    # 2. Contact (EnquiryType.CONTACT - CenterPage)
+    contact_qs = _filter_enquiry_qs(request, EnquiryType.CONTACT)
+    for row in contact_qs.values("city", "status").annotate(count=Count("id")):
+        mapped_status = _enquiry_status_to_crm(row["status"])
+        _add_count(row["city"], "contact", mapped_status, row["count"])
 
-    meetings_qs = qs.filter(
-        status=CrmLeadStatus.MEETING_SCHEDULED,
-        meeting_date__isnull=False,
-        meeting_date__date__gte=today,
-        meeting_date__date__lte=next_week,
-    ).order_by("meeting_date")
+    # 3. Campaign (CrmLead)
+    crm_qs = _filter_crm_qs(request)
+    for row in crm_qs.values("city", "status").annotate(count=Count("id")):
+        _add_count(row["city"], "campaign", row["status"], row["count"])
 
-    follow_ups_qs = qs.filter(
-        (
-            Q(next_follow_up_date__isnull=False, next_follow_up_date__lte=now)
-            & ~Q(status__in=closed)
-        )
-        | (
-            Q(next_follow_up_date__isnull=True, updated_at__lte=yesterday)
-            & ~Q(status__in=closed)
-            & ~Q(status=CrmLeadStatus.MEETING_SCHEDULED)
-        )
-    ).order_by("next_follow_up_date", "updated_at")
+    # 4. Franchise (FranchiseEnquiry)
+    franchise_qs = _filter_franchise_enquiry_qs(request)
+    for row in franchise_qs.values("city", "status").annotate(count=Count("id")):
+        _add_count(row["city"], "franchise", row["status"], row["count"])
 
-    return {
-        "meetings": [lead_to_dict(l) for l in meetings_qs[:50]],
-        "followUps": [lead_to_dict(l) for l in follow_ups_qs[:50]],
-    }
+    return {"cities": cities_data}

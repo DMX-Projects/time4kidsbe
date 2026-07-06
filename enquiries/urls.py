@@ -8,6 +8,7 @@ from .views import (
     AdminCrmLeadListView,
     AdminCrmLeadNoteCreateView,
     AdminCrmLeadRemindersView,
+    AdminCrmReportsView,
     AdminCrmLeadStatsView,
     AdminCrmSendReminderView,
     AdminEnquiryListView,
@@ -21,6 +22,7 @@ from .views import (
     FranchiseLeadPartnerUpdateView,
     LandingEnquirySubmitView,
     LandingKidsEnquiryListView,
+    LeadNoteListCreateView,
     SendOTPView,
     VerifyOTPView,
 )
@@ -28,6 +30,7 @@ from .views import (
 urlpatterns = [
     path("crm-leads/", CrmLeadCreateView.as_view(), name="crm-lead-create"),
     path("admin/crm-leads/", AdminCrmLeadListView.as_view(), name="admin-crm-leads"),
+    path("admin/crm-leads/reports/", AdminCrmReportsView.as_view(), name="admin-crm-leads-reports"),
     path("admin/crm-leads/stats/", AdminCrmLeadStatsView.as_view(), name="admin-crm-leads-stats"),
     path("admin/crm-leads/reminders/", AdminCrmLeadRemindersView.as_view(), name="admin-crm-leads-reminders"),
     path("admin/crm-leads/send-reminder/", AdminCrmSendReminderView.as_view(), name="admin-crm-send-reminder"),
@@ -48,4 +51,5 @@ urlpatterns = [
     path("franchise/", FranchiseEnquiryListView.as_view(), name="enquiry-franchise-list"),
     path("franchise/lead/<int:pk>/", FranchiseLeadPartnerUpdateView.as_view(), name="franchise-lead-partner-update"),
     path("franchise/<int:pk>/", FranchiseEnquiryUpdateView.as_view(), name="enquiry-franchise-update"),
+    path("notes/<str:lead_id>/", LeadNoteListCreateView.as_view(), name="lead-notes"),
 ]

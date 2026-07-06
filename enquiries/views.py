@@ -233,6 +233,22 @@ class EnquiryCreateView(generics.CreateAPIView):
     serializer_class = EnquirySerializer
     permission_classes = [permissions.AllowAny]
 
+    def create(self, request, *args, **kwargs):
+        phone = request.data.get("phone") or request.data.get("mobile")
+        email = request.data.get("email")
+        enquiry_type = request.data.get("enquiry_type")
+        if phone and Enquiry.objects.filter(phone=phone, enquiry_type=enquiry_type).exists():
+            return Response(
+                {"error": "An enquiry with this phone number has already been submitted for this form."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if email and Enquiry.objects.filter(email=email, enquiry_type=enquiry_type).exists():
+            return Response(
+                {"error": "An enquiry with this email address has already been submitted for this form."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        return super().create(request, *args, **kwargs)
+
     def perform_create(self, serializer):
         enquiry: Enquiry = serializer.save()
         self._send_notifications(enquiry)
@@ -261,6 +277,21 @@ class EnquiryCreateView(generics.CreateAPIView):
 class FranchiseEnquiryCreateView(generics.CreateAPIView):
     serializer_class = FranchiseEnquiryCreateSerializer
     permission_classes = [permissions.AllowAny]
+
+    def create(self, request, *args, **kwargs):
+        phone = request.data.get("phone") or request.data.get("mobile")
+        email = request.data.get("email")
+        if phone and FranchiseEnquiry.objects.filter(phone=phone).exists():
+            return Response(
+                {"error": "A franchise enquiry with this phone number has already been submitted."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if email and FranchiseEnquiry.objects.filter(email=email).exists():
+            return Response(
+                {"error": "A franchise enquiry with this email address has already been submitted."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        return super().create(request, *args, **kwargs)
 
     def perform_create(self, serializer):
         lead: FranchiseEnquiry = serializer.save()
@@ -495,6 +526,23 @@ class AdminCrmLeadStatsView(APIView):
         return Response(unified_dashboard_stats(request))
 
 
+class AdminCrmReportsView(APIView):
+    """CRM reports data — pivot table."""
+
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        if not can_view_crm_leads(request):
+            return Response(
+                {"detail": "CRM login required. Sign in with a CRM account to view CRM reports."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        from .crm_api import unified_reports_data
+
+        return Response(unified_reports_data(request))
+
+
 class AdminCrmLeadRemindersView(APIView):
     permission_classes = [permissions.AllowAny]
 
@@ -517,24 +565,18 @@ class AdminCrmLeadNoteCreateView(APIView):
         from .crm_api import note_to_dict, parse_lead_id
 
         kind, numeric_id = parse_lead_id(pk)
-        if kind != "crm":
-            return Response(
-                {"message": "Notes can only be added to CRM campaign leads."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
 
-        lead = CrmLead.objects.filter(pk=numeric_id).first()
-        if not lead:
-            return Response({"message": "Lead not found"}, status=status.HTTP_404_NOT_FOUND)
-
+        # Allow notes for all lead types via UnifiedLeadNote
         content = (request.data.get("content") or "").strip()
         if not content:
             return Response({"message": "Note content is required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        from .models import CrmLeadNote
+        from .models import UnifiedLeadNote
+        from .crm_api import unified_note_to_dict
 
-        note = CrmLeadNote.objects.create(lead=lead, content=content)
-        return Response(note_to_dict(note), status=status.HTTP_201_CREATED)
+        lead_id = f"{kind}_{numeric_id}"
+        note = UnifiedLeadNote.objects.create(lead_id=lead_id, content=content)
+        return Response(unified_note_to_dict(note), status=status.HTTP_201_CREATED)
 
 
 class AdminCrmSendReminderView(APIView):
@@ -656,3 +698,30 @@ class VerifyOTPView(APIView):
         if otp_record and otp_record.code == code:
             return JsonResponse({"valid": True})
         return JsonResponse({"valid": False, "detail": "Invalid OTP code."}, status=400)
+
+class LeadNoteListCreateView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, lead_id):
+        from .models import UnifiedLeadNote
+        notes = UnifiedLeadNote.objects.filter(lead_id=lead_id).order_by('created_at')
+        return Response([
+            {
+                "id": n.id,
+                "content": n.content,
+                "created_at": n.created_at.isoformat()
+            } for n in notes
+        ])
+
+    def post(self, request, lead_id):
+        from .models import UnifiedLeadNote
+        content = (request.data.get("content") or "").strip()
+        if not content:
+            return Response({"message": "Content is required"}, status=status.HTTP_400_BAD_REQUEST)
+        
+        note = UnifiedLeadNote.objects.create(lead_id=lead_id, content=content)
+        return Response({
+            "id": note.id,
+            "content": note.content,
+            "created_at": note.created_at.isoformat()
+        }, status=status.HTTP_201_CREATED)
