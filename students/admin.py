@@ -5,9 +5,11 @@ from franchises.models import Franchise, ParentProfile
 from .models import (
     Announcement,
     AttendanceRecord,
+    DailyActivity,
     FeeRecord,
     Grade,
     HomeworkAssignment,
+    HomeworkSubmission,
     ParentFeePayment,
     StudentAchievement,
     StudentProfile,
@@ -281,7 +283,7 @@ class SupportTicketAdmin(admin.ModelAdmin):
 class TransportRouteAdmin(admin.ModelAdmin):
     list_display = ("route_name", "display_franchise", "vehicle_number", "driver_name", "sort_order")
     list_filter = ("franchise",)
-    readonly_fields = ("driver_token", "created_at", "updated_at")
+    readonly_fields = ("created_at", "updated_at")
 
     def get_queryset(self, request):
         return super().get_queryset(request).select_related("franchise")
@@ -344,4 +346,21 @@ class StudentTripStatusAdmin(admin.ModelAdmin):
             return f"(missing student #{obj.student_id})"
 
     display_student.short_description = "Student"
+
+
+@admin.register(DailyActivity)
+class DailyActivityAdmin(admin.ModelAdmin):
+    list_display = ("franchise", "class_name", "activity_date", "description", "created_at")
+    list_filter = ("franchise", "class_name", "activity_date")
+    search_fields = ("class_name", "description")
+    readonly_fields = ("created_at", "updated_at")
+
+
+@admin.register(HomeworkSubmission)
+class HomeworkSubmissionAdmin(admin.ModelAdmin):
+    list_display = ("student", "homework", "is_completed", "completed_at")
+    list_filter = ("is_completed", "completed_at", "homework__franchise")
+    raw_id_fields = ("student", "homework")
+    readonly_fields = ("completed_at", "updated_at")
+
 

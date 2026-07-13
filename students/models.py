@@ -175,6 +175,70 @@ class HomeworkAssignment(models.Model):
         return f"{t} ({self.assigned_date})"
 
 
+class HomeworkSubmission(models.Model):
+    """Parent homework submission containing status and optional image upload."""
+    student = models.ForeignKey(StudentProfile, on_delete=models.CASCADE, related_name="homework_submissions")
+    homework = models.ForeignKey(HomeworkAssignment, on_delete=models.CASCADE, related_name="submissions")
+    completed_image = models.FileField(upload_to="students/homework_submissions/", null=True, blank=True)
+    is_completed = models.BooleanField(default=True)
+    completed_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-completed_at"]
+        unique_together = ("student", "homework")
+        verbose_name = "Homework submission"
+        verbose_name_plural = "Homework submissions"
+
+    def __str__(self) -> str:
+        return f"{self.student.full_name} - {self.homework.title} - Completed"
+
+
+class HomeworkSubmissionImage(models.Model):
+    submission = models.ForeignKey(HomeworkSubmission, on_delete=models.CASCADE, related_name="images")
+    image = models.FileField(upload_to="students/homework_submissions/")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at"]
+        verbose_name = "Homework submission image"
+        verbose_name_plural = "Homework submission images"
+
+    def __str__(self) -> str:
+        return f"{self.submission.student.full_name} - {self.submission.homework.title} - Image"
+
+
+
+class DailyActivity(models.Model):
+    """Daily activities conducted for each class at a center"""
+
+    franchise = models.ForeignKey(Franchise, on_delete=models.CASCADE, related_name="daily_activities")
+    class_name = models.CharField(
+        max_length=120,
+        blank=True,
+        help_text="Must match StudentProfile.class_name. Empty = all classes at centre.",
+    )
+    activity_date = models.DateField()
+    description = models.TextField(help_text="Short description/brief of the activities conducted.")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-activity_date", "class_name"]
+        verbose_name = "Daily activity"
+        verbose_name_plural = "Daily activities"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["franchise", "class_name", "activity_date"],
+                name="uniq_franchise_class_activity_date",
+            )
+        ]
+
+    def __str__(self) -> str:
+        t = (self.description or "").strip()[:50] or "(no details)"
+        return f"{self.class_name or 'All classes'} - {self.activity_date}: {t}"
+
+
 class AnnouncementCampaign(models.Model):
     """Head-office notification publish job (fans out to per-centre Announcement rows)."""
 
@@ -487,15 +551,6 @@ class SupportTicket(models.Model):
 class TransportRoute(models.Model):
     franchise = models.ForeignKey(Franchise, on_delete=models.CASCADE, related_name="transport_routes")
     route_name = models.CharField(max_length=255)
-    description = models.TextField(blank=True)
-    map_url = models.URLField(blank=True, max_length=500)
-    vehicle_number = models.CharField(max_length=80, blank=True)
-    driver_name = models.CharField(max_length=255, blank=True)
-    driver_phone = models.CharField(
-        max_length=10, 
-        blank=True,
-        validators=[RegexValidator(r'^\d{10}$', 'Phone number must be exactly 10 digits.')]
-    )
     driver_profile = models.ForeignKey(
         DriverProfile, 
         on_delete=models.SET_NULL, 
@@ -503,15 +558,13 @@ class TransportRoute(models.Model):
         blank=True, 
         related_name="assigned_routes"
     )
-    driver_token = models.UUIDField(default=uuid.uuid4, db_index=True, editable=False)
-    tracking_note = models.CharField(
-        max_length=500,
+    vehicle_number = models.CharField(max_length=80, blank=True)
+    driver_name = models.CharField(max_length=255, blank=True)
+    driver_phone = models.CharField(
+        max_length=10, 
         blank=True,
-        help_text="Transport desk / GPS notice — live tracking is optional",
+        validators=[RegexValidator(r'^\d{10}$', 'Phone number must be exactly 10 digits.')]
     )
-    destination = models.CharField(max_length=255, blank=True)
-    destination_latitude = models.DecimalField(max_digits=22, decimal_places=16, null=True, blank=True)
-    destination_longitude = models.DecimalField(max_digits=22, decimal_places=16, null=True, blank=True)
     sort_order = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

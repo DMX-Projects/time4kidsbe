@@ -13,6 +13,7 @@ from accounts.views import (
     CurrentUserView,
     CustomTokenObtainPairView,
     ParentLoginView,
+    LogoutView,
     PasswordResetConfirmView,
     PasswordResetRequestView,
     RegisterUserView,
@@ -34,6 +35,8 @@ urlpatterns = [
     # No-trailing-slash aliases (clients/proxies may omit `/` before POST bodies reach Django).
     path("api/auth/login", CustomTokenObtainPairView.as_view()),
     path("api/auth/login/", CustomTokenObtainPairView.as_view(), name="token_obtain_pair"),
+    path("api/auth/logout", LogoutView.as_view()),
+    path("api/auth/logout/", LogoutView.as_view(), name="logout"),
     path("api/auth/parent/login", ParentLoginView.as_view()),
     path("api/auth/parent/login/", ParentLoginView.as_view(), name="parent_login"),
     path("api/auth/crm/login", CrmLoginView.as_view()),

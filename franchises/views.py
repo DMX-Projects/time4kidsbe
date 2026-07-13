@@ -344,3 +344,4 @@ class CentersListView(APIView):
         ).exclude(Q(name__isnull=True) | Q(name__exact="")).order_by("name")
         results = CentreOptionSerializer(queryset, many=True).data
         return Response({"count": len(results), "city": city, "results": results})
+

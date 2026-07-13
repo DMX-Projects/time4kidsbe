@@ -81,7 +81,13 @@ class EnquiryStatusSyncMixin:
 def _admin_enquiry_scope(qs, admin_user):
     """HO super admins see every enquiry; other admins are scoped to franchises they own."""
     if getattr(admin_user, "is_superuser", False):
+        if qs.model.__name__ == "FranchiseEnquiry":
+            return qs.filter(franchise__isnull=True)
         return qs
+    
+    if qs.model.__name__ == "FranchiseEnquiry":
+        return qs.filter(franchise__admin=admin_user)
+        
     return qs.filter(Q(franchise__isnull=True) | Q(franchise__admin=admin_user))
 
 
@@ -571,11 +577,23 @@ class AdminCrmLeadNoteCreateView(APIView):
         if not content:
             return Response({"message": "Note content is required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        from .models import UnifiedLeadNote
+        from .models import UnifiedLeadNote, CrmLead, Enquiry, FranchiseEnquiry
         from .crm_api import unified_note_to_dict
 
+        status_val = (request.data.get("status") or "").strip()
+        if not status_val:
+            if kind == "crm":
+                lead = CrmLead.objects.filter(pk=numeric_id).first()
+                status_val = lead.status if lead else ""
+            elif kind == "enquiry":
+                lead = Enquiry.objects.filter(pk=numeric_id).first()
+                status_val = lead.status if lead else ""
+            elif kind == "franchiseenquiry":
+                lead = FranchiseEnquiry.objects.filter(pk=numeric_id).first()
+                status_val = lead.status if lead else ""
+
         lead_id = f"{kind}_{numeric_id}"
-        note = UnifiedLeadNote.objects.create(lead_id=lead_id, content=content)
+        note = UnifiedLeadNote.objects.create(lead_id=lead_id, content=content, status=status_val)
         return Response(unified_note_to_dict(note), status=status.HTTP_201_CREATED)
 
 
@@ -618,7 +636,8 @@ class AdminCrmCitiesView(APIView):
 
         from .crm_api import unified_crm_cities
 
-        cities = unified_crm_cities()
+        state = request.query_params.get("state")
+        cities = unified_crm_cities(state)
         return Response([{"name": city} for city in cities])
 
 
@@ -725,3 +744,22 @@ class LeadNoteListCreateView(APIView):
             "content": note.content,
             "created_at": note.created_at.isoformat()
         }, status=status.HTTP_201_CREATED)
+
+
+class AdminCrmStatesView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        if not can_view_crm_leads(request):
+            return Response({"detail": "CRM login required."}, status=status.HTTP_403_FORBIDDEN)
+
+        from enquiries.models import FranchiseEnquiry
+        from franchises.models import Franchise
+
+        states = set()
+        for s in FranchiseEnquiry.objects.exclude(state__isnull=True).exclude(state="").values_list("state", flat=True).distinct():
+            states.add(s.strip().title())
+        for s in Franchise.objects.exclude(state__isnull=True).exclude(state="").values_list("state", flat=True).distinct():
+            states.add(s.strip().title())
+
+        return Response([{"name": name} for name in sorted(list(states))])

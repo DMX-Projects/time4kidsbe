@@ -258,8 +258,10 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
             dp = driver_profile_for_user(user)
             if not dp:
                 raise AuthenticationFailed(
-                    "Driver profile not found. Ask your centre to create your driver account again."
+                    "Driver profile not found or linked to a disabled franchise."
                 )
+            from franchises.models import DriverActivityLog
+            DriverActivityLog.objects.create(driver=dp, action="login")
             from franchises.serializers import DriverProfileSerializer
 
             data["driver_profile"] = DriverProfileSerializer(
