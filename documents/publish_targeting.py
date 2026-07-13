@@ -74,8 +74,9 @@ def document_matches_franchise(doc: ParentDocument, franchise: Franchise | None)
     scope = (doc.publish_scope or ParentDocument.PublishScope.PAN_INDIA).strip()
 
     if scope == ParentDocument.PublishScope.PAN_INDIA:
-        if doc.category == DocumentCategory.HOLIDAY_LISTS:
-            return True
+        if doc.category == DocumentCategory.HOLIDAY_LISTS and doc.state:
+            centre_states = _franchise_state_codes(franchise)
+            return doc.state in centre_states
         return True
 
     if scope == ParentDocument.PublishScope.ONE_CENTRE:

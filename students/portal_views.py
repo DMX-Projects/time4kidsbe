@@ -44,10 +44,13 @@ from .models import (
     AnnouncementCampaign,
     AttendanceRecord,
     CentreAttendanceClosedDay,
+    DailyActivity,
     FeeRecord,
     FranchiseNotificationRead,
     Grade,
     HomeworkAssignment,
+    HomeworkSubmission,
+    HomeworkSubmissionImage,
     ParentFeePayment,
     ParentNotificationRead,
     StudentAchievement,
@@ -76,6 +79,8 @@ from .serializers import (
     FeeRecordSerializer,
     GradeSerializer,
     HomeworkAssignmentSerializer,
+    HomeworkSubmissionSerializer,
+    DailyActivitySerializer,
     ParentStudentAchievementSerializer,
     SupportTicketAdminSerializer,
     SupportTicketFranchiseSerializer,
@@ -101,10 +106,6 @@ def _parent_transport_my_students(route, student_ids):
             "student_id": a.student_id,
             "student_name": a.student.full_name,
             "class_name": a.student.class_name,
-            "pickup_stop": a.pickup_stop or "",
-            "drop_stop": a.drop_stop or "",
-            "pickup_time": a.pickup_time.isoformat() if a.pickup_time else None,
-            "drop_time": a.drop_time.isoformat() if a.drop_time else None,
         }
         for a in assignments
     ]
@@ -248,6 +249,15 @@ def _centre_class_visibility_q(parent_profile, user=None) -> Q:
 def _homework_visible_q(parent_profile, user=None):
     """Centre-wide homework plus class rows matching each child's class_name."""
     return _centre_class_visibility_q(parent_profile, user=user)
+
+
+def _daily_activities_visible_q(parent_profile, user=None):
+    """Centre-wide or class-targeted rows for daily activities."""
+    vis = Q(class_name="")
+    matching_classes = _matching_target_class_names(parent_profile)
+    if matching_classes:
+        vis |= Q(class_name__in=matching_classes)
+    return vis
 
 
 def _class_label_matches(student_class: str, target_class: str) -> bool:
@@ -417,6 +427,20 @@ def _filter_homework_queryset_for_student(queryset, student):
     if student is None:
         return queryset
     ids = [row.pk for row in queryset if _homework_row_visible_for_student(row, student)]
+    return queryset.filter(pk__in=ids)
+
+
+def _daily_activity_row_visible_for_student(row, student) -> bool:
+    target_class = (row.class_name or "").strip()
+    if target_class:
+        return _class_label_matches(student.class_name, target_class)
+    return True
+
+
+def _filter_daily_activities_for_student(queryset, student):
+    if student is None:
+        return queryset
+    ids = [row.pk for row in queryset if _daily_activity_row_visible_for_student(row, student)]
     return queryset.filter(pk__in=ids)
 
 
@@ -880,6 +904,38 @@ class ParentHomeworkListView(generics.ListAPIView):
         )
         focus = _parent_focus_student(self.request, pp)
         return _filter_homework_queryset_for_student(qs, focus)
+
+
+class ParentDailyActivityListView(generics.ListAPIView):
+    permission_classes = [IsParentUser]
+    serializer_class = DailyActivitySerializer
+    pagination_class = None
+
+    def get_queryset(self):
+        pp = resolved_parent_profile_for_user(self.request.user)
+        centre = _parent_centre(pp)
+        if not pp or not centre:
+            return DailyActivity.objects.none()
+        qs = (
+            DailyActivity.objects.filter(franchise=centre)
+            .filter(_daily_activities_visible_q(pp, user=self.request.user))
+            .distinct()
+            .order_by("-activity_date", "class_name")
+        )
+        month = (self.request.query_params.get("month") or "").strip()
+        if month:
+            try:
+                y, m = map(int, month.split("-"))
+                qs = qs.filter(activity_date__year=y, activity_date__month=m)
+            except ValueError:
+                pass
+        date_str = (self.request.query_params.get("activity_date") or "").strip()
+        if date_str:
+            parsed = parse_date(date_str)
+            if parsed is not None:
+                qs = qs.filter(activity_date=parsed)
+        focus = _parent_focus_student(self.request, pp)
+        return _filter_daily_activities_for_student(qs, focus)
 
 
 def _announcement_notification_rows(rows, read_map=None):
@@ -1432,13 +1488,21 @@ class ParentGradeListView(generics.ListAPIView):
             qs = qs.filter(student_id=focus.pk)
         return qs
 
-def _parent_transport_routes_queryset(pp):
-    """All transport routes published at the parent's centre (not only assigned routes)."""
+def _parent_transport_routes_queryset(pp, focus_student=None):
+    """Only transport routes where the parent's active children have assignments."""
     centre = _parent_centre(pp)
     if not centre:
         return TransportRoute.objects.none()
+        
+    qs = StudentProfile.objects.filter(parent=pp, is_active=True)
+    if focus_student:
+        qs = qs.filter(id=focus_student.id)
+        
+    student_ids = qs.values_list("id", flat=True)
+    assigned_route_ids = StudentTransportAssignment.objects.filter(student_id__in=student_ids, is_active=True).values_list("route_id", flat=True)
+
     return (
-        TransportRoute.objects.filter(franchise=centre)
+        TransportRoute.objects.filter(franchise=centre, id__in=assigned_route_ids)
         .select_related("driver_profile__user")
         .order_by("sort_order", "route_name")
     )
@@ -1453,16 +1517,22 @@ class ParentTransportListView(generics.ListAPIView):
         pp = resolved_parent_profile_for_user(self.request.user)
         if not pp:
             return TransportRoute.objects.none()
-        return _parent_transport_routes_queryset(pp)
+        focus = _parent_student_from_request(self.request, pp)
+        return _parent_transport_routes_queryset(pp, focus_student=focus)
 
     def list(self, request, *args, **kwargs):
         pp = resolved_parent_profile_for_user(request.user)
         if not pp:
             return Response([])
         routes = list(self.get_queryset())
-        student_ids = set(
-            StudentProfile.objects.filter(parent=pp, is_active=True).values_list("id", flat=True)
-        )
+        
+        focus = _parent_student_from_request(request, pp)
+        qs = StudentProfile.objects.filter(parent=pp, is_active=True)
+        if focus:
+            qs = qs.filter(id=focus.id)
+            
+        student_ids = set(qs.values_list("id", flat=True))
+        
         payload = [
             _parent_transport_route_row(route, request, student_ids=student_ids)
             for route in routes
@@ -1489,7 +1559,11 @@ class ParentLiveTransportView(APIView):
             }
 
         students = StudentProfile.objects.filter(parent=pp, is_active=True)
-        routes = _parent_transport_routes_queryset(pp)
+        focus = _parent_student_from_request(request, pp)
+        if focus:
+            students = students.filter(id=focus.id)
+            
+        routes = _parent_transport_routes_queryset(pp, focus_student=focus)
         trips_qs = (
             TransportTrip.objects.filter(
                 route__in=routes,
@@ -1629,11 +1703,8 @@ class ParentNotificationsView(APIView):
             .select_related("student")
             .order_by("-due_date", "-created_at")
         )
-        transport_qs = (
-            TransportRoute.objects.filter(franchise=centre).order_by("sort_order", "route_name")
-            if centre
-            else TransportRoute.objects.none()
-        )
+        focus = _parent_student_from_request(request, pp)
+        transport_qs = _parent_transport_routes_queryset(pp, focus_student=focus)
         event_focus = _parent_focus_student(request, pp)
         events_qs = (
             exclude_showcase_placeholder_events(
@@ -1745,7 +1816,7 @@ class ParentNotificationsView(APIView):
                     "source": "transport",
                     "source_id": item.id,
                     "title": item.route_name or "Transport update",
-                    "body": item.description or item.tracking_note or "",
+                    "body": getattr(item, 'description', None) or getattr(item, 'tracking_note', None) or "",
                     "published_at": item.updated_at or item.created_at,
                     "read": read_at is not None,
                     "read_at": read_at,
@@ -1824,7 +1895,10 @@ class ParentNotificationsView(APIView):
             n for n in notifications if (not n["read"]) or (n.get("read_at") and n["read_at"] >= hide_read_before)
         ]
         notifications.sort(
-            key=lambda x: x.get("published_at").isoformat() if x.get("published_at") else "",
+            key=lambda x: (
+                x.get("published_at").isoformat() if hasattr(x.get("published_at"), "isoformat")
+                else str(x.get("published_at") or "")
+            ),
             reverse=True,
         )
         unread_count = sum(1 for n in notifications if not n["read"])
@@ -1833,13 +1907,13 @@ class ParentNotificationsView(APIView):
 
         return Response(
             {
-                "announcements": AnnouncementSerializer(announcements_qs, many=True).data,
-                "homework": HomeworkAssignmentSerializer(homework_qs, many=True).data,
-                "fees": FeeRecordSerializer(fees_qs, many=True).data,
-                "transport": ParentTransportRouteSerializer(transport_qs, many=True).data,
-                "events": EventSerializer(events_qs, many=True).data,
-                "achievements": ParentStudentAchievementSerializer(achievements_qs, many=True).data,
-                "attendance": AttendanceRecordSerializer(attendance_qs, many=True).data,
+                "announcements": AnnouncementSerializer(announcements_qs, many=True, context={"request": request}).data,
+                "homework": HomeworkAssignmentSerializer(homework_qs, many=True, context={"request": request}).data,
+                "fees": FeeRecordSerializer(fees_qs, many=True, context={"request": request}).data,
+                "transport": ParentTransportRouteSerializer(transport_qs, many=True, context={"request": request}).data,
+                "events": EventSerializer(events_qs, many=True, context={"request": request}).data,
+                "achievements": ParentStudentAchievementSerializer(achievements_qs, many=True, context={"request": request}).data,
+                "attendance": AttendanceRecordSerializer(attendance_qs, many=True, context={"request": request}).data,
                 "parental_tips": ParentDocumentSerializer(
                     parental_tips_qs,
                     many=True,
@@ -1952,6 +2026,43 @@ class FranchiseHomeworkDetailView(generics.RetrieveUpdateDestroyAPIView):
         c = super().get_serializer_context()
         c["request"] = self.request
         return c
+
+
+class FranchiseDailyActivityListCreateView(generics.ListCreateAPIView):
+    permission_classes = [IsFranchiseUser]
+    serializer_class = DailyActivitySerializer
+    pagination_class = None
+
+    def get_queryset(self):
+        f = franchise_profile_for_user(self.request.user)
+        if not f:
+            return DailyActivity.objects.none()
+        qs = DailyActivity.objects.filter(franchise=f).order_by("-activity_date", "class_name")
+        date_str = (self.request.query_params.get("activity_date") or "").strip()
+        if date_str:
+            parsed = parse_date(date_str)
+            if parsed is not None:
+                qs = qs.filter(activity_date=parsed)
+            else:
+                qs = qs.none()
+        return qs
+
+    def perform_create(self, serializer):
+        f = franchise_profile_for_user(self.request.user)
+        if not f:
+            raise PermissionDenied("Franchise profile not found")
+        serializer.save(franchise=f)
+
+
+class FranchiseDailyActivityDetailView(generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [IsFranchiseUser]
+    serializer_class = DailyActivitySerializer
+
+    def get_queryset(self):
+        f = franchise_profile_for_user(self.request.user)
+        if not f:
+            return DailyActivity.objects.none()
+        return DailyActivity.objects.filter(franchise=f)
 
 
 def _after_announcement_saved(announcement: Announcement) -> None:
@@ -2107,6 +2218,11 @@ def _franchise_inbox_unread_count(franchise, read_keys: set[str] | None = None) 
     for ticket_id in _franchise_support_ticket_reminder_qs(franchise).values_list("pk", flat=True):
         if _key("support_ticket", ticket_id) not in read_keys:
             unread += 1
+
+    from franchises.models import DriverActivityLog
+    for log_id in DriverActivityLog.objects.filter(driver__franchise=franchise).values_list("pk", flat=True):
+        if _key("driver_activity", log_id) not in read_keys:
+            unread += 1
     return unread
 
 
@@ -2172,6 +2288,24 @@ class FranchiseNotificationsView(APIView):
                     "read": read_at is not None,
                     "read_at": read_at,
                     "created_at": ticket.ho_reminded_at,
+                }
+            )
+
+        from franchises.models import DriverActivityLog
+        for log in DriverActivityLog.objects.filter(driver__franchise=franchise):
+            key = self._notification_key("driver_activity", log.id)
+            read_at = read_map.get(key)
+            notifications.append(
+                {
+                    "id": log.id,
+                    "source": "driver_activity",
+                    "source_id": log.id,
+                    "title": f"Driver {log.driver.user.full_name or 'Driver'} logged {log.action}",
+                    "body": f"Driver logged {log.action} at {log.timestamp.strftime('%Y-%m-%d %I:%M %p')}",
+                    "action_path": "/dashboard/franchise/drivers/",
+                    "read": read_at is not None,
+                    "read_at": read_at,
+                    "created_at": log.timestamp,
                 }
             )
 
@@ -2960,183 +3094,6 @@ def admin_remind_support_ticket_centre(request, pk):
     return Response({"detail": detail, "centre_emailed": emailed})
 
 
-def _route_from_driver_token(token):
-    return TransportRoute.objects.filter(driver_token=token).select_related("franchise").first()
-
-
-@api_view(["GET"])
-@permission_classes([AllowAny])
-def driver_route_detail(request, token):
-    route = _route_from_driver_token(token)
-    if not route:
-        return Response({"detail": "Invalid driver link"}, status=404)
-    live_trip = route.trips.filter(status=TransportTrip.Status.LIVE).order_by("-started_at", "-created_at").first()
-    assignments = route.student_assignments.filter(is_active=True).select_related("student").order_by(
-        "pickup_time",
-        "student__first_name",
-    )
-    status_map = {}
-    if live_trip:
-        status_map = {
-            row.student_id: row
-            for row in live_trip.student_statuses.filter(student__in=[a.student for a in assignments]).select_related("student")
-        }
-    return Response(
-        {
-            "route": TransportRouteSerializer(route).data,
-            "active_trip": TransportTripSerializer(live_trip).data if live_trip else None,
-            "assigned_students": [
-                {
-                    "assignment_id": assignment.id,
-                    "student_id": assignment.student_id,
-                    "student_name": assignment.student.full_name,
-                    "class_name": assignment.student.class_name,
-                    "pickup_stop": assignment.pickup_stop,
-                    "drop_stop": assignment.drop_stop,
-                    "pickup_time": assignment.pickup_time,
-                    "drop_time": assignment.drop_time,
-                    "status": status_map.get(assignment.student_id).status if assignment.student_id in status_map else "WAITING",
-                    "status_note": status_map.get(assignment.student_id).note if assignment.student_id in status_map else "",
-                }
-                for assignment in assignments
-            ],
-        }
-    )
-
-
-@api_view(["POST"])
-@permission_classes([AllowAny])
-def driver_start_trip(request, token):
-    route = _route_from_driver_token(token)
-    if not route:
-        return Response({"detail": "Invalid driver link"}, status=404)
-    trip_type = str(request.data.get("trip_type") or TransportTrip.TripType.PICKUP).upper()
-    if trip_type not in TransportTrip.TripType.values:
-        trip_type = TransportTrip.TripType.PICKUP
-
-    route.trips.filter(status=TransportTrip.Status.LIVE).update(
-        status=TransportTrip.Status.COMPLETED,
-        completed_at=timezone.now(),
-    )
-    trip = TransportTrip.objects.create(
-        route=route,
-        trip_type=trip_type,
-        status=TransportTrip.Status.LIVE,
-        started_at=timezone.now(),
-    )
-    return Response(TransportTripSerializer(trip).data, status=status.HTTP_201_CREATED)
-
-
-@api_view(["POST"])
-@permission_classes([AllowAny])
-def driver_post_location(request, token):
-    route = _route_from_driver_token(token)
-    if not route:
-        return Response({"detail": "Invalid driver link"}, status=404)
-    trip = route.trips.filter(status=TransportTrip.Status.LIVE).order_by("-started_at", "-created_at").first()
-    if not trip:
-        return Response({"detail": "Start a trip before sending location."}, status=400)
-
-    try:
-        latitude = request.data.get("latitude")
-        longitude = request.data.get("longitude")
-        if latitude is None or longitude is None:
-            raise ValueError("Missing coordinates")
-        location = TransportTripLocation.objects.create(
-            trip=trip,
-            latitude=latitude,
-            longitude=longitude,
-            speed=request.data.get("speed"),
-            heading=request.data.get("heading"),
-            accuracy=request.data.get("accuracy"),
-        )
-    except Exception:
-        return Response({"detail": "Valid latitude and longitude are required."}, status=400)
-    return Response(TransportTripLocationSerializer(location).data, status=status.HTTP_201_CREATED)
-
-
-@api_view(["POST"])
-@permission_classes([AllowAny])
-def driver_complete_trip(request, token):
-    route = _route_from_driver_token(token)
-    if not route:
-        return Response({"detail": "Invalid driver link"}, status=404)
-    trip = route.trips.filter(status=TransportTrip.Status.LIVE).order_by("-started_at", "-created_at").first()
-    if not trip:
-        return Response({"detail": "No live trip found."}, status=404)
-    trip.status = TransportTrip.Status.COMPLETED
-    trip.completed_at = timezone.now()
-    trip.is_gps_active = False
-    trip.save(update_fields=["status", "completed_at", "is_gps_active", "updated_at"])
-    return Response(TransportTripSerializer(trip).data)
-
-
-@api_view(["POST"])
-@permission_classes([AllowAny])
-def driver_toggle_gps(request, token):
-    route = _route_from_driver_token(token)
-    if not route:
-        return Response({"detail": "Invalid driver link"}, status=404)
-    trip = route.trips.filter(status=TransportTrip.Status.LIVE).order_by("-started_at", "-created_at").first()
-    if not trip:
-        return Response({"detail": "No live trip found"}, status=400)
-    
-    active = request.data.get("active", True)
-    trip.is_gps_active = bool(active)
-    trip.save(update_fields=["is_gps_active", "updated_at"])
-    return Response({"is_gps_active": trip.is_gps_active})
-
-
-@api_view(["POST"])
-@permission_classes([AllowAny])
-def driver_update_student_status(request, token):
-    try:
-        print(f"DEBUG: Updating student status for token {token}")
-        print(f"DEBUG: Data: {request.data}")
-        
-        route = _route_from_driver_token(token)
-        if not route:
-            return Response({"detail": "Invalid driver link"}, status=404)
-            
-        trip = route.trips.filter(status=TransportTrip.Status.LIVE).order_by("-started_at", "-created_at").first()
-        if not trip:
-            return Response({"detail": "Start a trip before updating student status."}, status=400)
-
-        sid = request.data.get("student_id")
-        if not sid:
-            return Response({"detail": "student_id is required."}, status=400)
-            
-        student_id = int(sid)
-        assignment = route.student_assignments.filter(student_id=student_id, is_active=True).select_related("student").first()
-        if not assignment:
-            return Response({"detail": "Student is not assigned to this route."}, status=404)
-
-        next_status = str(request.data.get("status") or "").upper()
-        
-        # Simple update or create
-        status_obj, created = StudentTripStatus.objects.update_or_create(
-            trip=trip,
-            student=assignment.student,
-            defaults={
-                "status": next_status,
-                "note": str(request.data.get("note") or "").strip(),
-            }
-        )
-        
-        return Response({
-            "student_id": student_id,
-            "student_name": assignment.student.full_name,
-            "status": status_obj.status,
-            "note": status_obj.note,
-            "updated_at": status_obj.updated_at.isoformat() if status_obj.updated_at else None,
-            "success": True
-        })
-
-    except Exception as e:
-        import traceback
-        error_trace = traceback.format_exc()
-        print(f"CRITICAL ERROR: {error_trace}")
-        return Response({"detail": str(e), "traceback": error_trace}, status=500)
 
 
 # ----- Franchise: Driver Management -----
@@ -3232,10 +3189,6 @@ def auth_driver_trip_detail(request):
                 "student_id": a.student_id,
                 "student_name": a.student.full_name,
                 "class_name": a.student.class_name,
-                "pickup_stop": a.pickup_stop,
-                "drop_stop": a.drop_stop,
-                "pickup_time": a.pickup_time,
-                "drop_time": a.drop_time,
                 "status": status_map[a.student_id].status if a.student_id in status_map else "WAITING",
                 "note": status_map[a.student_id].note if a.student_id in status_map else "",
             }
@@ -3379,6 +3332,10 @@ def auth_driver_complete_trip(request):
     trip.completed_at = timezone.now()
     trip.is_gps_active = False
     trip.save(update_fields=["status", "completed_at", "is_gps_active", "updated_at"])
+    
+    from franchises.models import DriverActivityLog
+    DriverActivityLog.objects.create(driver=dp, action="completed trip")
+    
     return Response(TransportTripSerializer(trip).data)
 
 @api_view(["POST"])
@@ -3406,3 +3363,77 @@ def auth_driver_toggle_gps(request):
     trip.save()
     print(f"DEBUG: auth_driver_toggle_gps - Trip: {trip.id}, Active: {trip.is_gps_active}")
     return Response({"is_gps_active": trip.is_gps_active})
+
+
+class ParentHomeworkSubmitView(APIView):
+    permission_classes = [IsParentUser]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def post(self, request, pk, *args, **kwargs):
+        pp = resolved_parent_profile_for_user(request.user)
+        if not pp:
+            return Response({"detail": "Parent profile not found"}, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            homework = HomeworkAssignment.objects.get(pk=pk)
+        except HomeworkAssignment.DoesNotExist:
+            return Response({"detail": "Homework assignment not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        student_id = request.data.get("student") or request.query_params.get("student")
+        if not student_id:
+            return Response({"detail": "Student ID is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            student = StudentProfile.objects.get(pk=student_id, parent=pp)
+        except StudentProfile.DoesNotExist:
+            return Response({"detail": "Student profile not found or access denied"}, status=status.HTTP_404_NOT_FOUND)
+
+        files = request.FILES.getlist("completed_image") + request.FILES.getlist("completed_images")
+        if len(files) > 5:
+            return Response({"detail": "Maximum of 5 images allowed per submission"}, status=status.HTTP_400_BAD_REQUEST)
+
+        sub, created = HomeworkSubmission.objects.get_or_create(
+            student=student,
+            homework=homework,
+            defaults={"is_completed": True}
+        )
+
+        if files:
+            sub.images.all().delete()
+            first_img = None
+            for idx, file in enumerate(files):
+                img_instance = HomeworkSubmissionImage.objects.create(submission=sub, image=file)
+                if idx == 0:
+                    first_img = img_instance
+            if first_img:
+                sub.completed_image = first_img.image.name
+        else:
+            clear_requested = False
+            for key in ["completed_image", "completed_images"]:
+                if key in request.data and request.data[key] in [None, "null", "None", ""]:
+                    clear_requested = True
+            
+            if clear_requested:
+                sub.images.all().delete()
+                sub.completed_image = None
+
+        sub.is_completed = True
+        sub.save()
+        
+        return Response(HomeworkSubmissionSerializer(sub, context={"request": request}).data, status=status.HTTP_200_OK)
+
+    def delete(self, request, pk, *args, **kwargs):
+        pp = resolved_parent_profile_for_user(request.user)
+        if not pp:
+            return Response({"detail": "Parent profile not found"}, status=status.HTTP_400_BAD_REQUEST)
+            
+        student_id = request.data.get("student") or request.query_params.get("student")
+        if not student_id:
+            return Response({"detail": "Student ID is required"}, status=status.HTTP_400_BAD_REQUEST)
+            
+        try:
+            sub = HomeworkSubmission.objects.get(homework_id=pk, student_id=student_id, student__parent=pp)
+            sub.delete()
+            return Response({"detail": "Homework marked as incomplete"}, status=status.HTTP_200_OK)
+        except HomeworkSubmission.DoesNotExist:
+            return Response({"detail": "Submission not found"}, status=status.HTTP_404_NOT_FOUND)

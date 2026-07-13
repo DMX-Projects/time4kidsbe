@@ -25,19 +25,16 @@ class Enquiry(models.Model):
     status = models.CharField(
         max_length=30,
         choices=[
-            ("new", "New"),
-            ("contacted", "Contacted"),
-            ("called", "Called"),
-            ("follow_up", "Follow Up"),
-            ("interested", "Interested"),
-            ("meeting_scheduled", "Meeting Scheduled"),
-            ("dropped", "Dropped"),
+            ("untouched", "Untouched"),
+            ("not_answering", "Not answering"),
+            ("follow_up", "Follow-up"),
+            ("visited_school", "Visited the school"),
+            ("converted_admission", "Converted to Admission"),
+            ("joined_competition", "Joined competition"),
             ("not_interested", "Not Interested"),
-            ("converted", "Converted"),
-            ("in-progress", "In Progress"),
-            ("closed", "Closed"),
+            ("wrong_enquiry", "Wrong enquiry"),
         ],
-        default="new",
+        default="untouched",
     )
     meeting_date = models.DateTimeField(null=True, blank=True)
     next_follow_up_date = models.DateTimeField(null=True, blank=True)
@@ -74,19 +71,18 @@ class FranchiseEnquiry(models.Model):
     status = models.CharField(
         max_length=30,
         choices=[
-            ("new", "New"),
-            ("contacted", "Contacted"),
-            ("called", "Called"),
-            ("follow_up", "Follow Up"),
-            ("interested", "Interested"),
-            ("meeting_scheduled", "Meeting Scheduled"),
-            ("dropped", "Dropped"),
+            ("untouched", "Untouched"),
+            ("hot", "Hot"),
+            ("warm", "Warm"),
+            ("follow_up", "Follow-up"),
+            ("cold", "Cold"),
+            ("converted_mou_signed", "Converted – MOU Signed"),
+            ("converted_agreement_signed", "Converted – Agreement Signed"),
+            ("join_later", "Join Later"),
             ("not_interested", "Not Interested"),
-            ("converted", "Converted"),
-            ("in-progress", "In Progress"),
-            ("closed", "Closed"),
+            ("not_answering_calls", "Not Answering Calls"),
         ],
-        default="new",
+        default="untouched",
     )
     meeting_date = models.DateTimeField(null=True, blank=True)
     next_follow_up_date = models.DateTimeField(null=True, blank=True)
@@ -149,15 +145,26 @@ class CrmLeadSource(models.TextChoices):
 
 
 class CrmLeadStatus(models.TextChoices):
-    NEW = "new", "New"
-    CONTACTED = "contacted", "Contacted"
-    CALLED = "called", "Called"
-    FOLLOW_UP = "follow_up", "Follow Up"
-    INTERESTED = "interested", "Interested"
-    MEETING_SCHEDULED = "meeting_scheduled", "Meeting Scheduled"
-    CONVERTED = "converted", "Converted"
-    DROPPED = "dropped", "Dropped"
+    # Common
+    UNTOUCHED = "untouched", "Untouched"
+    FOLLOW_UP = "follow_up", "Follow-up"
     NOT_INTERESTED = "not_interested", "Not Interested"
+
+    # Non-franchise specific
+    NOT_ANSWERING = "not_answering", "Not answering"
+    VISITED_SCHOOL = "visited_school", "Visited the school"
+    CONVERTED_ADMISSION = "converted_admission", "Converted to Admission"
+    JOINED_COMPETITION = "joined_competition", "Joined competition"
+    WRONG_ENQUIRY = "wrong_enquiry", "Wrong enquiry"
+
+    # Franchise specific
+    HOT = "hot", "Hot"
+    WARM = "warm", "Warm"
+    COLD = "cold", "Cold"
+    CONVERTED_MOU = "converted_mou_signed", "Converted – MOU Signed"
+    CONVERTED_AGREEMENT = "converted_agreement_signed", "Converted – Agreement Signed"
+    JOIN_LATER = "join_later", "Join Later"
+    NOT_ANSWERING_CALLS = "not_answering_calls", "Not Answering Calls"
 
 
 class CrmLead(models.Model):
@@ -178,7 +185,7 @@ class CrmLead(models.Model):
     utm_source = models.CharField(max_length=150, blank=True, default="")
     utm_medium = models.CharField(max_length=150, blank=True, default="")
     utm_campaign = models.CharField(max_length=150, blank=True, default="")
-    status = models.CharField(max_length=30, choices=CrmLeadStatus.choices, default=CrmLeadStatus.NEW)
+    status = models.CharField(max_length=30, choices=CrmLeadStatus.choices, default=CrmLeadStatus.UNTOUCHED)
     meeting_date = models.DateTimeField(null=True, blank=True)
     next_follow_up_date = models.DateTimeField(null=True, blank=True)
     raw_payload = models.JSONField(default=dict, blank=True)
@@ -213,6 +220,7 @@ class UnifiedLeadNote(models.Model):
     """Generic notes for all lead types, identified by kind_id (e.g. 'enquiry_5')."""
     lead_id = models.CharField(max_length=100, db_index=True)
     content = models.TextField()
+    status = models.CharField(max_length=50, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

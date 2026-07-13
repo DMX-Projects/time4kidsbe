@@ -314,3 +314,12 @@ class FranchiseGalleryItem(models.Model):
 
     def __str__(self):
         return f"{self.franchise.name} - {self.title} ({self.media_type})"
+
+
+class DriverActivityLog(models.Model):
+    driver = models.ForeignKey(DriverProfile, on_delete=models.CASCADE, related_name='activity_logs')
+    action = models.CharField(max_length=50)
+    timestamp = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f'{self.driver.user.full_name} - {self.action} - {self.timestamp}'

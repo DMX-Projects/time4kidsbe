@@ -9,9 +9,12 @@ from .models import (
     AnnouncementCampaign,
     AttendanceRecord,
     CentreAttendanceClosedDay,
+    DailyActivity,
     FeeRecord,
     Grade,
     HomeworkAssignment,
+    HomeworkSubmission,
+    HomeworkSubmissionImage,
     ParentNotificationRead,
     StudentAchievement,
     StudentProfile,
@@ -295,6 +298,33 @@ class ParentStudentAchievementSerializer(serializers.ModelSerializer):
         return "centre" if obj.student_id is None else "student"
 
 
+class HomeworkSubmissionImageSerializer(serializers.ModelSerializer):
+    image = RelativeFileField(required=False, allow_null=True)
+
+    class Meta:
+        model = HomeworkSubmissionImage
+        fields = ["id", "image"]
+
+
+class HomeworkSubmissionSerializer(serializers.ModelSerializer):
+    completed_image = RelativeFileField(required=False, allow_null=True)
+    images = HomeworkSubmissionImageSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = HomeworkSubmission
+        fields = [
+            "id",
+            "student",
+            "homework",
+            "completed_image",
+            "images",
+            "is_completed",
+            "completed_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "completed_at", "updated_at", "images"]
+
+
 class HomeworkAssignmentSerializer(serializers.ModelSerializer):
     student_name = serializers.SerializerMethodField()
     is_read = serializers.SerializerMethodField()
@@ -302,6 +332,8 @@ class HomeworkAssignmentSerializer(serializers.ModelSerializer):
     read_count = serializers.SerializerMethodField()
     viewed_by_parents = serializers.SerializerMethodField()
     attachment = RelativeFileField(required=False, allow_null=True)
+    submission = serializers.SerializerMethodField()
+    submissions = serializers.SerializerMethodField()
 
     class Meta:
         model = HomeworkAssignment
@@ -321,6 +353,8 @@ class HomeworkAssignmentSerializer(serializers.ModelSerializer):
             "read_status",
             "read_count",
             "viewed_by_parents",
+            "submission",
+            "submissions",
             "created_at",
             "updated_at",
         ]
@@ -334,6 +368,7 @@ class HomeworkAssignmentSerializer(serializers.ModelSerializer):
             "read_status",
             "read_count",
             "viewed_by_parents",
+            "submissions",
         ]
 
     def validate_attachment(self, value):
@@ -415,6 +450,42 @@ class HomeworkAssignmentSerializer(serializers.ModelSerializer):
             return None
         return ParentNotificationRead.objects.filter(notification_key=f"homework-{obj.id}").count()
 
+    def get_submission(self, obj):
+        request = self.context.get("request")
+        if not request:
+            return None
+        student_id = request.query_params.get("student")
+        if not student_id:
+            return None
+        try:
+            sub = HomeworkSubmission.objects.filter(homework=obj, student_id=student_id).first()
+            if sub:
+                return HomeworkSubmissionSerializer(sub, context=self.context).data
+        except Exception:
+            pass
+        return None
+
+    def get_submissions(self, obj):
+        request = self.context.get("request")
+        if not request:
+            return None
+        role = str(getattr(request.user, "role", "") or "").strip().upper()
+        if role not in ["FRANCHISE", "ADMIN"]:
+            return None
+        subs = HomeworkSubmission.objects.filter(homework=obj).select_related("student").prefetch_related("images")
+        return [
+            {
+                "id": s.id,
+                "student_id": s.student.id,
+                "student_name": s.student.full_name,
+                "completed_image": request.build_absolute_uri(s.completed_image.url) if s.completed_image else None,
+                "completed_images": [request.build_absolute_uri(img.image.url) for img in s.images.all()],
+                "is_completed": s.is_completed,
+                "completed_at": s.completed_at,
+            }
+            for s in subs
+        ]
+
     def get_viewed_by_parents(self, obj):
         request = self.context.get("request")
         if not request or str(getattr(request.user, "role", "") or "").strip().upper() != "FRANCHISE":
@@ -437,6 +508,31 @@ class HomeworkAssignmentSerializer(serializers.ModelSerializer):
         if not franchise or value.parent.franchise_id != franchise.id:
             raise serializers.ValidationError("Student is not enrolled at your centre.")
         return value
+
+
+class DailyActivitySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = DailyActivity
+        fields = [
+            "id",
+            "franchise",
+            "class_name",
+            "activity_date",
+            "description",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "franchise", "created_at", "updated_at"]
+
+    def validate_class_name(self, value):
+        from students.portal_views import normalize_portal_class_name
+        return normalize_portal_class_name(value or "")
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if not (data.get("class_name") or "").strip():
+            data["class_name"] = "All classes"
+        return data
 
 
 class AnnouncementSerializer(serializers.ModelSerializer):
@@ -1134,7 +1230,6 @@ class SupportTicketAdminSerializer(serializers.ModelSerializer):
 
 
 class TransportRouteSerializer(serializers.ModelSerializer):
-    driver_token = serializers.SerializerMethodField()
     driver_info = serializers.SerializerMethodField()
 
     class Meta:
@@ -1143,23 +1238,16 @@ class TransportRouteSerializer(serializers.ModelSerializer):
             "id",
             "franchise",
             "route_name",
-            "description",
-            "map_url",
             "vehicle_number",
             "driver_name",
             "driver_phone",
             "driver_profile",
             "driver_info",
-            "driver_token",
-            "tracking_note",
-            "destination",
-            "destination_latitude",
-            "destination_longitude",
             "sort_order",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "franchise", "driver_token", "driver_info", "created_at", "updated_at"]
+        read_only_fields = ["id", "franchise", "driver_info", "created_at", "updated_at"]
 
     def get_driver_info(self, obj):
         if obj.driver_profile:
@@ -1171,13 +1259,6 @@ class TransportRouteSerializer(serializers.ModelSerializer):
                 "service_number": (obj.driver_profile.service_number or "").strip(),
             }
         return None
-
-    def get_driver_token(self, obj):
-        request = self.context.get("request")
-        user = getattr(request, "user", None)
-        if str(getattr(user, "role", "") or "").strip().upper() == "FRANCHISE":
-            return str(obj.driver_token)
-        return ""
 
 
 class ParentTransportRouteSerializer(serializers.ModelSerializer):
@@ -1280,6 +1361,29 @@ class StudentTransportAssignmentSerializer(serializers.ModelSerializer):
         if not franchise or value.franchise_id != franchise.id:
             raise serializers.ValidationError("Route does not belong to your centre.")
         return value
+
+    def validate(self, attrs):
+        is_active = attrs.get("is_active", True)
+        if self.instance is not None:
+            is_active = attrs.get("is_active", self.instance.is_active)
+        
+        if is_active:
+            student = attrs.get("student")
+            if not student and self.instance:
+                student = self.instance.student
+            
+            if student:
+                qs = StudentTransportAssignment.objects.filter(student=student, is_active=True)
+                if self.instance:
+                    qs = qs.exclude(pk=self.instance.pk)
+                
+                if qs.exists():
+                    route_name = qs.first().route.route_name
+                    raise serializers.ValidationError(
+                        f"Student is already actively assigned to another route ({route_name}). "
+                        "Please deactivate the existing assignment first."
+                    )
+        return attrs
 
 
 class TransportTripLocationSerializer(serializers.ModelSerializer):

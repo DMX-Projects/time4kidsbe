@@ -62,6 +62,7 @@ def unified_note_to_dict(note) -> dict:
         "id": str(note.id),
         "content": note.content,
         "createdAt": _dt(note.created_at),
+        "status": getattr(note, "status", "") or "",
     }
 
 def _get_unified_notes(lead_kind: str, numeric_id: int) -> list:
@@ -275,16 +276,42 @@ def _filter_crm_qs_by_city(qs, request):
     return qs.filter(city_q)
 
 
-def unified_crm_cities() -> list[str]:
-    """City names for CRM filter dropdown (franchise locations)."""
-    from franchises.franchise_geo import cities_from_franchises
+def unified_crm_cities(state: str | None = None) -> list[str]:
+    """City names for CRM filter dropdown (franchise locations), optionally filtered by state."""
+    from franchises.models import Franchise
+    from enquiries.models import FranchiseEnquiry
+    from django.db.models import Q
 
     cities: set[str] = set()
-    for loc in cities_from_franchises():
-        name = (loc.get("city_name") or loc.get("city") or "").strip()
-        if name:
-            cities.add(name)
-    return sorted(cities, key=str.casefold)
+
+    if state:
+        state_list = [x.strip() for x in state.split(",") if x.strip()]
+        
+        # Filter Franchises by state
+        franchise_q = Q()
+        for s in state_list:
+            franchise_q |= Q(state__iexact=s) | Q(statename__iexact=s)
+        for f in Franchise.objects.filter(franchise_q, is_active=True):
+            name = (f.cityname or f.city or "").strip()
+            if name:
+                cities.add(name)
+
+        # Filter FranchiseEnquiries by state
+        fe_q = Q()
+        for s in state_list:
+            fe_q |= Q(state__iexact=s)
+        for c in FranchiseEnquiry.objects.filter(fe_q).exclude(city__isnull=True).exclude(city="").values_list("city", flat=True).distinct():
+            cities.add(c.strip())
+    else:
+        from franchises.franchise_geo import cities_from_franchises
+        for loc in cities_from_franchises():
+            name = (loc.get("city_name") or loc.get("city") or "").strip()
+            if name:
+                cities.add(name)
+        for c in FranchiseEnquiry.objects.exclude(city__isnull=True).exclude(city="").values_list("city", flat=True).distinct():
+            cities.add(c.strip())
+
+    return sorted(list(cities), key=str.casefold)
 
 
 def _request_source_filter(request) -> str | None:
@@ -319,6 +346,8 @@ def _include_landing(source_filter: str | None) -> bool:
 
 
 def _enquiry_status_to_crm(status: str) -> str:
+    if status == "pending":
+        return "new"
     if status == "in-progress":
         return "contacted"
     if status == "closed":
@@ -338,7 +367,7 @@ def _crm_status_to_enquiry(crm_status: str) -> str:
 def _landing_crm_status(row: KidsEnquiry) -> str:
     payload = row.raw_payload if isinstance(row.raw_payload, dict) else {}
     value = str(payload.get("crm_status") or "").strip()
-    return value or "new"
+    return value or "untouched"
 
 
 def _valid_crm_statuses() -> set[str]:
@@ -353,6 +382,10 @@ def enquiry_to_dict(enquiry: Enquiry, *, include_detail: bool = False) -> dict:
     city = effective_city(franchise) if franchise else (enquiry.city or "")
     state = _franchise_state(franchise) if franchise else ""
     source = "admission" if enquiry.enquiry_type == EnquiryType.ADMISSION else "contact"
+    from enquiries.models import UnifiedLeadNote
+    latest_note = UnifiedLeadNote.objects.filter(lead_id=f"enquiry_{enquiry.id}").order_by("-created_at").first()
+    updated_at = latest_note.created_at if latest_note else enquiry.created_at
+
     data = {
         "id": f"enquiry-{enquiry.id}",
         "leadKind": "enquiry",
@@ -374,7 +407,7 @@ def enquiry_to_dict(enquiry: Enquiry, *, include_detail: bool = False) -> dict:
         "meetingDate": _dt(enquiry.meeting_date),
         "nextFollowUpDate": _dt(enquiry.next_follow_up_date),
         "createdAt": _dt(enquiry.created_at),
-        "updatedAt": _dt(enquiry.created_at),
+        "updatedAt": _dt(updated_at),
     }
     if include_detail:
         data["notes"] = _get_unified_notes("enquiry", enquiry.id)
@@ -390,7 +423,11 @@ def franchise_enquiry_to_dict(enquiry: FranchiseEnquiry, *, include_detail: bool
     from franchises.franchise_geo import effective_city
 
     city = effective_city(franchise) if franchise else (enquiry.city or "")
-    state = _franchise_state(franchise) if franchise else ""
+    state = _franchise_state(franchise) if franchise else (enquiry.state or "")
+    from enquiries.models import UnifiedLeadNote
+    latest_note = UnifiedLeadNote.objects.filter(lead_id=f"franchiseenquiry_{enquiry.id}").order_by("-created_at").first()
+    updated_at = latest_note.created_at if latest_note else enquiry.created_at
+
     data = {
         "id": f"franchiseenquiry-{enquiry.id}",
         "leadKind": "franchiseenquiry",
@@ -411,7 +448,7 @@ def franchise_enquiry_to_dict(enquiry: FranchiseEnquiry, *, include_detail: bool
         "meetingDate": _dt(enquiry.meeting_date),
         "nextFollowUpDate": _dt(enquiry.next_follow_up_date),
         "createdAt": _dt(enquiry.created_at),
-        "updatedAt": _dt(enquiry.created_at),
+        "updatedAt": _dt(updated_at),
     }
     if include_detail:
         data["notes"] = _get_unified_notes("franchiseenquiry", enquiry.id)
@@ -510,6 +547,13 @@ def _filter_crm_qs(request):
     if end:
         qs = qs.filter(created_at__lte=end)
 
+    state_value = (params.get("state") or "").strip()
+    if state_value:
+        state_queries = Q()
+        for s in [x.strip() for x in state_value.split(",") if x.strip()]:
+            state_queries |= Q(state__iexact=s)
+        qs = qs.filter(state_queries)
+
     qs = _filter_crm_qs_by_city(qs, request)
     qs = _filter_crm_qs_by_centre(qs, request)
     return qs.order_by("-created_at")
@@ -555,6 +599,13 @@ def _filter_enquiry_qs(request, enquiry_type: str):
     if end:
         qs = qs.filter(created_at__lte=end)
 
+    state_value = (params.get("state") or "").strip()
+    if state_value:
+        state_queries = Q()
+        for s in [x.strip() for x in state_value.split(",") if x.strip()]:
+            state_queries |= Q(franchise__state__iexact=s) | Q(franchise__statename__iexact=s) | Q(franchise__isnull=True)
+        qs = qs.filter(state_queries)
+
     qs = _filter_qs_by_city(
         qs,
         request,
@@ -571,7 +622,11 @@ def _filter_franchise_enquiry_qs(request):
     if not _include_franchise_enquiry(source_filter):
         return FranchiseEnquiry.objects.none()
 
-    qs = FranchiseEnquiry.objects.select_related("franchise")
+    centre_id = _request_centre_filter(request)
+    if centre_id:
+        qs = FranchiseEnquiry.objects.filter(franchise_id=centre_id)
+    else:
+        qs = FranchiseEnquiry.objects.filter(franchise__isnull=True)
 
     status_value = (params.get("status") or "").strip()
     if status_value:
@@ -593,6 +648,13 @@ def _filter_franchise_enquiry_qs(request):
         qs = qs.filter(created_at__gte=start)
     if end:
         qs = qs.filter(created_at__lte=end)
+
+    state_value = (params.get("state") or "").strip()
+    if state_value:
+        state_queries = Q()
+        for s in [x.strip() for x in state_value.split(",") if x.strip()]:
+            state_queries |= Q(state__iexact=s) | Q(franchise__state__iexact=s) | Q(franchise__statename__iexact=s)
+        qs = qs.filter(state_queries)
 
     qs = _filter_qs_by_city(
         qs,
@@ -710,9 +772,9 @@ def unified_dashboard_stats(request) -> dict:
             status_counts[row["status"]] = status_counts.get(row["status"], 0) + row["count"]
         today_count += crm_qs.filter(created_at__date=today).count()
         follow_ups += crm_qs.filter(
-            status__in=[CrmLeadStatus.FOLLOW_UP, CrmLeadStatus.MEETING_SCHEDULED]
+            status__in=[CrmLeadStatus.FOLLOW_UP, CrmLeadStatus.VISITED_SCHOOL]
         ).count()
-        converted += crm_qs.filter(status=CrmLeadStatus.CONVERTED).count()
+        converted += crm_qs.filter(status=CrmLeadStatus.CONVERTED_ADMISSION).count()
 
     if _include_admission(_request_source_filter(request)):
         admission_qs = _filter_enquiry_qs(request, EnquiryType.ADMISSION)
@@ -724,9 +786,9 @@ def unified_dashboard_stats(request) -> dict:
             status_counts[mapped] = status_counts.get(mapped, 0) + row["count"]
         today_count += admission_qs.filter(created_at__date=today).count()
         follow_ups += admission_qs.filter(
-            status__in=[CrmLeadStatus.FOLLOW_UP, CrmLeadStatus.MEETING_SCHEDULED, "in-progress"]
+            status__in=[CrmLeadStatus.FOLLOW_UP, CrmLeadStatus.VISITED_SCHOOL, "in-progress"]
         ).count()
-        converted += admission_qs.filter(status__in=[CrmLeadStatus.CONVERTED, "closed"]).count()
+        converted += admission_qs.filter(status__in=[CrmLeadStatus.CONVERTED_ADMISSION, "closed"]).count()
 
     if _include_contact(_request_source_filter(request)):
         contact_qs = _filter_enquiry_qs(request, EnquiryType.CONTACT)
@@ -738,9 +800,9 @@ def unified_dashboard_stats(request) -> dict:
             status_counts[mapped] = status_counts.get(mapped, 0) + row["count"]
         today_count += contact_qs.filter(created_at__date=today).count()
         follow_ups += contact_qs.filter(
-            status__in=[CrmLeadStatus.FOLLOW_UP, CrmLeadStatus.MEETING_SCHEDULED, "in-progress"]
+            status__in=[CrmLeadStatus.FOLLOW_UP, CrmLeadStatus.VISITED_SCHOOL, "in-progress"]
         ).count()
-        converted += contact_qs.filter(status__in=[CrmLeadStatus.CONVERTED, "closed"]).count()
+        converted += contact_qs.filter(status__in=[CrmLeadStatus.CONVERTED_ADMISSION, "closed"]).count()
 
     if _include_franchise_enquiry(_request_source_filter(request)):
         franchise_qs = _filter_franchise_enquiry_qs(request)
@@ -750,8 +812,8 @@ def unified_dashboard_stats(request) -> dict:
         for row in franchise_qs.values("status").annotate(count=Count("id")):
             status_counts[row["status"]] = status_counts.get(row["status"], 0) + row["count"]
         today_count += franchise_qs.filter(created_at__date=today).count()
-        follow_ups += franchise_qs.filter(status__in=[CrmLeadStatus.FOLLOW_UP, CrmLeadStatus.MEETING_SCHEDULED]).count()
-        converted += franchise_qs.filter(status=CrmLeadStatus.CONVERTED).count()
+        follow_ups += franchise_qs.filter(status__in=[CrmLeadStatus.FOLLOW_UP, CrmLeadStatus.HOT, CrmLeadStatus.WARM, CrmLeadStatus.COLD]).count()
+        converted += franchise_qs.filter(status__in=[CrmLeadStatus.CONVERTED_MOU, CrmLeadStatus.CONVERTED_AGREEMENT]).count()
 
     if _include_landing(_request_source_filter(request)):
         landing_qs = _filter_landing_qs(request)
@@ -761,9 +823,9 @@ def unified_dashboard_stats(request) -> dict:
         for row in landing_qs.only("raw_payload").iterator():
             mapped = _landing_crm_status(row)
             status_counts[mapped] = status_counts.get(mapped, 0) + 1
-            if mapped in (CrmLeadStatus.FOLLOW_UP, CrmLeadStatus.MEETING_SCHEDULED):
+            if mapped in (CrmLeadStatus.FOLLOW_UP, CrmLeadStatus.VISITED_SCHOOL):
                 follow_ups += 1
-            if mapped == CrmLeadStatus.CONVERTED:
+            if mapped == CrmLeadStatus.CONVERTED_ADMISSION:
                 converted += 1
         today_count += landing_qs.filter(created_date__date=today).count()
 
@@ -788,32 +850,67 @@ def _get_reminders(qs, to_dict_func, updated_field="updated_at", status_field="s
     today = timezone.localdate()
     next_week = today + timedelta(days=7)
     yesterday = now - timedelta(days=1)
-    closed = [CrmLeadStatus.CONVERTED, CrmLeadStatus.DROPPED, CrmLeadStatus.NOT_INTERESTED, "closed"]
+    closed = [
+        CrmLeadStatus.CONVERTED_ADMISSION,
+        CrmLeadStatus.CONVERTED_MOU,
+        CrmLeadStatus.CONVERTED_AGREEMENT,
+        CrmLeadStatus.NOT_INTERESTED,
+        CrmLeadStatus.WRONG_ENQUIRY,
+        "closed"
+    ]
 
     meetings_qs = qs.filter(
         **{
-            status_field: CrmLeadStatus.MEETING_SCHEDULED,
             "meeting_date__isnull": False,
             "meeting_date__date__gte": today,
             "meeting_date__date__lte": next_week,
         }
-    ).order_by("meeting_date")
+    ).exclude(**{f"{status_field}__in": closed}).order_by("meeting_date")
 
-    follow_ups_qs = qs.filter(
-        (
-            Q(next_follow_up_date__isnull=False, next_follow_up_date__lte=now)
-            & ~Q(**{f"{status_field}__in": closed})
-        )
-        | (
-            Q(next_follow_up_date__isnull=True, **{f"{updated_field}__lte": yesterday})
-            & ~Q(**{f"{status_field}__in": closed})
-            & ~Q(**{status_field: CrmLeadStatus.MEETING_SCHEDULED})
-        )
-    ).order_by("next_follow_up_date", updated_field)
+    open_qs = qs.exclude(**{f"{status_field}__in": closed})
+
+    from .models import UnifiedLeadNote
+    from django.db.models import Max
+
+    # Pre-fetch latest comments to determine dynamic updated_at for models without DB updated_at
+    lead_ids = []
+    for lead in open_qs:
+        model_name = lead.__class__.__name__.lower()
+        if model_name != "crmlead":
+            lead_ids.append(f"{model_name}_{lead.id}")
+            
+    notes_dict = {}
+    if lead_ids:
+        notes_qs = UnifiedLeadNote.objects.filter(lead_id__in=lead_ids).values('lead_id').annotate(latest_created=Max('created_at'))
+        notes_dict = {row['lead_id']: row['latest_created'] for row in notes_qs}
+
+    follow_ups_list = []
+    for lead in open_qs:
+        next_date = lead.next_follow_up_date
+        
+        if hasattr(lead, "updated_at"):
+            lead_updated_at = lead.updated_at
+        else:
+            model_name = lead.__class__.__name__.lower()
+            lead_id_str = f"{model_name}_{lead.id}"
+            lead_updated_at = notes_dict.get(lead_id_str) or lead.created_at
+
+        if next_date:
+            if next_date <= now:
+                follow_ups_list.append((next_date, lead_updated_at, lead))
+        else:
+            if getattr(lead, status_field, "") != CrmLeadStatus.VISITED_SCHOOL and lead_updated_at <= yesterday:
+                follow_ups_list.append((None, lead_updated_at, lead))
+
+    def _sort_key(item):
+        next_d, upd_d, _ = item
+        return (next_d or now, upd_d or now)
+
+    follow_ups_list.sort(key=_sort_key)
 
     return {
         "meetings": [to_dict_func(l) for l in meetings_qs[:50]],
-        "followUps": [to_dict_func(l) for l in follow_ups_qs[:50]],
+        "followUps": [to_dict_func(item[2]) for item in follow_ups_list[:50]],
     }
 
 
@@ -830,8 +927,8 @@ def unified_reminders(request) -> dict:
         follow_ups.extend(res["followUps"])
 
     if not source_filter or _include_admission(source_filter) or _include_contact(source_filter):
-        enq_qs = Enquiry.objects.all()
-        enq_qs = _filter_qs_by_city(enq_qs, request, "city", ("franchise__city", "franchise__cityname"))
+        enq_qs = Enquiry.objects.filter(enquiry_type__in=[EnquiryType.ADMISSION, EnquiryType.CONTACT])
+        enq_qs = _filter_qs_by_city(enq_qs, request, field_name="city", franchise_city_fields=("franchise__city", "franchise__cityname"))
         enq_qs = _filter_enquiry_qs_by_centre(enq_qs, request)
         if source_filter:
             if _include_admission(source_filter) and not _include_contact(source_filter):
@@ -844,7 +941,7 @@ def unified_reminders(request) -> dict:
 
     if not source_filter or _include_franchise_enquiry(source_filter):
         fe_qs = FranchiseEnquiry.objects.all()
-        fe_qs = _filter_qs_by_city(fe_qs, request, "city", ("franchise__city", "franchise__cityname"))
+        fe_qs = _filter_qs_by_city(fe_qs, request, field_name="city", franchise_city_fields=("franchise__city", "franchise__cityname"))
         fe_qs = _filter_enquiry_qs_by_centre(fe_qs, request)
         res = _get_reminders(fe_qs, franchise_enquiry_to_dict, "created_at")
         meetings.extend(res["meetings"])
@@ -900,6 +997,10 @@ def update_unified_lead(raw_id: str, data: dict, *, include_detail: bool = False
             raise ValueError(f"Invalid status: {updates['status']}")
         for field, value in updates.items():
             setattr(lead, field, value)
+        if "meetingDate" in data:
+            lead.meeting_date = parse_datetime(data["meetingDate"]) if data["meetingDate"] else None
+        if "nextFollowUpDate" in data:
+            lead.next_follow_up_date = parse_datetime(data["nextFollowUpDate"]) if data["nextFollowUpDate"] else None
         lead.save()
         return lead_to_dict(lead, include_detail=include_detail)
 
@@ -1060,7 +1161,7 @@ def dashboard_stats(qs):
         "totalEnquiries": qs.count(),
         "todayLeads": qs.filter(created_at__date=today).count(),
         "followUps": qs.filter(status=CrmLeadStatus.FOLLOW_UP).count(),
-        "converted": qs.filter(status=CrmLeadStatus.CONVERTED).count(),
+        "converted": qs.filter(status=CrmLeadStatus.CONVERTED_ADMISSION).count(),
         "sourceBreakdown": source_breakdown,
         "statusBreakdown": status_breakdown,
     }

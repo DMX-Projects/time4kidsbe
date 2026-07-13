@@ -373,8 +373,24 @@ class ParentSelfProfileView(APIView):
             user.full_name = str(full_name)[:255]
             user.save(update_fields=["full_name"])
 
+        if "email" in request.data:
+            new_email = str(request.data.get("email") or "").strip().lower()
+            if new_email and new_email != user.email:
+                if not EMAIL_REGEX.match(new_email):
+                    return Response({"detail": "Please provide a valid email address."}, status=400)
+                from django.contrib.auth import get_user_model
+                if get_user_model().objects.filter(email=new_email).exclude(pk=user.pk).exists():
+                    return Response({"detail": "This email address is already in use by another account."}, status=400)
+                user.email = new_email
+                user.save(update_fields=["email"])
+                pp.Emailid = new_email
+
         if "phone" in request.data:
-            pp.phone = str(request.data.get("phone") or "")[:30]
+            new_phone = str(request.data.get("phone") or "")[:30]
+            if new_phone and not PHONE_REGEX.match(new_phone):
+                return Response({"detail": "Phone number must be 10 digits and start with 6, 7, 8, or 9."}, status=400)
+            pp.phone = new_phone
+            
         if "address" in request.data:
             pp.address = str(request.data.get("address") or "")
         if "city" in request.data:
@@ -385,3 +401,17 @@ class ParentSelfProfileView(APIView):
             pp.notifications_muted = bool(request.data.get("notifications_muted"))
         pp.save()
         return self.get(request)
+
+class LogoutView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        if user.normalized_role() == UserRole.DRIVER.value:
+            from accounts.profile_access import driver_profile_for_user
+            from franchises.models import DriverActivityLog
+            driver_profile = driver_profile_for_user(user)
+            if driver_profile:
+                DriverActivityLog.objects.create(driver=driver_profile, action='logout')
+        return Response({'success': True})
+
