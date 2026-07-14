@@ -613,13 +613,43 @@ class AdminCrmCentresView(APIView):
         if not can_view_crm_leads(request):
             return Response({"detail": "CRM login required."}, status=status.HTTP_403_FORBIDDEN)
 
-        from franchises.franchise_geo import filter_queryset_by_city
+        from django.db.models import Q
+        from django.db.models.functions import Trim
+
+        from franchises.franchise_geo import city_query_variants, filter_queryset_by_city, filter_queryset_by_state
         from franchises.models import Franchise
 
         qs = Franchise.objects.filter(is_active=True).order_by("name")
         city = (request.query_params.get("city") or "").strip()
+        state = (request.query_params.get("state") or "").strip()
+
         if city:
-            qs = filter_queryset_by_city(qs, city)
+            cities = [c.strip() for c in city.split(",") if c.strip()]
+            if len(cities) == 1:
+                qs = filter_queryset_by_city(qs, cities[0])
+            elif cities:
+                q = Q()
+                for name in cities:
+                    for variant in city_query_variants(name):
+                        q |= Q(city_trim__iexact=variant) | Q(cityname_trim__iexact=variant)
+                qs = qs.annotate(
+                    city_trim=Trim("city"),
+                    cityname_trim=Trim("cityname"),
+                ).filter(q)
+        elif state:
+            states = [s.strip() for s in state.split(",") if s.strip()]
+            if len(states) == 1:
+                qs = filter_queryset_by_state(qs, states[0])
+            elif states:
+                matched_ids = set()
+                for st in states:
+                    matched_ids.update(
+                        filter_queryset_by_state(
+                            Franchise.objects.filter(is_active=True),
+                            st,
+                        ).values_list("id", flat=True)
+                    )
+                qs = qs.filter(id__in=matched_ids)
 
         from accounts.crm_zones import filter_franchise_qs_by_zone
 
