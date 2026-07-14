@@ -41,6 +41,8 @@ class Command(BaseCommand):
             user.role = UserRole.CRM
             user.is_active = True
             user.full_name = name or user.full_name
+            user.crm_zone = ""
+            user.crm_region = ""
             if force_password:
                 user.set_password(password)
             user.save()
@@ -58,5 +60,7 @@ class Command(BaseCommand):
             role=UserRole.CRM,
             full_name=name,
             is_active=True,
+            crm_zone="",
+            crm_region="",
         )
         self.stdout.write(self.style.SUCCESS(f"Created CRM admin: {email} / {password}"))

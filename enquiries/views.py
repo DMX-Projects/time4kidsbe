@@ -69,7 +69,12 @@ def _sync_enquiry_status_siblings(instance, status: str) -> None:
     phone = (getattr(instance, "phone", None) or "").strip()
     if not phone:
         return
-    type(instance).objects.filter(phone=phone).exclude(pk=instance.pk).update(status=status)
+    updates = {"status": status}
+    if hasattr(instance, "meeting_date"):
+        updates["meeting_date"] = instance.meeting_date
+    if hasattr(instance, "next_follow_up_date"):
+        updates["next_follow_up_date"] = instance.next_follow_up_date
+    type(instance).objects.filter(phone=phone).exclude(pk=instance.pk).update(**updates)
 
 
 class EnquiryStatusSyncMixin:
@@ -485,16 +490,9 @@ class AdminCrmLeadDetailView(APIView):
     def get(self, request, pk):
         if not can_view_crm_leads(request):
             return Response({"detail": "CRM login required."}, status=status.HTTP_403_FORBIDDEN)
-        from .crm_api import lead_to_dict, parse_lead_id, unified_lead_detail
+        from .crm_api import parse_lead_id, unified_lead_detail
 
-        kind, _ = parse_lead_id(pk)
-        if kind == "crm":
-            lead = CrmLead.objects.filter(pk=parse_lead_id(pk)[1]).prefetch_related("notes").first()
-            if not lead:
-                return Response({"message": "Lead not found"}, status=status.HTTP_404_NOT_FOUND)
-            return Response(lead_to_dict(lead, include_detail=True))
-
-        data = unified_lead_detail(pk, include_detail=True)
+        data = unified_lead_detail(pk, include_detail=True, request=request)
         if not data:
             return Response({"message": "Lead not found"}, status=status.HTTP_404_NOT_FOUND)
         return Response(data)
@@ -506,7 +504,7 @@ class AdminCrmLeadDetailView(APIView):
         from .crm_api import update_unified_lead
 
         try:
-            data = update_unified_lead(pk, request.data or {}, include_detail=True)
+            data = update_unified_lead(pk, request.data or {}, include_detail=True, request=request)
         except ValueError as exc:
             return Response({"message": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -623,6 +621,10 @@ class AdminCrmCentresView(APIView):
         if city:
             qs = filter_queryset_by_city(qs, city)
 
+        from accounts.crm_zones import filter_franchise_qs_by_zone
+
+        qs = filter_franchise_qs_by_zone(qs, request)
+
         centres = [{"id": str(f.id), "name": f.name} for f in qs]
         return Response(centres)
 
@@ -637,7 +639,7 @@ class AdminCrmCitiesView(APIView):
         from .crm_api import unified_crm_cities
 
         state = request.query_params.get("state")
-        cities = unified_crm_cities(state)
+        cities = unified_crm_cities(state, request=request)
         return Response([{"name": city} for city in cities])
 
 
@@ -753,13 +755,28 @@ class AdminCrmStatesView(APIView):
         if not can_view_crm_leads(request):
             return Response({"detail": "CRM login required."}, status=status.HTTP_403_FORBIDDEN)
 
-        from enquiries.models import FranchiseEnquiry
+        from franchises.franchise_geo import state_to_display
         from franchises.models import Franchise
+        from enquiries.models import FranchiseEnquiry
+        from accounts.crm_zones import request_scope_state_codes, scope_display_state_names
+
+        codes = request_scope_state_codes(request)
+        # Scoped CRM (zone or region): return the full state list for that scope.
+        if codes is not None:
+            return Response([{"name": name} for name in scope_display_state_names(codes)])
 
         states = set()
         for s in FranchiseEnquiry.objects.exclude(state__isnull=True).exclude(state="").values_list("state", flat=True).distinct():
-            states.add(s.strip().title())
+            display = state_to_display(s) or s.strip().title()
+            if display:
+                states.add(display)
         for s in Franchise.objects.exclude(state__isnull=True).exclude(state="").values_list("state", flat=True).distinct():
-            states.add(s.strip().title())
+            display = state_to_display(s) or s.strip().title()
+            if display:
+                states.add(display)
+        for s in Franchise.objects.exclude(statename__isnull=True).exclude(statename="").values_list("statename", flat=True).distinct():
+            display = state_to_display(s) or s.strip().title()
+            if display:
+                states.add(display)
 
-        return Response([{"name": name} for name in sorted(list(states))])
+        return Response([{"name": name} for name in sorted(list(states), key=str.casefold)])

@@ -316,7 +316,7 @@ class CitiesListView(APIView):
 
     def get(self, request, *args, **kwargs):
         raw = _distinct_franchise_cities()
-        names = sorted({str(s).strip() for s in raw if s and str(s).strip()}, key=str.casefold)
+        names = sorted({str(s).strip().title() for s in raw if s and str(s).strip()}, key=str.casefold)
         results = CityOptionSerializer([{"name": n} for n in names], many=True).data
         return Response({"count": len(results), "results": results})
 

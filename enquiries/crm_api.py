@@ -276,13 +276,26 @@ def _filter_crm_qs_by_city(qs, request):
     return qs.filter(city_q)
 
 
-def unified_crm_cities(state: str | None = None) -> list[str]:
+def unified_crm_cities(state: str | None = None, request=None) -> list[str]:
     """City names for CRM filter dropdown (franchise locations), optionally filtered by state."""
     from franchises.models import Franchise
     from enquiries.models import FranchiseEnquiry
     from django.db.models import Q
+    from accounts.crm_zones import (
+        clamp_requested_states,
+        filter_franchise_qs_by_zone,
+        request_scope_state_codes,
+        scope_city_names,
+    )
+
+    codes = request_scope_state_codes(request) if request is not None else None
+    # Scoped CRM (zone or region): return full city master list for that scope.
+    if codes is not None:
+        state_scoped = clamp_requested_states(request, state) if request is not None else state
+        return scope_city_names(codes, state_scoped)
 
     cities: set[str] = set()
+    state = clamp_requested_states(request, state) if request is not None else state
 
     if state:
         state_list = [x.strip() for x in state.split(",") if x.strip()]
@@ -291,8 +304,11 @@ def unified_crm_cities(state: str | None = None) -> list[str]:
         franchise_q = Q()
         for s in state_list:
             franchise_q |= Q(state__iexact=s) | Q(statename__iexact=s)
-        for f in Franchise.objects.filter(franchise_q, is_active=True):
-            name = (f.cityname or f.city or "").strip()
+        franchise_qs = Franchise.objects.filter(franchise_q, is_active=True)
+        if request is not None:
+            franchise_qs = filter_franchise_qs_by_zone(franchise_qs, request)
+        for f in franchise_qs:
+            name = (f.cityname or f.city or "").strip().title()
             if name:
                 cities.add(name)
 
@@ -301,15 +317,15 @@ def unified_crm_cities(state: str | None = None) -> list[str]:
         for s in state_list:
             fe_q |= Q(state__iexact=s)
         for c in FranchiseEnquiry.objects.filter(fe_q).exclude(city__isnull=True).exclude(city="").values_list("city", flat=True).distinct():
-            cities.add(c.strip())
+            cities.add(c.strip().title())
     else:
         from franchises.franchise_geo import cities_from_franchises
         for loc in cities_from_franchises():
-            name = (loc.get("city_name") or loc.get("city") or "").strip()
+            name = (loc.get("city_name") or loc.get("city") or "").strip().title()
             if name:
                 cities.add(name)
         for c in FranchiseEnquiry.objects.exclude(city__isnull=True).exclude(city="").values_list("city", flat=True).distinct():
-            cities.add(c.strip())
+            cities.add(c.strip().title())
 
     return sorted(list(cities), key=str.casefold)
 
@@ -549,6 +565,9 @@ def _filter_crm_qs(request):
 
     state_value = (params.get("state") or "").strip()
     if state_value:
+        from accounts.crm_zones import clamp_requested_states
+
+        state_value = clamp_requested_states(request, state_value) or ""
         state_queries = Q()
         for s in [x.strip() for x in state_value.split(",") if x.strip()]:
             state_queries |= Q(state__iexact=s)
@@ -556,7 +575,9 @@ def _filter_crm_qs(request):
 
     qs = _filter_crm_qs_by_city(qs, request)
     qs = _filter_crm_qs_by_centre(qs, request)
-    return qs.order_by("-created_at")
+    from accounts.crm_zones import filter_crm_lead_qs_by_zone
+
+    return filter_crm_lead_qs_by_zone(qs, request).order_by("-created_at")
 
 
 def _filter_enquiry_qs(request, enquiry_type: str):
@@ -601,6 +622,9 @@ def _filter_enquiry_qs(request, enquiry_type: str):
 
     state_value = (params.get("state") or "").strip()
     if state_value:
+        from accounts.crm_zones import clamp_requested_states
+
+        state_value = clamp_requested_states(request, state_value) or ""
         state_queries = Q()
         for s in [x.strip() for x in state_value.split(",") if x.strip()]:
             state_queries |= Q(franchise__state__iexact=s) | Q(franchise__statename__iexact=s) | Q(franchise__isnull=True)
@@ -613,7 +637,9 @@ def _filter_enquiry_qs(request, enquiry_type: str):
         franchise_city_fields=("franchise__city", "franchise__cityname"),
     )
     qs = _filter_enquiry_qs_by_centre(qs, request)
-    return qs.order_by("-created_at")
+    from accounts.crm_zones import filter_enquiry_qs_by_zone
+
+    return filter_enquiry_qs_by_zone(qs, request).order_by("-created_at")
 
 
 def _filter_franchise_enquiry_qs(request):
@@ -651,6 +677,9 @@ def _filter_franchise_enquiry_qs(request):
 
     state_value = (params.get("state") or "").strip()
     if state_value:
+        from accounts.crm_zones import clamp_requested_states
+
+        state_value = clamp_requested_states(request, state_value) or ""
         state_queries = Q()
         for s in [x.strip() for x in state_value.split(",") if x.strip()]:
             state_queries |= Q(state__iexact=s) | Q(franchise__state__iexact=s) | Q(franchise__statename__iexact=s)
@@ -663,7 +692,9 @@ def _filter_franchise_enquiry_qs(request):
         franchise_city_fields=("franchise__city", "franchise__cityname"),
     )
     qs = _filter_enquiry_qs_by_centre(qs, request)
-    return qs.order_by("-created_at")
+    from accounts.crm_zones import filter_franchise_enquiry_qs_by_zone
+
+    return filter_franchise_enquiry_qs_by_zone(qs, request).order_by("-created_at")
 
 
 def _filter_landing_qs(request):
@@ -849,7 +880,6 @@ def _get_reminders(qs, to_dict_func, updated_field="updated_at", status_field="s
     now = timezone.now()
     today = timezone.localdate()
     next_week = today + timedelta(days=7)
-    yesterday = now - timedelta(days=1)
     closed = [
         CrmLeadStatus.CONVERTED_ADMISSION,
         CrmLeadStatus.CONVERTED_MOU,
@@ -867,50 +897,17 @@ def _get_reminders(qs, to_dict_func, updated_field="updated_at", status_field="s
         }
     ).exclude(**{f"{status_field}__in": closed}).order_by("meeting_date")
 
-    open_qs = qs.exclude(**{f"{status_field}__in": closed})
-
-    from .models import UnifiedLeadNote
-    from django.db.models import Max
-
-    # Pre-fetch latest comments to determine dynamic updated_at for models without DB updated_at
-    lead_ids = []
-    for lead in open_qs:
-        model_name = lead.__class__.__name__.lower()
-        if model_name != "crmlead":
-            lead_ids.append(f"{model_name}_{lead.id}")
-            
-    notes_dict = {}
-    if lead_ids:
-        notes_qs = UnifiedLeadNote.objects.filter(lead_id__in=lead_ids).values('lead_id').annotate(latest_created=Max('created_at'))
-        notes_dict = {row['lead_id']: row['latest_created'] for row in notes_qs}
-
-    follow_ups_list = []
-    for lead in open_qs:
-        next_date = lead.next_follow_up_date
-        
-        if hasattr(lead, "updated_at"):
-            lead_updated_at = lead.updated_at
-        else:
-            model_name = lead.__class__.__name__.lower()
-            lead_id_str = f"{model_name}_{lead.id}"
-            lead_updated_at = notes_dict.get(lead_id_str) or lead.created_at
-
-        if next_date:
-            if next_date <= now:
-                follow_ups_list.append((next_date, lead_updated_at, lead))
-        else:
-            if getattr(lead, status_field, "") != CrmLeadStatus.VISITED_SCHOOL and lead_updated_at <= yesterday:
-                follow_ups_list.append((None, lead_updated_at, lead))
-
-    def _sort_key(item):
-        next_d, upd_d, _ = item
-        return (next_d or now, upd_d or now)
-
-    follow_ups_list.sort(key=_sort_key)
+    follow_ups_qs = qs.filter(
+        **{
+            "next_follow_up_date__isnull": False,
+            "next_follow_up_date__date__gte": today,
+            "next_follow_up_date__date__lte": next_week,
+        }
+    ).exclude(**{f"{status_field}__in": closed}).order_by("next_follow_up_date")
 
     return {
         "meetings": [to_dict_func(l) for l in meetings_qs[:50]],
-        "followUps": [to_dict_func(item[2]) for item in follow_ups_list[:50]],
+        "followUps": [to_dict_func(l) for l in follow_ups_qs[:50]],
     }
 
 
@@ -965,16 +962,31 @@ def unified_reminders(request) -> dict:
     }
 
 
-def unified_lead_detail(raw_id: str, *, include_detail: bool = False) -> dict | None:
+def unified_lead_detail(raw_id: str, *, include_detail: bool = False, request=None) -> dict | None:
     kind, pk = parse_lead_id(raw_id)
     if kind == "crm":
-        lead = CrmLead.objects.filter(pk=pk).prefetch_related("notes").first()
+        qs = CrmLead.objects.filter(pk=pk).prefetch_related("notes")
+        if request is not None:
+            from accounts.crm_zones import filter_crm_lead_qs_by_zone
+
+            qs = filter_crm_lead_qs_by_zone(qs, request)
+        lead = qs.first()
         return lead_to_dict(lead, include_detail=include_detail) if lead else None
     if kind == "enquiry":
-        enquiry = Enquiry.objects.select_related("franchise").filter(pk=pk).first()
+        qs = Enquiry.objects.select_related("franchise").filter(pk=pk)
+        if request is not None:
+            from accounts.crm_zones import filter_enquiry_qs_by_zone
+
+            qs = filter_enquiry_qs_by_zone(qs, request)
+        enquiry = qs.first()
         return enquiry_to_dict(enquiry, include_detail=include_detail) if enquiry else None
     if kind == "franchiseenquiry":
-        franchise_enq = FranchiseEnquiry.objects.select_related("franchise").filter(pk=pk).first()
+        qs = FranchiseEnquiry.objects.select_related("franchise").filter(pk=pk)
+        if request is not None:
+            from accounts.crm_zones import filter_franchise_enquiry_qs_by_zone
+
+            qs = filter_franchise_enquiry_qs_by_zone(qs, request)
+        franchise_enq = qs.first()
         return franchise_enquiry_to_dict(franchise_enq, include_detail=include_detail) if franchise_enq else None
     if kind == "landing":
         row = KidsEnquiry.objects.filter(pk=pk).first()
@@ -982,7 +994,11 @@ def unified_lead_detail(raw_id: str, *, include_detail: bool = False) -> dict | 
     return None
 
 
-def update_unified_lead(raw_id: str, data: dict, *, include_detail: bool = False) -> dict | None:
+def update_unified_lead(raw_id: str, data: dict, *, include_detail: bool = False, request=None) -> dict | None:
+    # Block updates for leads outside the caller's CRM zone
+    if request is not None and unified_lead_detail(raw_id, include_detail=False, request=request) is None:
+        return None
+
     kind, numeric_id = parse_lead_id(raw_id)
     status = (data.get("status") or "").strip()
     if status and status not in _valid_crm_statuses():
@@ -1027,6 +1043,8 @@ def update_unified_lead(raw_id: str, data: dict, *, include_detail: bool = False
         if "nextFollowUpDate" in data:
             enquiry.next_follow_up_date = parse_datetime(data["nextFollowUpDate"]) if data["nextFollowUpDate"] else None
         enquiry.save()
+        from .views import _sync_enquiry_status_siblings
+        _sync_enquiry_status_siblings(enquiry, enquiry.status)
         return enquiry_to_dict(enquiry, include_detail=include_detail)
 
     if kind == "franchiseenquiry":
@@ -1168,9 +1186,24 @@ def dashboard_stats(qs):
 
 def unified_reports_data(request) -> dict:
     """Returns pivot data for the Reports View grouped by City, Source, and Status."""
+    from accounts.crm_zones import request_scope_state_codes, scope_city_names
+
     cities_data = {}
     
     requested_cities = [x.strip() for x in (_request_city_filter(request) or "").split(",") if x.strip()]
+
+    # Scoped CRM: never include cities outside the region/zone.
+    codes = request_scope_state_codes(request)
+    if codes is not None:
+        allowed = {c.casefold(): c for c in scope_city_names(codes)}
+        if requested_cities:
+            requested_cities = [
+                allowed.get(c.casefold(), c)
+                for c in requested_cities
+                if c.casefold() in allowed
+            ]
+        if not requested_cities:
+            requested_cities = list(allowed.values())
     
     for rc in requested_cities:
         cities_data[rc] = {"admission": {}, "contact": {}, "campaign": {}, "franchise": {}}
@@ -1190,6 +1223,9 @@ def unified_reports_data(request) -> dict:
     def _add_count(db_city, source, status, count):
         city = _find_requested_city(db_city)
         if city not in cities_data:
+            # Scoped reports stay on the scope city list — never expand outside
+            if codes is not None:
+                return
             cities_data[city] = {"admission": {}, "contact": {}, "campaign": {}, "franchise": {}}
         if source not in cities_data[city]:
             cities_data[city][source] = {}

@@ -207,8 +207,25 @@ def _authenticate_with_identifier(identifier: str, password: str):
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ["id", "email", "username", "full_name", "role", "is_active", "is_superuser"]
-        read_only_fields = ["id", "role", "is_active", "is_superuser"]
+        fields = [
+            "id",
+            "email",
+            "username",
+            "full_name",
+            "role",
+            "is_active",
+            "is_superuser",
+            "crm_zone",
+            "crm_region",
+        ]
+        read_only_fields = [
+            "id",
+            "role",
+            "is_active",
+            "is_superuser",
+            "crm_zone",
+            "crm_region",
+        ]
 
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
@@ -390,6 +407,8 @@ class CrmTokenObtainPairSerializer(TokenObtainPairSerializer):
                 "full_name": user.full_name,
                 "role": user.role,
                 "is_superuser": user.is_superuser,
+                "crm_zone": getattr(user, "crm_zone", "") or "",
+                "crm_region": getattr(user, "crm_region", "") or "",
             },
         }
 
