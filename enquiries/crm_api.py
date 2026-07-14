@@ -125,50 +125,80 @@ def _parse_request_dates(request):
     return start, end
 
 
-def _request_centre_filter(request) -> int | None:
+def _request_centre_ids(request) -> list[int]:
     raw = (_query_params(request).get("centreId") or _query_params(request).get("centre_id") or "").strip()
     if not raw:
-        return None
-    try:
-        return int(raw)
-    except ValueError:
-        return None
+        return []
+    ids: list[int] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            ids.append(int(part))
+        except ValueError:
+            continue
+    return ids
+
+
+def _request_centre_filter(request) -> int | None:
+    """Single centre id when exactly one is selected; otherwise None (use ``_request_centre_ids``)."""
+    ids = _request_centre_ids(request)
+    return ids[0] if len(ids) == 1 else None
+
+
+def _franchises_for_centre_filter(request):
+    ids = _request_centre_ids(request)
+    if not ids:
+        return []
+    from franchises.models import Franchise
+
+    return list(Franchise.objects.filter(pk__in=ids, is_active=True))
 
 
 def _franchise_for_centre_filter(request):
-    centre_id = _request_centre_filter(request)
-    if not centre_id:
-        return None
-    from franchises.models import Franchise
-
-    return Franchise.objects.filter(pk=centre_id, is_active=True).first()
+    centres = _franchises_for_centre_filter(request)
+    return centres[0] if len(centres) == 1 else None
 
 
 def _filter_enquiry_qs_by_centre(qs, request):
-    centre_id = _request_centre_filter(request)
-    if not centre_id:
+    ids = _request_centre_ids(request)
+    if not ids:
         return qs
-    return qs.filter(franchise_id=centre_id)
+    return qs.filter(franchise_id__in=ids)
 
 
 def _filter_landing_qs_by_centre(qs, request):
-    franchise = _franchise_for_centre_filter(request)
-    if not franchise:
+    franchises = _franchises_for_centre_filter(request)
+    if not franchises:
         return qs
-    name = (franchise.name or "").strip()
-    if not name:
+    from django.db.models import Q
+
+    q = Q()
+    for franchise in franchises:
+        name = (franchise.name or "").strip()
+        if not name:
+            continue
+        q |= Q(location__iexact=name) | Q(centre_name__iexact=name)
+    if not q:
         return qs.none()
-    return qs.filter(Q(location__iexact=name) | Q(centre_name__iexact=name))
+    return qs.filter(q)
 
 
 def _filter_crm_qs_by_centre(qs, request):
-    franchise = _franchise_for_centre_filter(request)
-    if not franchise:
+    franchises = _franchises_for_centre_filter(request)
+    if not franchises:
         return qs
-    name = (franchise.name or "").strip()
-    if not name:
+    from django.db.models import Q
+
+    q = Q()
+    for franchise in franchises:
+        name = (franchise.name or "").strip()
+        if name:
+            q |= Q(preferred_centre_location__iexact=name)
+    if not q:
         return qs.none()
-    return qs.filter(preferred_centre_location__iexact=name)
+    return qs.filter(q)
 
 
 def _request_city_filter(request) -> str | None:
@@ -648,9 +678,9 @@ def _filter_franchise_enquiry_qs(request):
     if not _include_franchise_enquiry(source_filter):
         return FranchiseEnquiry.objects.none()
 
-    centre_id = _request_centre_filter(request)
-    if centre_id:
-        qs = FranchiseEnquiry.objects.filter(franchise_id=centre_id)
+    centre_ids = _request_centre_ids(request)
+    if centre_ids:
+        qs = FranchiseEnquiry.objects.filter(franchise_id__in=centre_ids)
     else:
         qs = FranchiseEnquiry.objects.filter(franchise__isnull=True)
 
