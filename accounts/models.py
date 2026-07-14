@@ -14,6 +14,13 @@ class UserRole(models.TextChoices):
     DRIVER = "DRIVER", "Driver"
 
 
+class CrmZone(models.TextChoices):
+    EAST = "EAST", "East"
+    WEST = "WEST", "West"
+    NORTH = "NORTH", "North"
+    SOUTH = "SOUTH", "South"
+
+
 class UserManager(BaseUserManager):
     def create_user(self, email: str, password: str | None = None, role: str = UserRole.PARENT, **extra_fields):
         if not email:
@@ -41,6 +48,21 @@ class User(AbstractBaseUser, PermissionsMixin):
     username = models.CharField(max_length=150, unique=True, blank=True, null=True)
     full_name = models.CharField(max_length=255, blank=True)
     role = models.CharField(max_length=20, choices=UserRole.choices)
+    # Blank = national CRM (all zones). EAST/WEST/NORTH/SOUTH restricts leads & reports.
+    crm_zone = models.CharField(
+        max_length=10,
+        choices=CrmZone.choices,
+        blank=True,
+        default="",
+        help_text="CRM only: blank = all India; otherwise only that zone's states/cities/centres.",
+    )
+    # Blank = full zone (or national). NORTH_R1 / SOUTH_R2 / etc. narrows to a region inside the zone.
+    crm_region = models.CharField(
+        max_length=20,
+        blank=True,
+        default="",
+        help_text="CRM only: blank = full zone/national; otherwise a region code (e.g. NORTH_R1).",
+    )
 
     is_staff = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)

@@ -26,6 +26,8 @@ class EnquirySerializer(serializers.ModelSerializer):
             "franchise_slug",
             "franchise_name",
             "status",
+            "meeting_date",
+            "next_follow_up_date",
             "created_at",
             "record_source",
         ]
@@ -106,6 +108,8 @@ class FranchiseEnquiryReadSerializer(serializers.ModelSerializer):
             "franchise",
             "franchise_name",
             "status",
+            "meeting_date",
+            "next_follow_up_date",
             "created_at",
             "record_source",
         ]
@@ -170,7 +174,7 @@ class FranchiseEnquiryCreateSerializer(serializers.ModelSerializer):
 class FranchiseEnquiryStatusSerializer(serializers.ModelSerializer):
     class Meta:
         model = FranchiseEnquiry
-        fields = ["status"]
+        fields = ["status", "meeting_date", "next_follow_up_date"]
 
 
 class KidsEnquirySerializer(serializers.ModelSerializer):
