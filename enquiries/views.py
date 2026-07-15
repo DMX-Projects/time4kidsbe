@@ -596,14 +596,74 @@ class AdminCrmLeadNoteCreateView(APIView):
 
 
 class AdminCrmSendReminderView(APIView):
-    """Stub — clone UI expects success; actual email/WhatsApp handled client-side."""
+    """
+    CRM reminder / Direct Contact email.
+    Email channel sends via SendGrid From franchise@… To the lead.
+    WhatsApp remains client-side (returns success for UI compatibility).
+    """
 
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
         if not can_view_crm_leads(request):
             return Response({"detail": "CRM login required."}, status=status.HTTP_403_FORBIDDEN)
-        return Response({"success": True})
+
+        channel = (request.data.get("channel") or "email").strip().lower()
+        if channel == "whatsapp":
+            return Response({"success": True})
+
+        if channel != "email":
+            return Response({"error": "Unsupported channel."}, status=status.HTTP_400_BAD_REQUEST)
+
+        lead_id = request.data.get("leadId") or request.data.get("lead_id")
+        if not lead_id:
+            return Response({"error": "leadId is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        from .crm_api import unified_lead_detail
+        from .emails import crm_direct_from_email, send_crm_direct_contact_email
+
+        lead = unified_lead_detail(str(lead_id), request=request)
+        if not lead:
+            return Response({"error": "Lead not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        to_email = (lead.get("email") or "").strip()
+        if not to_email:
+            return Response(
+                {"error": "Lead has no email address."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        name = (lead.get("fullName") or lead.get("name") or "there").strip() or "there"
+        reminder_type = (request.data.get("type") or "follow-up").strip().lower()
+        subject = (request.data.get("subject") or "").strip()
+        body = (request.data.get("body") or "").strip()
+        if not subject:
+            subject = (
+                "T.I.M.E. Kids – Meeting reminder"
+                if reminder_type == "meeting"
+                else "T.I.M.E. Kids – Follow-up"
+            )
+        if not body:
+            body = (
+                f"Hi {name},\n\n"
+                "This is a reminder from T.I.M.E. Kids regarding your enquiry. "
+                "Please let us know a convenient time to connect.\n\n"
+                "Best regards,\nT.I.M.E. Kids Team"
+            )
+
+        ok = send_crm_direct_contact_email(to_email=to_email, subject=subject, body=body)
+        if not ok:
+            return Response(
+                {"error": "Failed to send email. Check SendGrid configuration."},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        return Response(
+            {
+                "success": True,
+                "from": crm_direct_from_email(),
+                "to": to_email,
+            }
+        )
 
 
 class AdminCrmCentresView(APIView):

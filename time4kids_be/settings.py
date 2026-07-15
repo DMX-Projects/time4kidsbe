@@ -10,7 +10,8 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 ENV_FILE = BASE_DIR / ".env.local"
 if not ENV_FILE.exists():
     ENV_FILE = BASE_DIR / ".env"
-load_dotenv(ENV_FILE)
+# override=True so values in .env win over empty shell vars
+load_dotenv(ENV_FILE, override=True)
 
 # Environment detection
 ENVIRONMENT = os.getenv("DJANGO_ENVIRONMENT", "development").lower()
@@ -224,6 +225,11 @@ MAIL_TO_ADDRESS = os.getenv("MAIL_TO_ADDRESS", "info@timekidspreschools.com")
 MAIL_LANDING_CC = os.getenv("MAIL_LANDING_CC", "info@timekidspreschools.com")
 # Franchise opportunity form — internal alerts only
 MAIL_FRANCHISE_TO_ADDRESS = os.getenv("MAIL_FRANCHISE_TO_ADDRESS", "franchise@timekidspreschools.com")
+# CRM Direct Contact Email button — From address (must be allowed in SendGrid)
+CRM_DIRECT_FROM_EMAIL = (
+    os.getenv("CRM_DIRECT_FROM_EMAIL", "").strip()
+    or "franchise@timekidspreschools.com"
+)
 
 _default_email_backend = (
     "django.core.mail.backends.smtp.EmailBackend"
