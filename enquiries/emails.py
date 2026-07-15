@@ -221,6 +221,45 @@ def _landing_admin_html(record) -> str:
     """
 
 
+def crm_direct_from_email() -> str:
+    """CRM Direct Contact — always From franchise@timekidspreschools.com."""
+    from django.conf import settings
+
+    return (
+        getattr(settings, "CRM_DIRECT_FROM_EMAIL", None)
+        or "franchise@timekidspreschools.com"
+    ).strip() or "franchise@timekidspreschools.com"
+
+
+def send_crm_direct_contact_email(*, to_email: str, subject: str, body: str) -> bool:
+    """
+    Send a follow-up to the lead From franchise@… via SendGrid.
+    Returns True when SendGrid accepts the message.
+    """
+    to = normalize_personal_email(to_email) or (to_email or "").strip()
+    if not to:
+        logger.warning("CRM direct contact: no recipient email")
+        return False
+    if not sendgrid_api_key():
+        logger.warning("CRM direct contact: SENDGRID_API_KEY not set")
+        return False
+
+    plain = (body or "").strip() or "Hello from T.I.M.E. Kids."
+    subj = (subject or "").strip() or "T.I.M.E. Kids – Follow-up"
+    html_content = (
+        "<html><body style=\"font-family: Arial, sans-serif; line-height: 1.6; color: #333;\">"
+        + html.escape(plain).replace("\n", "<br>\n")
+        + "</body></html>"
+    )
+    return send_sendgrid_message(
+        to_emails=to,
+        subject=subj,
+        plain_text_content=plain,
+        html_content=html_content,
+        from_email=crm_direct_from_email(),
+    )
+
+
 def send_landing_enquiry_emails(record) -> str:
     """
     Landing page submit:
