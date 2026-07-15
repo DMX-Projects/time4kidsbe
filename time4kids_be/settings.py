@@ -230,6 +230,9 @@ CRM_DIRECT_FROM_EMAIL = (
     os.getenv("CRM_DIRECT_FROM_EMAIL", "").strip()
     or "franchise@timekidspreschools.com"
 )
+# One zonal head (all 4 zones) + one regional head (all 8 regions) — new-lead reminders
+CRM_ZONAL_HEAD_EMAIL = (os.getenv("CRM_ZONAL_HEAD_EMAIL", "") or "").strip()
+CRM_REGIONAL_HEAD_EMAIL = (os.getenv("CRM_REGIONAL_HEAD_EMAIL", "") or "").strip()
 
 _default_email_backend = (
     "django.core.mail.backends.smtp.EmailBackend"

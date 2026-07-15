@@ -260,6 +260,74 @@ def send_crm_direct_contact_email(*, to_email: str, subject: str, body: str) -> 
     )
 
 
+def send_crm_heads_new_lead_reminder(*, name: str, lead_source: str) -> bool:
+    """
+    Notify the single zonal head + single regional head that a new lead came in.
+    Body is intentionally short: lead name + lead source only.
+    Recipients from CRM_ZONAL_HEAD_EMAIL / CRM_REGIONAL_HEAD_EMAIL.
+    """
+    from django.conf import settings
+
+    zonal = (getattr(settings, "CRM_ZONAL_HEAD_EMAIL", None) or "").strip()
+    regional = (getattr(settings, "CRM_REGIONAL_HEAD_EMAIL", None) or "").strip()
+    recipients = []
+    for addr in (zonal, regional):
+        if addr and addr.lower() not in {r.lower() for r in recipients}:
+            recipients.append(addr)
+
+    if not recipients:
+        logger.info("CRM heads reminder skipped — set CRM_ZONAL_HEAD_EMAIL / CRM_REGIONAL_HEAD_EMAIL")
+        return False
+    if not sendgrid_api_key():
+        logger.warning("CRM heads reminder skipped — SENDGRID_API_KEY not set")
+        return False
+
+    display_name = (name or "").strip() or "—"
+    source = (lead_source or "").strip() or "—"
+    subject = f"New CRM lead reminder — {display_name} ({source})"
+    plain = (
+        "New lead received.\n\n"
+        f"Name: {display_name}\n"
+        f"Lead source: {source}\n"
+    )
+    html_content = f"""
+    <html><body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+      <p><strong>New lead received.</strong></p>
+      <p><strong>Name:</strong> {html.escape(display_name)}<br>
+      <strong>Lead source:</strong> {html.escape(source)}</p>
+    </body></html>
+    """
+    return send_sendgrid_message(
+        to_emails=recipients,
+        subject=subject,
+        plain_text_content=plain,
+        html_content=html_content,
+        from_email=default_from_email(),
+    )
+
+
+def lead_source_label_for_enquiry(enquiry) -> str:
+    et = (getattr(enquiry, "enquiry_type", None) or "").strip().upper()
+    if et == "ADMISSION":
+        return "Admission"
+    if et == "CONTACT":
+        return "Contact"
+    return et or "Enquiry"
+
+
+def lead_source_label_for_crm_lead(lead) -> str:
+    raw = (getattr(lead, "source", None) or "").strip().lower()
+    mapping = {
+        "web": "Website (CRM)",
+        "website": "Website (CRM)",
+        "fb": "Facebook",
+        "facebook": "Facebook",
+        "insta": "Instagram",
+        "instagram": "Instagram",
+    }
+    return mapping.get(raw, raw.replace("_", " ").title() or "Campaign")
+
+
 def send_landing_enquiry_emails(record) -> str:
     """
     Landing page submit:

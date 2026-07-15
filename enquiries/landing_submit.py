@@ -180,11 +180,17 @@ def handle_landing_enquiry_post(post_data: Any):
         )
 
     try:
-        from .emails import send_landing_enquiry_emails
+        from .emails import send_crm_heads_new_lead_reminder, send_landing_enquiry_emails
 
         email_status = send_landing_enquiry_emails(record)
         if email_status:
             KidsEnquiry.objects.filter(pk=record.pk).update(email_status=email_status)
+
+        source = _post_value(post_data, "source") or getattr(record, "source", None) or "Landing"
+        send_crm_heads_new_lead_reminder(
+            name=getattr(record, "name", None) or "",
+            lead_source=f"Landing ({source})" if source else "Landing",
+        )
     except Exception:
         logger.exception("Landing enquiry email failed for id=%s", record.pk)
 
