@@ -260,10 +260,24 @@ def send_crm_direct_contact_email(*, to_email: str, subject: str, body: str) -> 
     )
 
 
-def send_crm_heads_new_lead_reminder(*, name: str, lead_source: str) -> bool:
+def _crm_admin_login_url() -> str:
+    from django.conf import settings
+
+    base = (getattr(settings, "PUBLIC_SITE_URL", None) or "").strip().rstrip("/")
+    if not base:
+        base = "https://www.timekidspreschools.in"
+    return f"{base}/crm-admin/login"
+
+
+def send_crm_heads_new_lead_reminder(
+    *,
+    name: str,
+    lead_source: str,
+    centre_name: str = "",
+) -> bool:
     """
     Notify the single zonal head + single regional head that a new lead came in.
-    Body is intentionally short: lead name + lead source only.
+    Includes name, lead source, centre name, and CRM login link.
     Recipients from CRM_ZONAL_HEAD_EMAIL / CRM_REGIONAL_HEAD_EMAIL.
     """
     from django.conf import settings
@@ -284,17 +298,28 @@ def send_crm_heads_new_lead_reminder(*, name: str, lead_source: str) -> bool:
 
     display_name = (name or "").strip() or "—"
     source = (lead_source or "").strip() or "—"
+    centre = (centre_name or "").strip() or "—"
+    login_url = _crm_admin_login_url()
     subject = f"New CRM lead reminder — {display_name} ({source})"
     plain = (
         "New lead received.\n\n"
         f"Name: {display_name}\n"
         f"Lead source: {source}\n"
+        f"Centre name: {centre}\n\n"
+        f"Login to CRM to check this lead:\n{login_url}\n"
     )
+    safe_login = html.escape(login_url)
     html_content = f"""
     <html><body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
       <p><strong>New lead received.</strong></p>
-      <p><strong>Name:</strong> {html.escape(display_name)}<br>
-      <strong>Lead source:</strong> {html.escape(source)}</p>
+      <p>
+        <strong>Name:</strong> {html.escape(display_name)}<br>
+        <strong>Lead source:</strong> {html.escape(source)}<br>
+        <strong>Centre name:</strong> {html.escape(centre)}
+      </p>
+      <p>Login to CRM to check this lead:<br>
+        <a href="{safe_login}">{safe_login}</a>
+      </p>
     </body></html>
     """
     return send_sendgrid_message(
