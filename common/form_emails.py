@@ -69,7 +69,7 @@ def build_parent_thankyou_html(
     centre_phone: str = "—",
     centre_email: str = "—",
 ) -> str:
-    """Same thank-you copy as landing pages."""
+    """Landing / contact / register thank-you — keep original copy (do not shorten)."""
     safe_name = html.escape((name or "").strip() or "there")
     return f"""Hi {safe_name},<br><br>
 Thank you for your interest in Timekids Preschool. We&rsquo;re delighted to connect with you.<br><br>
@@ -101,14 +101,7 @@ Thank you for submitting the <strong>Admission Enquiry Form</strong> on the Time
 We have received your enquiry and our admissions team will review it shortly.<br><br>
 <strong>Centre details</strong><br>
 Centre Name : {html.escape(centre_name)}<br>
-Contact Number : {html.escape(centre_phone)}<br>
 Email ID : {html.escape(centre_email)}<br><br>
-<strong>What happens next?</strong><br>
-<ul style="margin:12px 0;padding-left:20px;">
-<li>Our team will call or email you within 1–2 working days.</li>
-<li>Admissions are in progress and seats are limited — we recommend booking a centre visit soon.</li>
-<li>For urgent questions, you may contact the centre directly using the details above.</li>
-</ul>
 If you are an existing parent and need to sign in, visit <a href="{login_url}">{login_url}</a>.<br><br>
 Warm regards,<br>Team Timekids"""
 
