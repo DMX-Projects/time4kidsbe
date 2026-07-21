@@ -205,6 +205,34 @@ JUNK_CITIES = {
     "none",
 }
 
+# Used when the XLS is missing — enough for franchise LP dropdowns.
+FALLBACK_CITIES = {
+    "Andhra Pradesh": (
+        "Visakhapatnam",
+        "Vijayawada",
+        "Guntur",
+        "Guntakal",
+        "Nellore",
+        "Kurnool",
+        "Tirupati",
+        "Rajahmundry",
+        "Eluru",
+        "Srikakulam",
+        "Tenali",
+        "Kadapa",
+        "Ravulapalem",
+    ),
+    "Telangana": (
+        "Hyderabad",
+        "Secunderabad",
+        "Warangal",
+        "Nizamabad",
+        "Karimnagar",
+        "Godavarikhani",
+        "Tandur",
+    ),
+}
+
 
 def _norm_key(value: str) -> str:
     text = re.sub(r"\s+", " ", str(value or "").strip().lower())
@@ -250,12 +278,24 @@ class Command(BaseCommand):
             help="Path to XLS relative to time4kidsbe or absolute.",
         )
         parser.add_argument(
+            "--seed-missing",
+            action="store_true",
+            help=(
+                "Create Andhra Pradesh / Telangana (and their cities) from the "
+                "built-in fallback list when the XLS file is not available."
+            ),
+        )
+        parser.add_argument(
             "--dry-run",
             action="store_true",
             help="Show what would be imported without writing.",
         )
 
     def handle(self, *args, **options):
+        if options["seed_missing"]:
+            self._seed_missing(dry_run=options["dry_run"])
+            return
+
         try:
             import xlrd
         except ImportError as exc:
@@ -265,7 +305,11 @@ class Command(BaseCommand):
         if not path.is_absolute():
             path = Path.cwd() / path
         if not path.exists():
-            raise CommandError(f"File not found: {path}")
+            raise CommandError(
+                f"File not found: {path}\n"
+                "Upload kids_stateandcities.xls, or run without the file:\n"
+                "  python manage.py import_franchise_lp_cities --seed-missing"
+            )
 
         book = xlrd.open_workbook(str(path))
         sheet = book.sheet_by_name("Sheet1")
@@ -298,6 +342,42 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING(f"Dry run only. Skipped rows: {skipped}"))
             return
 
+        # Ensure every franchise-lp state is processed (dedupe existing even if XLS had 0 rows).
+        for state_name in FRANCHISE_LP_STATES:
+            by_state.setdefault(state_name, set())
+
+        created_states, created_cities, merged_away = self._write_cities(by_state)
+
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"Done. states_created={created_states} cities_created={created_cities} "
+                f"duplicates_removed={merged_away} skipped_xls_rows={skipped}"
+            )
+        )
+        self._print_counts()
+
+    def _seed_missing(self, dry_run: bool = False) -> None:
+        by_state: dict[str, set[str]] = {
+            state: set(cities) for state, cities in FALLBACK_CITIES.items()
+        }
+        self.stdout.write(self.style.NOTICE("Seeding from built-in fallback (no XLS):"))
+        for state, cities in by_state.items():
+            self.stdout.write(f"  {state}: {len(cities)} -> {', '.join(sorted(cities))}")
+
+        if dry_run:
+            self.stdout.write(self.style.WARNING("Dry run only."))
+            return
+
+        created_states, created_cities, merged_away = self._write_cities(by_state)
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"Done. states_created={created_states} cities_created={created_cities} "
+                f"duplicates_removed={merged_away}"
+            )
+        )
+        self._print_counts()
+
+    def _write_cities(self, by_state: dict[str, set[str]]) -> tuple[int, int, int]:
         created_states = 0
         created_cities = 0
         merged_away = 0
@@ -307,12 +387,11 @@ class Command(BaseCommand):
         _resync_pk_sequence(City)
 
         with transaction.atomic():
-            for state_name in FRANCHISE_LP_STATES:
+            for state_name, cities_for_state in by_state.items():
                 state_obj, was_created = _get_or_create_state(state_name)
                 if was_created:
                     created_states += 1
 
-                # Collapse existing alias duplicates in DB for this state
                 existing = list(City.objects.filter(state=state_obj))
                 keep_by_canonical: dict[str, City] = {}
                 for city_obj in existing:
@@ -323,7 +402,6 @@ class Command(BaseCommand):
                         continue
                     key = canonical.casefold()
                     if key in keep_by_canonical:
-                        # Duplicate alias — remove this row
                         city_obj.delete()
                         merged_away += 1
                         continue
@@ -332,7 +410,7 @@ class Command(BaseCommand):
                         city_obj.save(update_fields=["name"])
                     keep_by_canonical[key] = city_obj
 
-                for city_name in sorted(by_state.get(state_name, set())):
+                for city_name in sorted(cities_for_state):
                     key = city_name.casefold()
                     if key in keep_by_canonical:
                         continue
@@ -340,13 +418,9 @@ class Command(BaseCommand):
                     created_cities += 1
                     keep_by_canonical[key] = None  # type: ignore
 
-        self.stdout.write(
-            self.style.SUCCESS(
-                f"Done. states_created={created_states} cities_created={created_cities} "
-                f"duplicates_removed={merged_away} skipped_xls_rows={skipped}"
-            )
-        )
+        return created_states, created_cities, merged_away
 
+    def _print_counts(self) -> None:
         self.stdout.write(self.style.NOTICE("Final franchise-LP city counts:"))
         for state_name in FRANCHISE_LP_STATES:
             count = City.objects.filter(state__name=state_name).count()
