@@ -39,6 +39,13 @@ class Enquiry(models.Model):
     meeting_date = models.DateTimeField(null=True, blank=True)
     next_follow_up_date = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    assigned_user = models.ForeignKey(
+        "accounts.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="assigned_enquiries",
+    )
 
     class Meta:
         db_table = "enquiry"
@@ -87,6 +94,13 @@ class FranchiseEnquiry(models.Model):
     meeting_date = models.DateTimeField(null=True, blank=True)
     next_follow_up_date = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    assigned_user = models.ForeignKey(
+        "accounts.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="assigned_franchise_enquiries",
+    )
 
     class Meta:
         db_table = "franchise_enquiry"
@@ -194,6 +208,13 @@ class CrmLead(models.Model):
     raw_payload = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    assigned_user = models.ForeignKey(
+        "accounts.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="assigned_campaign_leads",
+    )
 
     class Meta:
         db_table = "campaign_leads"
