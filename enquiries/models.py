@@ -142,6 +142,9 @@ class CrmLeadSource(models.TextChoices):
     WEB = "web", "Website"
     FB = "fb", "Facebook"
     INSTA = "insta", "Instagram"
+    JULY_LP = "july_lp", "Landingpage July"
+    JULY_META = "july_meta", "Meta July"
+    LP_WB = "lp_wb", "Landingpage-WB"
 
 
 class CrmLeadStatus(models.TextChoices):
@@ -168,7 +171,7 @@ class CrmLeadStatus(models.TextChoices):
 
 
 class CrmLead(models.Model):
-    """Separate CRM leads for /crm/web, /crm/fb, and /crm/insta."""
+    """Campaign leads for /crm/web, /crm/fb, /crm/insta, LP, and META forms."""
 
     full_name = models.CharField(max_length=255)
     mobile = models.CharField(max_length=20)
@@ -193,17 +196,17 @@ class CrmLead(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        db_table = "crm_leads"
+        db_table = "campaign_leads"
         ordering = ["-created_at"]
         indexes = [
-            models.Index(fields=["created_at"], name="idx_crm_leads_created_at"),
-            models.Index(fields=["source"], name="idx_crm_leads_source"),
-            models.Index(fields=["status"], name="idx_crm_leads_status"),
-            models.Index(fields=["mobile"], name="idx_crm_leads_mobile"),
+            models.Index(fields=["created_at"], name="idx_campaign_leads_created_at"),
+            models.Index(fields=["source"], name="idx_campaign_leads_source"),
+            models.Index(fields=["status"], name="idx_campaign_leads_status"),
+            models.Index(fields=["mobile"], name="idx_campaign_leads_mobile"),
         ]
 
     def __str__(self) -> str:
-        return f"CRM lead from {self.full_name} ({self.source})"
+        return f"Campaign lead from {self.full_name} ({self.source})"
 
 
 class CrmLeadNote(models.Model):
@@ -212,7 +215,7 @@ class CrmLeadNote(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        db_table = "crm_lead_notes"
+        db_table = "campaign_lead_notes"
         ordering = ["-created_at"]
 
 
@@ -234,6 +237,7 @@ class UnifiedLeadNote(models.Model):
 class OTPVerification(models.Model):
     phone = models.CharField(max_length=20, unique=True)
     code = models.CharField(max_length=6)
+    is_verified = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now=True)
 
     class Meta:

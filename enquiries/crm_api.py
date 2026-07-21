@@ -17,6 +17,12 @@ CRM_SOURCE_FROM_API = {
     "web": CrmLeadSource.WEB,
     "fb": CrmLeadSource.FB,
     "insta": CrmLeadSource.INSTA,
+    "july_lp": CrmLeadSource.JULY_LP,
+    "july-lp": CrmLeadSource.JULY_LP,
+    "july_meta": CrmLeadSource.JULY_META,
+    "july-meta": CrmLeadSource.JULY_META,
+    "lp_wb": CrmLeadSource.LP_WB,
+    "lp-wb": CrmLeadSource.LP_WB,
     "admission": "admission",
     "contact": "contact",
     "landing": "landing",
@@ -27,7 +33,16 @@ CRM_SOURCE_TO_API = {
     CrmLeadSource.WEB: "website",
     CrmLeadSource.FB: "facebook",
     CrmLeadSource.INSTA: "instagram",
+    CrmLeadSource.JULY_LP: "july_lp",
+    CrmLeadSource.JULY_META: "july_meta",
+    CrmLeadSource.LP_WB: "lp_wb",
 }
+
+FRANCHISE_CAMPAIGN_SOURCES = (
+    CrmLeadSource.JULY_LP,
+    CrmLeadSource.JULY_META,
+    CrmLeadSource.LP_WB,
+)
 
 
 def normalize_source_from_api(value: str | None) -> str:
@@ -73,14 +88,23 @@ def _get_unified_notes(lead_kind: str, numeric_id: int) -> list:
 
 
 def lead_to_dict(lead: CrmLead, *, include_detail: bool = False) -> dict:
-    franchise = _resolved_franchise_for_crm_lead(lead)
-    centre_name, centre_phone, centre_email = _franchise_centre_contact(franchise)
-    from franchises.franchise_geo import effective_city
+    # LP / Meta / LP-WB forms only collect state + city — never invent a centre.
+    is_franchise_campaign = lead.source in FRANCHISE_CAMPAIGN_SOURCES
 
-    city = effective_city(franchise) if franchise else (lead.city or "")
-    state = _franchise_state(franchise) if franchise else (lead.state or "")
-    if not centre_name:
-        centre_name = (lead.preferred_centre_location or "").strip()
+    if is_franchise_campaign:
+        city = lead.city or ""
+        state = lead.state or ""
+        centre_name = ""
+    else:
+        franchise = _resolved_franchise_for_crm_lead(lead)
+        centre_name, centre_phone, centre_email = _franchise_centre_contact(franchise)
+        from franchises.franchise_geo import effective_city
+
+        city = effective_city(franchise) if franchise else (lead.city or "")
+        state = _franchise_state(franchise) if franchise else (lead.state or "")
+        if not centre_name:
+            centre_name = (lead.preferred_centre_location or "").strip()
+
     data = {
         "id": f"crm-{lead.id}",
         "leadKind": "crm",
@@ -95,6 +119,12 @@ def lead_to_dict(lead: CrmLead, *, include_detail: bool = False) -> dict:
         "investmentRange": lead.investment_range or None,
         "expectedStartDate": lead.expected_start_date or None,
         "source": source_to_api(lead.source),
+        "landingPageUrl": lead.landing_page_url or "",
+        "pageType": (lead.utm_source or source_to_api(lead.source) or ""),
+        "campaign": lead.utm_campaign or "",
+        "utmSource": lead.utm_source or "",
+        "utmMedium": lead.utm_medium or "",
+        "utmCampaign": lead.utm_campaign or "",
         "comments": lead.comments or "",
         "status": lead.status,
         "meetingDate": _dt(lead.meeting_date),
@@ -370,7 +400,8 @@ def _include_crm(source_filter: str | None) -> bool:
     if source_filter == "campaign":
         return True
     return source_filter in {
-        "website", "facebook", "instagram", "web", "fb", "insta"
+        "website", "facebook", "instagram", "web", "fb", "insta",
+        "july_lp", "july-lp", "july_meta", "july-meta", "lp_wb", "lp-wb",
     }
 
 
@@ -566,7 +597,14 @@ def _filter_crm_qs(request):
     if source_filter and _include_crm(source_filter):
         if source_filter != "campaign":
             mapped = normalize_source_from_api(source_filter)
-            if mapped in {CrmLeadSource.WEB, CrmLeadSource.FB, CrmLeadSource.INSTA}:
+            if mapped in {
+                CrmLeadSource.WEB,
+                CrmLeadSource.FB,
+                CrmLeadSource.INSTA,
+                CrmLeadSource.JULY_LP,
+                CrmLeadSource.JULY_META,
+                CrmLeadSource.LP_WB,
+            }:
                 qs = qs.filter(source=mapped)
     elif source_filter and not _include_crm(source_filter):
         return CrmLead.objects.none()
@@ -820,15 +858,11 @@ def unified_dashboard_stats(request) -> dict:
 
     if _include_crm(_request_source_filter(request)):
         crm_qs = _filter_crm_qs(request)
-        source_filter = _request_source_filter(request)
-        if not source_filter or source_filter == "campaign":
-            crm_count = crm_qs.count()
-            if crm_count:
-                source_counts["campaign"] = source_counts.get("campaign", 0) + crm_count
-        else:
-            for row in crm_qs.values("source").annotate(count=Count("id")):
-                api_source = source_to_api(row["source"])
-                source_counts[api_source] = source_counts.get(api_source, 0) + row["count"]
+        # Always break out campaign channels (website / fb / insta / LP / META)
+        # so reports & charts can show each source separately.
+        for row in crm_qs.values("source").annotate(count=Count("id")):
+            api_source = source_to_api(row["source"])
+            source_counts[api_source] = source_counts.get(api_source, 0) + row["count"]
         for row in crm_qs.values("status").annotate(count=Count("id")):
             status_counts[row["status"]] = status_counts.get(row["status"], 0) + row["count"]
         today_count += crm_qs.filter(created_at__date=today).count()
@@ -1273,10 +1307,22 @@ def unified_reports_data(request) -> dict:
         mapped_status = _enquiry_status_to_crm(row["status"])
         _add_count(row["city"], "contact", mapped_status, row["count"])
 
-    # 3. Campaign (CrmLead)
+    # 3. Campaign (CrmLead / campaign_leads) — bucket by channel so LP / META
+    # show separately from Website / Facebook / Instagram.
     crm_qs = _filter_crm_qs(request)
-    for row in crm_qs.values("city", "status").annotate(count=Count("id")):
-        _add_count(row["city"], "campaign", row["status"], row["count"])
+    source_filter = _request_source_filter(request)
+    for row in crm_qs.values("city", "status", "source").annotate(count=Count("id")):
+        api_src = source_to_api(row["source"]) or "website"
+        if not source_filter:
+            # All Leads report: keep a single Campaign column (sum of channels)
+            _add_count(row["city"], "campaign", row["status"], row["count"])
+        elif source_filter == "campaign":
+            # Campaign + All Channels: one column group per channel
+            _add_count(row["city"], api_src, row["status"], row["count"])
+        else:
+            # Specific channel (website / july_lp / july_meta / …):
+            # store under "campaign" so the UI can label it as that channel only
+            _add_count(row["city"], "campaign", row["status"], row["count"])
 
     # 4. Franchise (FranchiseEnquiry)
     franchise_qs = _filter_franchise_enquiry_qs(request)

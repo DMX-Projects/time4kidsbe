@@ -35,7 +35,8 @@ def fetch_legacy_fee_summary(id_card_no: str) -> tuple[dict[str, Any] | None, st
     try:
         summary = build_legacy_fee_summary(normalized)
     except Exception as exc:
-        logger.warning("Legacy fee lookup failed for %s: %s", normalized, exc, exc_info=True)
+        # Don't dump full traceback every request — TiKES often unreachable from local/dev.
+        logger.warning("Legacy fee lookup failed for %s: %s", normalized, exc)
         return None, f"Could not reach the TiKES fee database: {exc}"
 
     if not summary:

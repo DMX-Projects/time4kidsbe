@@ -1,5 +1,21 @@
 from django.contrib import admin
-from .models import HeroSlide, HomeTestimonial, HomePageContent, Holiday, PageContent, MarketingAsset, StudentsKitPage
+from .models import HeroSlide, HomeTestimonial, HomePageContent, Holiday, PageContent, MarketingAsset, StudentsKitPage, State, City
+
+
+@admin.register(State)
+class StateAdmin(admin.ModelAdmin):
+    list_display = ("id", "name")
+    search_fields = ("name",)
+    ordering = ("name",)
+
+
+@admin.register(City)
+class CityAdmin(admin.ModelAdmin):
+    list_display = ("id", "name", "state")
+    list_filter = ("state",)
+    search_fields = ("name", "state__name")
+    ordering = ("state__name", "name")
+    autocomplete_fields = ("state",)
 
 
 @admin.register(HeroSlide)
