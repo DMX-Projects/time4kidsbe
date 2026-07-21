@@ -8,6 +8,8 @@ from .views import (
     PageContentView,
     MarketingAssetViewSet,
     StudentsKitPageViewSet,
+    StatesListView,
+    CitiesByStateView,
 )
 
 router = DefaultRouter()
@@ -20,5 +22,7 @@ urlpatterns = [
     path("home-page-content/reset/", HomePageContentResetView.as_view(), name="home-page-content-reset"),
     path("home-page-content/", HomePageContentView.as_view(), name="home-page-content"),
     path("page-content/<slug:slug>/", PageContentView.as_view(), name="page-content"),
+    path("states/", StatesListView.as_view(), name="common-states"),
+    path("cities/", CitiesByStateView.as_view(), name="common-cities-by-state"),
     path('', include(router.urls)),
 ]

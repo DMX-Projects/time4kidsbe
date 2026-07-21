@@ -199,6 +199,103 @@ def send_franchise_enquiry_email(lead) -> bool:
     return parent_ok or team_ok
 
 
+def _crm_lead_personal_ack_html(lead) -> str:
+    """Thank-you to the person who submitted July LP / Meta / WB franchise forms."""
+    safe_name = html.escape((getattr(lead, "full_name", None) or "").strip() or "there")
+    return f"""
+    <p>Hi {safe_name},</p>
+    <p>Thank you for your interest in a <strong>T.I.M.E. Kids</strong> preschool franchise opportunity.</p>
+    <p>We have received your enquiry and our franchise team will contact you shortly to discuss the next steps.</p>
+    <p>Warm regards,<br>Team T.I.M.E. Kids</p>
+    """
+
+
+def _crm_lead_team_html(lead) -> str:
+    """Internal alert with campaign lead details (same layout for all 3 July forms)."""
+    source_label = lead_source_label_for_crm_lead(lead)
+    page_type = (getattr(lead, "utm_source", None) or "").strip() or "—"
+    campaign = (getattr(lead, "utm_campaign", None) or "").strip() or "—"
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <style>
+            body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
+            .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
+            .header {{ background: linear-gradient(135deg, #085390 0%, #0a6bb5 100%); color: white; padding: 20px; border-radius: 8px 8px 0 0; }}
+            .content {{ background: #f9f9f9; padding: 20px; border: 1px solid #ddd; border-top: none; border-radius: 0 0 8px 8px; }}
+            .field {{ margin-bottom: 15px; }}
+            .label {{ font-weight: bold; color: #085390; }}
+            .value {{ margin-top: 5px; padding: 10px; background: white; border-left: 3px solid #e6952e; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h2 style="margin: 0;">📬 New Franchise Campaign Lead — {html.escape(source_label)}</h2>
+            </div>
+            <div class="content">
+                <div class="field"><div class="label">👤 Name:</div><div class="value">{html.escape(lead.full_name or "")}</div></div>
+                <div class="field"><div class="label">📧 Email:</div><div class="value">{html.escape(lead.email or "")}</div></div>
+                <div class="field"><div class="label">📱 Phone:</div><div class="value">{html.escape(lead.mobile or "")}</div></div>
+                <div class="field"><div class="label">🗺️ State:</div><div class="value">{html.escape(lead.state or "—")}</div></div>
+                <div class="field"><div class="label">🏙️ City:</div><div class="value">{html.escape(lead.city or lead.preferred_centre_location or "—")}</div></div>
+                <div class="field"><div class="label">💰 Investment range:</div><div class="value">{html.escape(lead.investment_range or "—")}</div></div>
+                <div class="field"><div class="label">📄 Page type:</div><div class="value">{html.escape(page_type)}</div></div>
+                <div class="field"><div class="label">📣 Campaign:</div><div class="value">{html.escape(campaign)}</div></div>
+                <div class="field"><div class="label">🔗 Source:</div><div class="value">{html.escape(source_label)}</div></div>
+                <div class="field"><div class="label">🌐 Landing URL:</div><div class="value">{html.escape(lead.landing_page_url or "—")}</div></div>
+                <div class="field"><div class="label">💬 Comments:</div><div class="value" style="white-space: pre-wrap;">{html.escape(lead.comments or "—")}</div></div>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
+
+def send_crm_lead_enquiry_emails(lead) -> bool:
+    """
+    July LP / Meta / WB (and other CrmLead) form submit:
+    - **Personal:** franchise thank-you → ``lead.email``
+    - **Team:** alert → franchise inbox (MAIL_FRANCHISE_TO_ADDRESS)
+    Same templates for all three campaign forms; source/campaign fields differ per page.
+    """
+    if not sendgrid_api_key():
+        logger.warning("CrmLead emails skipped — SENDGRID_API_KEY not set")
+        return False
+
+    personal = normalize_personal_email(lead.email)
+    parent_ok = False
+    if personal:
+        parent_ok = send_sendgrid_message(
+            to_emails=personal,
+            subject="Thank You for Your Interest in T.I.M.E. Kids Franchise",
+            html_content=_crm_lead_personal_ack_html(lead),
+            from_email=default_from_email(),
+        )
+    else:
+        logger.warning("CrmLead personal thank-you skipped — no email on lead id=%s", getattr(lead, "pk", None))
+
+    display_name = (lead.full_name or "").strip() or "Lead"
+    source_label = lead_source_label_for_crm_lead(lead)
+    team_ok = send_team_notification(
+        subject=f"New Franchise Campaign Lead from {display_name} ({source_label})",
+        html_content=_crm_lead_team_html(lead),
+        team_inbox_address=franchise_team_inbox(),
+    )
+    if parent_ok or team_ok:
+        logger.info(
+            "CrmLead emails personal=%s team=%s for id=%s source=%s",
+            parent_ok,
+            team_ok,
+            getattr(lead, "pk", None),
+            getattr(lead, "source", None),
+        )
+        return True
+    logger.warning("CrmLead emails failed for id=%s", getattr(lead, "pk", None))
+    return False
+
+
 def _landing_admin_html(record) -> str:
     return f"""
     <!DOCTYPE html>
@@ -349,6 +446,9 @@ def lead_source_label_for_crm_lead(lead) -> str:
         "facebook": "Facebook",
         "insta": "Instagram",
         "instagram": "Instagram",
+        "july_lp": "Landingpage July",
+        "july_meta": "Meta July",
+        "lp_wb": "Landingpage-WB",
     }
     return mapping.get(raw, raw.replace("_", " ").title() or "Campaign")
 

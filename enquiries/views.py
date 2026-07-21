@@ -22,6 +22,27 @@ from .serializers import (
     KidsEnquirySerializer,
 )
 
+import random
+import re
+from datetime import timedelta
+
+from django.conf import settings
+from django.http import JsonResponse
+from django.shortcuts import get_object_or_404
+from django.utils.dateparse import parse_datetime
+from django.utils import timezone
+
+from .communication_sms import send_otp_sms
+
+
+def _normalize_otp_phone(raw: str) -> str:
+    digits = re.sub(r"\D", "", str(raw or ""))
+    if len(digits) == 12 and digits.startswith("91"):
+        digits = digits[2:]
+    elif len(digits) == 11 and digits.startswith("0"):
+        digits = digits[1:]
+    return digits
+
 
 def _slugify_city(value: str) -> str:
     return (
@@ -304,17 +325,53 @@ class FranchiseEnquiryCreateView(generics.CreateAPIView):
     def create(self, request, *args, **kwargs):
         phone = request.data.get("phone") or request.data.get("mobile")
         email = request.data.get("email")
-        if phone and FranchiseEnquiry.objects.filter(phone=phone).exists():
+        otp_code = str(request.data.get("otp") or request.data.get("code") or "").strip()
+
+        phone_norm = _normalize_otp_phone(phone or "")
+        if not phone_norm or not re.fullmatch(r"[6-9]\d{9}", phone_norm):
+            return Response(
+                {"error": "Enter a valid 10-digit Indian mobile number."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not otp_code:
+            return Response(
+                {"error": "Please enter the OTP sent to your mobile number."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        otp_record = OTPVerification.objects.filter(phone=phone_norm).first()
+        if not otp_record:
+            return Response(
+                {"error": "Please verify your mobile number with OTP first."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if otp_record.created_at and (timezone.now() - otp_record.created_at) > timedelta(minutes=10):
+            return Response(
+                {"error": "OTP expired. Please request a new OTP."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if otp_record.code != otp_code:
+            return Response(
+                {"error": "Invalid OTP. Please check the code and try again."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if FranchiseEnquiry.objects.filter(phone=phone_norm).exists():
             return Response(
                 {"error": "A franchise enquiry with this phone number has already been submitted."},
-                status=status.HTTP_400_BAD_REQUEST
+                status=status.HTTP_400_BAD_REQUEST,
             )
         if email and FranchiseEnquiry.objects.filter(email=email).exists():
             return Response(
                 {"error": "A franchise enquiry with this email address has already been submitted."},
-                status=status.HTTP_400_BAD_REQUEST
+                status=status.HTTP_400_BAD_REQUEST,
             )
-        return super().create(request, *args, **kwargs)
+
+        response = super().create(request, *args, **kwargs)
+        if response.status_code in (200, 201):
+            otp_record.is_verified = True
+            otp_record.save(update_fields=["is_verified"])
+        return response
 
     def perform_create(self, serializer):
         lead: FranchiseEnquiry = serializer.save()
@@ -463,7 +520,7 @@ class LandingKidsEnquiryListView(APIView):
 
 @method_decorator(csrf_exempt, name="dispatch")
 class CrmLeadCreateView(generics.CreateAPIView):
-    """Public CRM form submit for /crm/web, /crm/fb, and /crm/insta."""
+    """Public CRM form submit for /crm/web, /crm/fb, /crm/insta, and July LP/Meta campaign forms."""
 
     serializer_class = CrmLeadSerializer
     permission_classes = [permissions.AllowAny]
@@ -473,11 +530,50 @@ class CrmLeadCreateView(generics.CreateAPIView):
         ctx["request"] = self.request
         return ctx
 
+    def create(self, request, *args, **kwargs):
+        # July LP/Meta forms send OTP; existing /crm/web|fb|insta forms do not.
+        otp_code = str(request.data.get("otp") or request.data.get("code") or "").strip()
+        if otp_code:
+            phone = _normalize_otp_phone(request.data.get("mobile") or request.data.get("phone") or "")
+            if not phone or not re.fullmatch(r"[6-9]\d{9}", phone):
+                return Response(
+                    {"detail": "Enter a valid 10-digit Indian mobile number."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            otp_record = OTPVerification.objects.filter(phone=phone).first()
+            if not otp_record:
+                return Response(
+                    {"detail": "Please verify your mobile number with OTP first."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if otp_record.created_at and (timezone.now() - otp_record.created_at) > timedelta(minutes=10):
+                return Response(
+                    {"detail": "OTP expired. Please request a new OTP."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if otp_record.code != otp_code:
+                return Response(
+                    {"detail": "Invalid OTP. Please check the code and try again."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            response = super().create(request, *args, **kwargs)
+            if response.status_code in (200, 201):
+                otp_record.is_verified = True
+                otp_record.save(update_fields=["is_verified"])
+            return response
+
+        return super().create(request, *args, **kwargs)
+
     def perform_create(self, serializer):
         lead = serializer.save()
         try:
-            from .emails import lead_source_label_for_crm_lead, send_crm_heads_new_lead_reminder
+            from .emails import (
+                lead_source_label_for_crm_lead,
+                send_crm_heads_new_lead_reminder,
+                send_crm_lead_enquiry_emails,
+            )
 
+            send_crm_lead_enquiry_emails(lead)
             send_crm_heads_new_lead_reminder(
                 name=getattr(lead, "full_name", None) or getattr(lead, "name", None) or "",
                 lead_source=lead_source_label_for_crm_lead(lead),
@@ -490,7 +586,30 @@ class CrmLeadCreateView(generics.CreateAPIView):
         except Exception:
             import logging
 
-            logging.getLogger(__name__).exception("CRM heads reminder failed for CrmLead id=%s", getattr(lead, "pk", None))
+            logging.getLogger(__name__).exception("CRM lead emails failed for CrmLead id=%s", getattr(lead, "pk", None))
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class CrmLeadMeetingPreferenceView(APIView):
+    """Store preferred consultation slot after a public LP form submission."""
+
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        lead_id = request.data.get("leadId") or request.data.get("lead_id")
+        if not lead_id:
+            return Response({"detail": "Lead id is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        lead = get_object_or_404(CrmLead, pk=lead_id)
+        meeting_date = parse_datetime(str(request.data.get("meetingDate") or "").strip())
+        meeting_slot = str(request.data.get("meetingSlot") or "").strip()
+        if meeting_date:
+            lead.meeting_date = meeting_date
+        if meeting_slot:
+            note = f"Preferred consultation slot: {meeting_slot}"
+            lead.comments = f"{lead.comments}\n{note}".strip() if lead.comments else note
+        lead.save(update_fields=["meeting_date", "comments", "updated_at"])
+        return Response({"ok": True, "id": lead.id})
 
 
 class AdminCrmLeadListView(APIView):
@@ -770,82 +889,86 @@ class AdminCrmCitiesView(APIView):
         return Response([{"name": city} for city in cities])
 
 
-import os
-import random
-from django.http import JsonResponse
-
 class SendOTPView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def post(self, request, *args, **kwargs):
-        phone = request.data.get("phone", "").strip()
-        if not phone:
-            return JsonResponse({"detail": "Phone number is required."}, status=400)
+        raw_phone = (
+            request.data.get("phone")
+            or request.data.get("mobile")
+            or request.data.get("mobileNo")
+            or request.data.get("mobilenumber")
+            or ""
+        )
+        phone = _normalize_otp_phone(raw_phone)
+        if not re.fullmatch(r"[6-9]\d{9}", phone):
+            return JsonResponse(
+                {"success": False, "detail": "Enter a valid 10-digit Indian mobile number."},
+                status=400,
+            )
 
-        # Generate 6-digit OTP
-        code = str(random.randint(100000, 999999))
+        existing = OTPVerification.objects.filter(phone=phone).first()
+        if existing and existing.created_at and (timezone.now() - existing.created_at) < timedelta(seconds=30):
+            return JsonResponse(
+                {"success": False, "detail": "Please wait 30 seconds before requesting another OTP."},
+                status=429,
+            )
 
-        # Save to database
+        # 4-digit OTP — sent only via real SMS to the number entered on the form.
+        code = f"{random.randint(0, 9999):04d}"
         OTPVerification.objects.update_or_create(
             phone=phone,
-            defaults={"code": code}
+            defaults={"code": code, "is_verified": False},
         )
 
-        # Get Twilio credentials from settings
-        account_sid = os.getenv("TWILIO_ACCOUNT_SID", "").strip()
-        auth_token = os.getenv("TWILIO_AUTH_TOKEN", "").strip()
-        twilio_phone = os.getenv("TWILIO_PHONE_NUMBER", "").strip()
+        success, detail, sms_meta = send_otp_sms(phone, code)
+        message_id = (sms_meta or {}).get("message_id")
+        sent_to = (sms_meta or {}).get("mobile") or phone
+        masked = f"+91 ******{phone[-4:]}"
 
-        # Format phone number for Twilio (prefix with +91 if needed and doesn't start with +)
-        twilio_to_phone = phone
-        if not twilio_to_phone.startswith("+"):
-            twilio_to_phone = f"+91{twilio_to_phone}"
+        if not success:
+            return JsonResponse(
+                {
+                    "success": False,
+                    "detail": f"Failed to send OTP to {masked}. Please try again.",
+                    "error": detail,
+                    "sent_to": sent_to,
+                },
+                status=502,
+            )
 
-        success = False
-        error_msg = ""
-
-        if account_sid and auth_token and twilio_phone:
-            try:
-                import requests
-                from requests.auth import HTTPBasicAuth
-                url = f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages.json"
-                data = {
-                    "To": twilio_to_phone,
-                    "From": twilio_phone,
-                    "Body": f"Your TimeKids verification code is: {code}"
-                }
-                response = requests.post(url, data=data, auth=HTTPBasicAuth(account_sid, auth_token), timeout=10)
-                if response.status_code in [200, 201]:
-                    success = True
-                else:
-                    error_msg = f"Twilio API returned status {response.status_code}: {response.text}"
-            except Exception as e:
-                error_msg = str(e)
-        else:
-            success = True
-            error_msg = "TWILIO_NOT_CONFIGURED"
-
-        return JsonResponse({
-            "success": success,
-            "detail": "OTP sent successfully." if success else "Failed to send OTP.",
-            "error": error_msg,
-            "code": code if not account_sid else None
-        })
+        return JsonResponse(
+            {
+                "success": True,
+                "detail": f"OTP sent to {masked}.",
+                "sent_to": sent_to,
+                "message_id": message_id,
+            }
+        )
 
 
 class VerifyOTPView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def post(self, request, *args, **kwargs):
-        phone = request.data.get("phone", "").strip()
-        code = request.data.get("code", "").strip()
+        phone = _normalize_otp_phone(request.data.get("phone") or request.data.get("mobile") or "")
+        code = str(request.data.get("code") or request.data.get("otp") or "").strip()
         if not phone or not code:
-            return JsonResponse({"detail": "Phone and code are required."}, status=400)
+            return JsonResponse({"valid": False, "detail": "Phone and OTP are required."}, status=400)
 
         otp_record = OTPVerification.objects.filter(phone=phone).first()
-        if otp_record and otp_record.code == code:
-            return JsonResponse({"valid": True})
-        return JsonResponse({"valid": False, "detail": "Invalid OTP code."}, status=400)
+        if not otp_record:
+            return JsonResponse({"valid": False, "detail": "OTP not found. Please request a new OTP."}, status=400)
+
+        if otp_record.created_at and (timezone.now() - otp_record.created_at) > timedelta(minutes=10):
+            return JsonResponse({"valid": False, "detail": "OTP expired. Please request a new OTP."}, status=400)
+
+        if otp_record.code != code:
+            return JsonResponse({"valid": False, "detail": "Invalid OTP code."}, status=400)
+
+        otp_record.is_verified = True
+        otp_record.save(update_fields=["is_verified"])
+        return JsonResponse({"valid": True, "detail": "OTP verified successfully."})
 
 class LeadNoteListCreateView(APIView):
     permission_classes = [permissions.IsAuthenticated]

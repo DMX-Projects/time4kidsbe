@@ -283,6 +283,21 @@ class CrmLeadSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         request = self.context.get("request")
+        raw = {}
         if request is not None:
-            validated_data["raw_payload"] = getattr(request, "data", {}) or {}
+            raw = dict(getattr(request, "data", {}) or {})
+            validated_data["raw_payload"] = raw
+
+        # Persist page type + campaign from LP forms into dedicated columns.
+        page_type = str(raw.get("pageType") or raw.get("page_type") or "").strip()
+        campaign = str(raw.get("campaign") or raw.get("utmCampaign") or raw.get("utm_campaign") or "").strip()
+        if page_type and not (validated_data.get("utm_source") or "").strip():
+            validated_data["utm_source"] = page_type
+        if campaign and not (validated_data.get("utm_campaign") or "").strip():
+            validated_data["utm_campaign"] = campaign
+        # Only store medium when the form/URL actually sent one (do not invent landing_page).
+        medium = str(raw.get("utmMedium") or raw.get("utm_medium") or "").strip()
+        if medium and not (validated_data.get("utm_medium") or "").strip():
+            validated_data["utm_medium"] = medium
+
         return super().create(validated_data)

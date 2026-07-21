@@ -15,7 +15,7 @@ from rest_framework.exceptions import ValidationError
 
 from accounts.models import User, UserRole
 from accounts.permissions import IsAdminUser
-from .models import HeroSlide, HomeTestimonial, HomePageContent, MarketingAsset, StudentsKitPage
+from .models import HeroSlide, HomeTestimonial, HomePageContent, MarketingAsset, StudentsKitPage, State, City
 from .serializers import (
     HeroSlideSerializer,
     HomeTestimonialSerializer,
@@ -275,6 +275,83 @@ class PageContentView(APIView):
         obj.data = body
         obj.save(update_fields=["data", "updated_at"])
         return Response(obj.data)
+
+
+# States shown on franchise landing-page enquiry forms.
+FRANCHISE_LP_STATES = (
+    "Tamil Nadu",
+    "Kerala",
+    "Karnataka",
+    "Andhra Pradesh",
+    "Telangana",
+    "Maharashtra",
+)
+
+# Cities excluded from specific states on franchise LPs.
+FRANCHISE_LP_EXCLUDED_CITIES = {
+    "Maharashtra": {"mumbai"},
+}
+
+
+class StatesListView(APIView):
+    """GET /api/common/states/?scope=franchise-lp — public list from ``common_state``."""
+
+    permission_classes = [AllowAny]
+
+    def get(self, request, *args, **kwargs):
+        qs = State.objects.all().order_by("name")
+        scope = (request.query_params.get("scope") or "").strip().lower()
+        if scope == "franchise-lp":
+            by_name = {s.name.casefold(): s for s in qs.filter(name__in=FRANCHISE_LP_STATES)}
+            ordered = []
+            for name in FRANCHISE_LP_STATES:
+                state = by_name.get(name.casefold())
+                if state:
+                    ordered.append(state)
+            results = [{"id": s.id, "name": s.name} for s in ordered]
+            return Response({"count": len(results), "results": results})
+
+        results = [{"id": s.id, "name": s.name} for s in qs]
+        return Response({"count": len(results), "results": results})
+
+
+class CitiesByStateView(APIView):
+    """
+    GET /api/common/cities/?state=Assam&scope=franchise-lp
+
+    Public list from ``common_city`` filtered by state name (case-insensitive).
+    """
+
+    permission_classes = [AllowAny]
+
+    def get(self, request, *args, **kwargs):
+        state_name = (request.query_params.get("state") or "").strip()
+        if not state_name:
+            raise ValidationError({"state": "Query parameter 'state' is required."})
+
+        scope = (request.query_params.get("scope") or "").strip().lower()
+        if scope == "franchise-lp":
+            allowed = {name.casefold() for name in FRANCHISE_LP_STATES}
+            if state_name.casefold() not in allowed:
+                return Response({"count": 0, "state": state_name, "results": []})
+
+        state = State.objects.filter(name__iexact=state_name).first()
+        if not state:
+            return Response({"count": 0, "state": state_name, "results": []})
+
+        qs = City.objects.filter(state=state).order_by("name")
+        excluded = {
+            name.casefold()
+            for name in FRANCHISE_LP_EXCLUDED_CITIES.get(state.name, set())
+        } if scope == "franchise-lp" else set()
+
+        results = []
+        for c in qs:
+            if excluded and c.name.strip().casefold() in excluded:
+                continue
+            results.append({"id": c.id, "name": c.name})
+
+        return Response({"count": len(results), "state": state.name, "results": results})
 
 
 @require_GET
