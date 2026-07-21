@@ -9,6 +9,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
 
 from .models import CrmLead, CrmLeadNote, CrmLeadSource, CrmLeadStatus, Enquiry, EnquiryType, KidsEnquiry, FranchiseEnquiry
+from .crm_users import assigned_user_payload
 
 CRM_SOURCE_FROM_API = {
     "website": CrmLeadSource.WEB,
@@ -131,6 +132,7 @@ def lead_to_dict(lead: CrmLead, *, include_detail: bool = False) -> dict:
         "nextFollowUpDate": _dt(lead.next_follow_up_date),
         "createdAt": _dt(lead.created_at),
         "updatedAt": _dt(lead.updated_at),
+        **assigned_user_payload(getattr(lead, "assigned_user", None)),
     }
     if include_detail:
         legacy_notes = [note_to_dict(n) for n in lead.notes.all()]
@@ -394,6 +396,69 @@ def _request_source_filter(request) -> str | None:
     return (_query_params(request).get("source") or "").strip().lower() or None
 
 
+def _request_user_filter(request) -> str | None:
+    """``userId`` query: numeric id, ``unassigned``, or empty (all)."""
+    return (_query_params(request).get("userId") or "").strip().lower() or None
+
+
+def _apply_assigned_user_filter(qs, request):
+    user_filter = _request_user_filter(request)
+    if not user_filter:
+        return qs
+    if user_filter in ("unassigned", "none", "null"):
+        return qs.filter(assigned_user__isnull=True)
+    try:
+        return qs.filter(assigned_user_id=int(user_filter))
+    except (TypeError, ValueError):
+        return qs.none()
+
+
+def _maybe_assign_lead(obj, request, data: dict | None = None) -> None:
+    """
+    First-touch assign: if lead has no user and the caller is authenticated CRM,
+    set assigned_user. Explicit ``assignedUserId`` in payload can reassign / clear.
+    """
+    data = data or {}
+    if "assignedUserId" in data:
+        raw = data.get("assignedUserId")
+        if raw in (None, "", "unassigned", "null"):
+            obj.assigned_user = None
+            return
+        try:
+            from accounts.models import User, UserRole
+
+            uid = int(raw)
+            user = User.objects.filter(pk=uid, role__iexact=UserRole.CRM.value, is_active=True).first()
+            if user:
+                obj.assigned_user = user
+        except (TypeError, ValueError):
+            pass
+        return
+
+    if getattr(obj, "assigned_user_id", None):
+        return
+    user = getattr(request, "user", None) if request is not None else None
+    if not user or not getattr(user, "is_authenticated", False):
+        return
+    from accounts.models import UserRole
+
+    role_ok = False
+    if hasattr(user, "is_crm") and user.is_crm():
+        role_ok = True
+    elif getattr(user, "is_superuser", False):
+        role_ok = True
+    elif getattr(user, "normalized_role", lambda: "")() == UserRole.CRM.value:
+        role_ok = True
+    if not role_ok:
+        return
+    # Super Admin is manager-only — don't first-touch assign to them
+    email = (getattr(user, "email", None) or "").strip().lower()
+    name = (getattr(user, "full_name", None) or "").strip().lower()
+    if email == "admin@timekids.com" or "super admin" in name:
+        return
+    obj.assigned_user = user
+
+
 def _include_crm(source_filter: str | None) -> bool:
     if not source_filter:
         return True
@@ -473,6 +538,7 @@ def enquiry_to_dict(enquiry: Enquiry, *, include_detail: bool = False) -> dict:
         "city": city,
         "state": state,
         "preferredCentreLocation": centre_name,
+        "centreName": centre_name,
         "franchiseType": None,
         "investmentRange": None,
         "expectedStartDate": None,
@@ -485,6 +551,7 @@ def enquiry_to_dict(enquiry: Enquiry, *, include_detail: bool = False) -> dict:
         "nextFollowUpDate": _dt(enquiry.next_follow_up_date),
         "createdAt": _dt(enquiry.created_at),
         "updatedAt": _dt(updated_at),
+        **assigned_user_payload(getattr(enquiry, "assigned_user", None)),
     }
     if include_detail:
         data["notes"] = _get_unified_notes("enquiry", enquiry.id)
@@ -526,6 +593,7 @@ def franchise_enquiry_to_dict(enquiry: FranchiseEnquiry, *, include_detail: bool
         "nextFollowUpDate": _dt(enquiry.next_follow_up_date),
         "createdAt": _dt(enquiry.created_at),
         "updatedAt": _dt(updated_at),
+        **assigned_user_payload(getattr(enquiry, "assigned_user", None)),
     }
     if include_detail:
         data["notes"] = _get_unified_notes("franchiseenquiry", enquiry.id)
@@ -643,6 +711,7 @@ def _filter_crm_qs(request):
 
     qs = _filter_crm_qs_by_city(qs, request)
     qs = _filter_crm_qs_by_centre(qs, request)
+    qs = _apply_assigned_user_filter(qs, request)
     from accounts.crm_zones import filter_crm_lead_qs_by_zone
 
     return filter_crm_lead_qs_by_zone(qs, request).order_by("-created_at")
@@ -705,6 +774,7 @@ def _filter_enquiry_qs(request, enquiry_type: str):
         franchise_city_fields=("franchise__city", "franchise__cityname"),
     )
     qs = _filter_enquiry_qs_by_centre(qs, request)
+    qs = _apply_assigned_user_filter(qs, request)
     from accounts.crm_zones import filter_enquiry_qs_by_zone
 
     return filter_enquiry_qs_by_zone(qs, request).order_by("-created_at")
@@ -760,6 +830,7 @@ def _filter_franchise_enquiry_qs(request):
         franchise_city_fields=("franchise__city", "franchise__cityname"),
     )
     qs = _filter_enquiry_qs_by_centre(qs, request)
+    qs = _apply_assigned_user_filter(qs, request)
     from accounts.crm_zones import filter_franchise_enquiry_qs_by_zone
 
     return filter_franchise_enquiry_qs_by_zone(qs, request).order_by("-created_at")
@@ -1081,11 +1152,12 @@ def update_unified_lead(raw_id: str, data: dict, *, include_detail: bool = False
             lead.meeting_date = parse_datetime(data["meetingDate"]) if data["meetingDate"] else None
         if "nextFollowUpDate" in data:
             lead.next_follow_up_date = parse_datetime(data["nextFollowUpDate"]) if data["nextFollowUpDate"] else None
+        _maybe_assign_lead(lead, request, data)
         lead.save()
         return lead_to_dict(lead, include_detail=include_detail)
 
     if kind == "enquiry":
-        enquiry = Enquiry.objects.select_related("franchise").filter(pk=numeric_id).first()
+        enquiry = Enquiry.objects.select_related("franchise", "assigned_user").filter(pk=numeric_id).first()
         if not enquiry:
             return None
         if status:
@@ -1106,13 +1178,14 @@ def update_unified_lead(raw_id: str, data: dict, *, include_detail: bool = False
             enquiry.meeting_date = parse_datetime(data["meetingDate"]) if data["meetingDate"] else None
         if "nextFollowUpDate" in data:
             enquiry.next_follow_up_date = parse_datetime(data["nextFollowUpDate"]) if data["nextFollowUpDate"] else None
+        _maybe_assign_lead(enquiry, request, data)
         enquiry.save()
         from .views import _sync_enquiry_status_siblings
         _sync_enquiry_status_siblings(enquiry, enquiry.status)
         return enquiry_to_dict(enquiry, include_detail=include_detail)
 
     if kind == "franchiseenquiry":
-        franchise_enq = FranchiseEnquiry.objects.select_related("franchise").filter(pk=numeric_id).first()
+        franchise_enq = FranchiseEnquiry.objects.select_related("franchise", "assigned_user").filter(pk=numeric_id).first()
         if not franchise_enq:
             return None
         if status:
@@ -1133,6 +1206,7 @@ def update_unified_lead(raw_id: str, data: dict, *, include_detail: bool = False
             franchise_enq.meeting_date = parse_datetime(data["meetingDate"]) if data["meetingDate"] else None
         if "nextFollowUpDate" in data:
             franchise_enq.next_follow_up_date = parse_datetime(data["nextFollowUpDate"]) if data["nextFollowUpDate"] else None
+        _maybe_assign_lead(franchise_enq, request, data)
         franchise_enq.save()
         return franchise_enquiry_to_dict(franchise_enq, include_detail=include_detail)
 
@@ -1251,65 +1325,92 @@ def dashboard_stats(qs):
 def unified_reports_data(request) -> dict:
     """Returns pivot data for the Reports View grouped by City, Source, and Status."""
     from accounts.crm_zones import request_scope_state_codes, scope_city_names
+    from django.db.models import F, Value
+    from django.db.models.functions import Coalesce, NullIf
 
     cities_data = {}
-    
+    params = _query_params(request)
+    state_param = (params.get("state") or "").strip() or None
     requested_cities = [x.strip() for x in (_request_city_filter(request) or "").split(",") if x.strip()]
-
-    # Scoped CRM: never include cities outside the region/zone.
     codes = request_scope_state_codes(request)
-    if codes is not None:
-        allowed = {c.casefold(): c for c in scope_city_names(codes)}
-        if requested_cities:
+
+    if requested_cities:
+        # Scoped CRM: never include cities outside the region/zone.
+        if codes is not None:
+            allowed = {c.casefold(): c for c in scope_city_names(codes, state_param)}
             requested_cities = [
                 allowed.get(c.casefold(), c)
                 for c in requested_cities
                 if c.casefold() in allowed
             ]
-        if not requested_cities:
-            requested_cities = list(allowed.values())
-    
+    elif state_param:
+        # State filter applied, City = All → full city list for that state (incl. empty).
+        requested_cities = list(unified_crm_cities(state_param, request=request))
+    else:
+        # State + City = All → only cities that have leads (avoid dumping all-India zeros).
+        requested_cities = []
+
     for rc in requested_cities:
         cities_data[rc] = {"admission": {}, "contact": {}, "campaign": {}, "franchise": {}}
-        
+
+    scope_cities_cf = None
+    if codes is not None:
+        scope_cities_cf = {c.casefold() for c in scope_city_names(codes, state_param)}
+
     def _find_requested_city(db_city):
         if not db_city:
             return "Unknown"
         db_city_norm = db_city.strip().lower()
-        
+
         from franchises.franchise_geo import city_query_variants
         for rc in requested_cities:
             variants = [v.lower() for v in city_query_variants(rc)]
             if db_city_norm in variants:
                 return rc
         return db_city.strip().title()
-    
+
     def _add_count(db_city, source, status, count):
         city = _find_requested_city(db_city)
         if city not in cities_data:
-            # Scoped reports stay on the scope city list — never expand outside
-            if codes is not None:
+            if scope_cities_cf is not None and city.casefold() not in scope_cities_cf:
                 return
             cities_data[city] = {"admission": {}, "contact": {}, "campaign": {}, "franchise": {}}
         if source not in cities_data[city]:
             cities_data[city][source] = {}
         cities_data[city][source][status] = cities_data[city][source].get(status, 0) + count
 
+    def _enquiry_report_city_expr():
+        """Prefer enquiry.city; fall back to linked franchise city (common for admission/contact)."""
+        return Coalesce(
+            NullIf(F("city"), Value("")),
+            NullIf(F("franchise__cityname"), Value("")),
+            NullIf(F("franchise__city"), Value("")),
+            Value("Unknown"),
+        )
+
     # 1. Admission (EnquiryType.ADMISSION)
-    admission_qs = _filter_enquiry_qs(request, EnquiryType.ADMISSION)
-    for row in admission_qs.values("city", "status").annotate(count=Count("id")):
+    admission_qs = _filter_enquiry_qs(request, EnquiryType.ADMISSION).select_related("franchise").order_by()
+    for row in (
+        admission_qs.annotate(report_city=_enquiry_report_city_expr())
+        .values("report_city", "status")
+        .annotate(count=Count("id"))
+    ):
         mapped_status = _enquiry_status_to_crm(row["status"])
-        _add_count(row["city"], "admission", mapped_status, row["count"])
+        _add_count(row["report_city"], "admission", mapped_status, row["count"])
 
     # 2. Contact (EnquiryType.CONTACT - CenterPage)
-    contact_qs = _filter_enquiry_qs(request, EnquiryType.CONTACT)
-    for row in contact_qs.values("city", "status").annotate(count=Count("id")):
+    contact_qs = _filter_enquiry_qs(request, EnquiryType.CONTACT).select_related("franchise").order_by()
+    for row in (
+        contact_qs.annotate(report_city=_enquiry_report_city_expr())
+        .values("report_city", "status")
+        .annotate(count=Count("id"))
+    ):
         mapped_status = _enquiry_status_to_crm(row["status"])
-        _add_count(row["city"], "contact", mapped_status, row["count"])
+        _add_count(row["report_city"], "contact", mapped_status, row["count"])
 
     # 3. Campaign (CrmLead / campaign_leads) — bucket by channel so LP / META
     # show separately from Website / Facebook / Instagram.
-    crm_qs = _filter_crm_qs(request)
+    crm_qs = _filter_crm_qs(request).order_by()
     source_filter = _request_source_filter(request)
     for row in crm_qs.values("city", "status", "source").annotate(count=Count("id")):
         api_src = source_to_api(row["source"]) or "website"
@@ -1325,8 +1426,12 @@ def unified_reports_data(request) -> dict:
             _add_count(row["city"], "campaign", row["status"], row["count"])
 
     # 4. Franchise (FranchiseEnquiry)
-    franchise_qs = _filter_franchise_enquiry_qs(request)
-    for row in franchise_qs.values("city", "status").annotate(count=Count("id")):
-        _add_count(row["city"], "franchise", row["status"], row["count"])
+    franchise_qs = _filter_franchise_enquiry_qs(request).select_related("franchise").order_by()
+    for row in (
+        franchise_qs.annotate(report_city=_enquiry_report_city_expr())
+        .values("report_city", "status")
+        .annotate(count=Count("id"))
+    ):
+        _add_count(row["report_city"], "franchise", row["status"], row["count"])
 
     return {"cities": cities_data}

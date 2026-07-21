@@ -732,23 +732,43 @@ class AdminCrmLeadNoteCreateView(APIView):
             return Response({"message": "Note content is required."}, status=status.HTTP_400_BAD_REQUEST)
 
         from .models import UnifiedLeadNote, CrmLead, Enquiry, FranchiseEnquiry
-        from .crm_api import unified_note_to_dict
+        from .crm_api import unified_note_to_dict, _maybe_assign_lead
 
         status_val = (request.data.get("status") or "").strip()
-        if not status_val:
-            if kind == "crm":
-                lead = CrmLead.objects.filter(pk=numeric_id).first()
-                status_val = lead.status if lead else ""
-            elif kind == "enquiry":
-                lead = Enquiry.objects.filter(pk=numeric_id).first()
-                status_val = lead.status if lead else ""
-            elif kind == "franchiseenquiry":
-                lead = FranchiseEnquiry.objects.filter(pk=numeric_id).first()
-                status_val = lead.status if lead else ""
+        lead_obj = None
+        if kind == "crm":
+            lead_obj = CrmLead.objects.filter(pk=numeric_id).first()
+            if not status_val and lead_obj:
+                status_val = lead_obj.status or ""
+        elif kind == "enquiry":
+            lead_obj = Enquiry.objects.filter(pk=numeric_id).first()
+            if not status_val and lead_obj:
+                status_val = lead_obj.status or ""
+        elif kind == "franchiseenquiry":
+            lead_obj = FranchiseEnquiry.objects.filter(pk=numeric_id).first()
+            if not status_val and lead_obj:
+                status_val = lead_obj.status or ""
+
+        if lead_obj is not None:
+            _maybe_assign_lead(lead_obj, request)
+            lead_obj.save(update_fields=["assigned_user"])
 
         lead_id = f"{kind}_{numeric_id}"
         note = UnifiedLeadNote.objects.create(lead_id=lead_id, content=content, status=status_val)
         return Response(unified_note_to_dict(note), status=status.HTTP_201_CREATED)
+
+
+class AdminCrmUsersView(APIView):
+    """List CRM users with real display names for reports filter."""
+
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        if not can_view_crm_leads(request):
+            return Response({"detail": "CRM login required."}, status=status.HTTP_403_FORBIDDEN)
+        from .crm_users import list_crm_users_for_api
+
+        return Response({"users": list_crm_users_for_api()})
 
 
 class AdminCrmSendReminderView(APIView):
