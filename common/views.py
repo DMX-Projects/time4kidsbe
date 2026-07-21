@@ -303,18 +303,20 @@ class StatesListView(APIView):
         scope = (request.query_params.get("scope") or "").strip().lower()
         if scope == "franchise-lp":
             # Always return the full franchise-lp list. Production historically
-            # had only "AP & TS" (not separate Andhra Pradesh / Telangana), which
-            # dropped those two from the dropdown.
+            # had only "AP & TS" (not separate Andhra Pradesh / Telangana).
+            # Do not get_or_create here — GET must not write (prod PK sequences /
+            # DB permissions cause 500s). Seed missing states via
+            # import_franchise_lp_cities.
             by_name = {s.name.casefold(): s for s in qs}
             results = []
             for name in FRANCHISE_LP_STATES:
                 state = by_name.get(name.casefold())
                 if state is None:
                     state = State.objects.filter(name__iexact=name).first()
-                    if state is None:
-                        state, _ = State.objects.get_or_create(name=name)
-                    by_name[name.casefold()] = state
-                results.append({"id": state.id, "name": state.name})
+                if state is not None:
+                    results.append({"id": state.id, "name": state.name})
+                else:
+                    results.append({"id": None, "name": name})
             return Response({"count": len(results), "results": results})
 
         results = [{"id": s.id, "name": s.name} for s in qs]
