@@ -302,13 +302,19 @@ class StatesListView(APIView):
         qs = State.objects.all().order_by("name")
         scope = (request.query_params.get("scope") or "").strip().lower()
         if scope == "franchise-lp":
-            by_name = {s.name.casefold(): s for s in qs.filter(name__in=FRANCHISE_LP_STATES)}
-            ordered = []
+            # Always return the full franchise-lp list. Production historically
+            # had only "AP & TS" (not separate Andhra Pradesh / Telangana), which
+            # dropped those two from the dropdown.
+            by_name = {s.name.casefold(): s for s in qs}
+            results = []
             for name in FRANCHISE_LP_STATES:
                 state = by_name.get(name.casefold())
-                if state:
-                    ordered.append(state)
-            results = [{"id": s.id, "name": s.name} for s in ordered]
+                if state is None:
+                    state = State.objects.filter(name__iexact=name).first()
+                    if state is None:
+                        state, _ = State.objects.get_or_create(name=name)
+                    by_name[name.casefold()] = state
+                results.append({"id": state.id, "name": state.name})
             return Response({"count": len(results), "results": results})
 
         results = [{"id": s.id, "name": s.name} for s in qs]
