@@ -12,9 +12,40 @@ from collections import defaultdict
 from pathlib import Path
 
 from django.core.management.base import BaseCommand, CommandError
-from django.db import transaction
+from django.db import connection, transaction
 
 from common.models import City, State
+
+
+def _resync_pk_sequence(model) -> None:
+    """Advance Postgres serial so next INSERT is > MAX(id). No-op on non-Postgres."""
+    if connection.vendor != "postgresql":
+        return
+    table = model._meta.db_table
+    pk = model._meta.pk.column
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT pg_get_serial_sequence(%s, %s)", [table, pk])
+        row = cursor.fetchone()
+        seq = row[0] if row else None
+        if not seq:
+            return
+        cursor.execute(
+            f"SELECT COALESCE(MAX({connection.ops.quote_name(pk)}), 0) "
+            f"FROM {connection.ops.quote_name(table)}"
+        )
+        max_id = cursor.fetchone()[0]
+        cursor.execute("SELECT setval(%s, %s, true)", [seq, max_id])
+
+
+def _get_or_create_state(name: str) -> tuple[State, bool]:
+    """Case-insensitive lookup; create with canonical name if missing."""
+    existing = State.objects.filter(name__iexact=name).first()
+    if existing:
+        if existing.name != name:
+            existing.name = name
+            existing.save(update_fields=["name"])
+        return existing, False
+    return State.objects.create(name=name), True
 
 FRANCHISE_LP_STATES = (
     "Tamil Nadu",
@@ -271,9 +302,13 @@ class Command(BaseCommand):
         created_cities = 0
         merged_away = 0
 
+        # Data dumps / manual inserts often leave serials behind MAX(id).
+        _resync_pk_sequence(State)
+        _resync_pk_sequence(City)
+
         with transaction.atomic():
             for state_name in FRANCHISE_LP_STATES:
-                state_obj, was_created = State.objects.get_or_create(name=state_name)
+                state_obj, was_created = _get_or_create_state(state_name)
                 if was_created:
                     created_states += 1
 
