@@ -156,9 +156,9 @@ class CrmLeadSource(models.TextChoices):
     WEB = "web", "Website"
     FB = "fb", "Facebook"
     INSTA = "insta", "Instagram"
-    JULY_LP = "july_lp", "Landingpage July"
-    JULY_META = "july_meta", "Meta July"
-    LP_WB = "lp_wb", "Landingpage-WB"
+    JULY_LP = "july_lp", "Google"
+    JULY_META = "july_meta", "META"
+    LP_WB = "lp_wb", "Google"
 
 
 class CrmLeadStatus(models.TextChoices):

@@ -446,9 +446,10 @@ def lead_source_label_for_crm_lead(lead) -> str:
         "facebook": "Facebook",
         "insta": "Instagram",
         "instagram": "Instagram",
-        "july_lp": "Landingpage July",
-        "july_meta": "Meta July",
-        "lp_wb": "Landingpage-WB",
+        "july_lp": "Google",
+        "july_meta": "META",
+        "lp_wb": "Google",
+        "google": "Google",
     }
     return mapping.get(raw, raw.replace("_", " ").title() or "Campaign")
 
