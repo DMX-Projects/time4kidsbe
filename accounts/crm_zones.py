@@ -130,6 +130,73 @@ def request_scope_state_codes(request) -> list[str] | None:
     return None
 
 
+def scope_state_codes_for_user(user) -> list[str] | None:
+    """
+    Geographic scope for a CRM user account.
+    None = national / unrestricted (no zone or region set).
+    """
+    if not user:
+        return None
+    region = normalize_region(getattr(user, "crm_region", None))
+    if region:
+        return region_state_codes(region)
+    zone = normalize_zone(getattr(user, "crm_zone", None))
+    if zone:
+        return zone_state_codes(zone)
+    return None
+
+
+def resolve_scope_state_codes(request, scope_user_id: str | None = None) -> list[str] | None:
+    """
+    State codes for geo dropdowns (states/cities).
+    Always respects the logged-in CRM user's scope; optionally narrows further
+    to a selected filter user's zone/region (``userId`` on the request).
+    None = unrestricted.
+    """
+    viewer_codes = request_scope_state_codes(request)
+
+    target_codes = None
+    raw = (scope_user_id or "").strip().lower()
+    if raw and raw not in ("unassigned", "all"):
+        try:
+            from accounts.models import User
+
+            target = User.objects.filter(pk=int(raw), is_active=True).first()
+            target_codes = scope_state_codes_for_user(target)
+        except (TypeError, ValueError):
+            target_codes = None
+
+    if viewer_codes is None and target_codes is None:
+        return None
+    if viewer_codes is None:
+        return list(target_codes or [])
+    if target_codes is None:
+        return list(viewer_codes)
+    allowed = set(viewer_codes)
+    intersected = [c for c in target_codes if c in allowed]
+    return intersected if intersected else list(viewer_codes)
+
+
+def _request_filter_user_id(request) -> str | None:
+    """``userId`` query param from dashboard filters (numeric id, ``unassigned``, or empty)."""
+    if request is None:
+        return None
+    params = getattr(request, "query_params", None) or getattr(request, "GET", {})
+    raw = (params.get("userId") or "").strip().lower()
+    return raw or None
+
+
+def request_effective_scope_codes(request) -> list[str] | None:
+    """
+    Geographic scope for lead queries.
+    When a filter user is selected, narrow to that user's zone/region (intersected with viewer).
+    Otherwise use the logged-in CRM user's scope.
+    """
+    user_filter = _request_filter_user_id(request)
+    if user_filter and user_filter not in ("unassigned", "none", "null", "all"):
+        return resolve_scope_state_codes(request, user_filter)
+    return request_scope_state_codes(request)
+
 def scope_match_values(codes: list[str] | None) -> list[str]:
     if not codes:
         return []
@@ -220,7 +287,7 @@ def state_in_zone(state_raw: str | None, zone: str | None) -> bool:
 
 def clamp_requested_states(request, state_param: str | None) -> str | None:
     """If user is scoped, drop any requested states outside their region/zone."""
-    codes = request_scope_state_codes(request)
+    codes = request_effective_scope_codes(request)
     raw = (state_param or "").strip()
     if codes is None:
         return raw or None
@@ -249,7 +316,7 @@ def _state_field_q_for_codes(field: str, codes: list[str]) -> Q:
 
 
 def filter_enquiry_qs_by_zone(qs, request):
-    codes = request_scope_state_codes(request)
+    codes = request_effective_scope_codes(request)
     if codes is None:
         return qs
     from franchises.models import Franchise
@@ -278,7 +345,7 @@ def filter_enquiry_qs_by_zone(qs, request):
 
 
 def filter_franchise_enquiry_qs_by_zone(qs, request):
-    codes = request_scope_state_codes(request)
+    codes = request_effective_scope_codes(request)
     if codes is None:
         return qs
     zone_q = (
@@ -290,7 +357,7 @@ def filter_franchise_enquiry_qs_by_zone(qs, request):
 
 
 def filter_crm_lead_qs_by_zone(qs, request):
-    codes = request_scope_state_codes(request)
+    codes = request_effective_scope_codes(request)
     if codes is None:
         return qs
     from franchises.models import Franchise
@@ -324,7 +391,7 @@ def filter_crm_lead_qs_by_zone(qs, request):
 
 
 def filter_franchise_qs_by_zone(qs, request):
-    codes = request_scope_state_codes(request)
+    codes = request_effective_scope_codes(request)
     if codes is None:
         return qs
     from franchises.franchise_geo import filter_queryset_by_state

@@ -24,6 +24,7 @@ CRM_SOURCE_FROM_API = {
     "july-meta": CrmLeadSource.JULY_META,
     "lp_wb": CrmLeadSource.LP_WB,
     "lp-wb": CrmLeadSource.LP_WB,
+    "google": "google",
     "admission": "admission",
     "contact": "contact",
     "landing": "landing",
@@ -44,6 +45,19 @@ FRANCHISE_CAMPAIGN_SOURCES = (
     CrmLeadSource.JULY_META,
     CrmLeadSource.LP_WB,
 )
+
+GOOGLE_CAMPAIGN_SOURCES = (
+    CrmLeadSource.JULY_LP,
+    CrmLeadSource.LP_WB,
+)
+
+
+def campaign_channel_api_key(source: str | None) -> str:
+    """Map stored form source to CRM channel key (Google merges LP + WB)."""
+    api = source_to_api(source) if source else ""
+    if api in ("july_lp", "lp_wb"):
+        return "google"
+    return api or ""
 
 
 def normalize_source_from_api(value: str | None) -> str:
@@ -132,7 +146,12 @@ def lead_to_dict(lead: CrmLead, *, include_detail: bool = False) -> dict:
         "nextFollowUpDate": _dt(lead.next_follow_up_date),
         "createdAt": _dt(lead.created_at),
         "updatedAt": _dt(lead.updated_at),
-        **assigned_user_payload(getattr(lead, "assigned_user", None)),
+        **assigned_user_payload(
+            getattr(lead, "assigned_user", None),
+            state=state,
+            city=city,
+            include_suggestion=include_detail,
+        ),
     }
     if include_detail:
         legacy_notes = [note_to_dict(n) for n in lead.notes.all()]
@@ -346,14 +365,33 @@ def unified_crm_cities(state: str | None = None, request=None) -> list[str]:
     from accounts.crm_zones import (
         clamp_requested_states,
         filter_franchise_qs_by_zone,
-        request_scope_state_codes,
+        resolve_scope_state_codes,
         scope_city_names,
+        scope_match_values,
+        state_in_codes,
     )
+    from franchises.franchise_geo import state_to_display
 
-    codes = request_scope_state_codes(request) if request is not None else None
-    # Scoped CRM (zone or region): return full city master list for that scope.
+    scope_user_id = None
+    if request is not None:
+        params = getattr(request, "query_params", None) or getattr(request, "GET", {})
+        scope_user_id = (params.get("userId") or params.get("scopeUserId") or "").strip() or None
+
+    codes = resolve_scope_state_codes(request, scope_user_id) if request is not None else None
+    # Scoped CRM (zone or region, optionally narrowed by filter user): full city master list.
     if codes is not None:
-        state_scoped = clamp_requested_states(request, state) if request is not None else state
+        state_scoped = state
+        if request is not None and state:
+            # Clamp requested states to the effective scope (viewer ∩ filter user).
+            allowed_cf = {a.casefold() for a in scope_match_values(codes)}
+            kept: list[str] = []
+            for part in state.split(","):
+                s = part.strip()
+                if not s:
+                    continue
+                if s.casefold() in allowed_cf or state_in_codes(s, codes):
+                    kept.append(state_to_display(s) or s)
+            state_scoped = ",".join(kept) if kept else None
         return scope_city_names(codes, state_scoped)
 
     cities: set[str] = set()
@@ -402,27 +440,28 @@ def _request_user_filter(request) -> str | None:
 
 
 def _apply_assigned_user_filter(qs, request):
+    """
+  Only filter by ``assigned_user`` for the Unassigned option.
+  A specific CRM user is scoped by territory via ``request_effective_scope_codes``.
+    """
     user_filter = _request_user_filter(request)
     if not user_filter:
         return qs
     if user_filter in ("unassigned", "none", "null"):
         return qs.filter(assigned_user__isnull=True)
-    try:
-        return qs.filter(assigned_user_id=int(user_filter))
-    except (TypeError, ValueError):
-        return qs.none()
+    return qs
 
 
 def _maybe_assign_lead(obj, request, data: dict | None = None) -> None:
     """
-    First-touch assign: if lead has no user and the caller is authenticated CRM,
-    set assigned_user. Explicit ``assignedUserId`` in payload can reassign / clear.
+    Assign lead when unassigned from city/state territory.
+    Explicit ``assignedUserId`` can reassign to another CRM user (not clear to empty).
     """
     data = data or {}
     if "assignedUserId" in data:
         raw = data.get("assignedUserId")
+        # Do not allow clearing to Unassigned — leads always belong to a territory user.
         if raw in (None, "", "unassigned", "null"):
-            obj.assigned_user = None
             return
         try:
             from accounts.models import User, UserRole
@@ -437,54 +476,64 @@ def _maybe_assign_lead(obj, request, data: dict | None = None) -> None:
 
     if getattr(obj, "assigned_user_id", None):
         return
-    user = getattr(request, "user", None) if request is not None else None
-    if not user or not getattr(user, "is_authenticated", False):
-        return
-    from accounts.models import UserRole
 
-    role_ok = False
-    if hasattr(user, "is_crm") and user.is_crm():
-        role_ok = True
-    elif getattr(user, "is_superuser", False):
-        role_ok = True
-    elif getattr(user, "normalized_role", lambda: "")() == UserRole.CRM.value:
-        role_ok = True
-    if not role_ok:
-        return
-    # Super Admin is manager-only — don't first-touch assign to them
-    email = (getattr(user, "email", None) or "").strip().lower()
-    name = (getattr(user, "full_name", None) or "").strip().lower()
-    if email == "admin@timekids.com" or "super admin" in name:
-        return
-    obj.assigned_user = user
+    state = (getattr(obj, "state", None) or "").strip()
+    city = (getattr(obj, "city", None) or "").strip()
+    franchise = getattr(obj, "franchise", None)
+    if franchise is not None:
+        if not state:
+            state = _franchise_state(franchise)
+        if not city:
+            try:
+                from franchises.franchise_geo import effective_city
+
+                city = effective_city(franchise) or city
+            except Exception:
+                pass
+
+    from .crm_users import suggest_assignee_for_geo
+
+    suggested = suggest_assignee_for_geo(state, city)
+    if suggested:
+        obj.assigned_user = suggested
 
 
 def _include_crm(source_filter: str | None) -> bool:
     if not source_filter:
         return True
-    if source_filter == "campaign":
+    if source_filter in ("campaign", "franchise_all"):
         return True
     return source_filter in {
-        "website", "facebook", "instagram", "web", "fb", "insta",
+        "google",
         "july_lp", "july-lp", "july_meta", "july-meta", "lp_wb", "lp-wb",
     }
 
 
 def _include_franchise_enquiry(source_filter: str | None) -> bool:
-    return not source_filter or source_filter == "franchise"
+    if not source_filter:
+        return True
+    return source_filter in {"franchise", "franchise_all"}
 
 
 def _include_admission(source_filter: str | None) -> bool:
-    return not source_filter or source_filter == "admission"
+    """Website admission form (EnquiryType.ADMISSION)."""
+    if not source_filter:
+        return True
+    return source_filter in {"admission", "admission_all"}
 
 
 def _include_contact(source_filter: str | None) -> bool:
-    return not source_filter or source_filter == "contact"
+    """Centerpage contact enquiries."""
+    if not source_filter:
+        return True
+    return source_filter in {"contact", "admission_all"}
 
 
 def _include_landing(source_filter: str | None) -> bool:
-    """``kids_enquiry`` landing leads use the separate landing-leads report, not unified CRM."""
-    return False
+    """City landing-page leads (``kids_enquiry``)."""
+    if not source_filter:
+        return True
+    return source_filter in {"landing", "admission_all"}
 
 
 def _enquiry_status_to_crm(status: str) -> str:
@@ -551,7 +600,12 @@ def enquiry_to_dict(enquiry: Enquiry, *, include_detail: bool = False) -> dict:
         "nextFollowUpDate": _dt(enquiry.next_follow_up_date),
         "createdAt": _dt(enquiry.created_at),
         "updatedAt": _dt(updated_at),
-        **assigned_user_payload(getattr(enquiry, "assigned_user", None)),
+        **assigned_user_payload(
+            getattr(enquiry, "assigned_user", None),
+            state=state,
+            city=city,
+            include_suggestion=include_detail,
+        ),
     }
     if include_detail:
         data["notes"] = _get_unified_notes("enquiry", enquiry.id)
@@ -593,7 +647,12 @@ def franchise_enquiry_to_dict(enquiry: FranchiseEnquiry, *, include_detail: bool
         "nextFollowUpDate": _dt(enquiry.next_follow_up_date),
         "createdAt": _dt(enquiry.created_at),
         "updatedAt": _dt(updated_at),
-        **assigned_user_payload(getattr(enquiry, "assigned_user", None)),
+        **assigned_user_payload(
+            getattr(enquiry, "assigned_user", None),
+            state=state,
+            city=city,
+            include_suggestion=include_detail,
+        ),
     }
     if include_detail:
         data["notes"] = _get_unified_notes("franchiseenquiry", enquiry.id)
@@ -661,19 +720,17 @@ def parse_lead_id(raw_id: str) -> tuple[str, int]:
 def _filter_crm_qs(request):
     params = _query_params(request)
     qs = CrmLead.objects.all()
+    # Unused /crm/web|fb|insta forms — never surface those leads in CRM admin.
+    qs = qs.filter(source__in=FRANCHISE_CAMPAIGN_SOURCES)
     source_filter = _request_source_filter(request)
     if source_filter and _include_crm(source_filter):
-        if source_filter != "campaign":
-            mapped = normalize_source_from_api(source_filter)
-            if mapped in {
-                CrmLeadSource.WEB,
-                CrmLeadSource.FB,
-                CrmLeadSource.INSTA,
-                CrmLeadSource.JULY_LP,
-                CrmLeadSource.JULY_META,
-                CrmLeadSource.LP_WB,
-            }:
-                qs = qs.filter(source=mapped)
+        if source_filter not in ("campaign", "franchise_all"):
+            if source_filter == "google":
+                qs = qs.filter(source__in=GOOGLE_CAMPAIGN_SOURCES)
+            else:
+                mapped = normalize_source_from_api(source_filter)
+                if mapped in FRANCHISE_CAMPAIGN_SOURCES:
+                    qs = qs.filter(source=mapped)
     elif source_filter and not _include_crm(source_filter):
         return CrmLead.objects.none()
 
@@ -841,15 +898,20 @@ def _filter_landing_qs(request):
     if not _include_landing(_request_source_filter(request)):
         return KidsEnquiry.objects.none()
 
+    user_filter = _request_user_filter(request)
+    if user_filter in ("unassigned", "none", "null"):
+        return KidsEnquiry.objects.none()
+
     qs = KidsEnquiry.objects.all()
 
     status_value = (params.get("status") or "").strip()
     if status_value:
-        if status_value == "new":
+        if status_value in ("new", "untouched"):
             qs = qs.filter(
                 Q(raw_payload__crm_status__isnull=True)
                 | Q(raw_payload__crm_status="")
                 | Q(raw_payload__crm_status="new")
+                | Q(raw_payload__crm_status="untouched")
             )
         else:
             qs = qs.filter(raw_payload__crm_status=status_value)
@@ -873,8 +935,32 @@ def _filter_landing_qs(request):
     if end:
         qs = qs.filter(created_date__lte=end)
 
+    state_value = (params.get("state") or "").strip()
+    if state_value:
+        from accounts.crm_zones import clamp_requested_states
+
+        state_value = clamp_requested_states(request, state_value) or ""
+        state_queries = Q()
+        for s in [x.strip() for x in state_value.split(",") if x.strip()]:
+            state_queries |= Q(state__iexact=s)
+        if state_queries:
+            qs = qs.filter(state_queries)
+
     qs = _filter_landing_qs_by_city(qs, request)
     qs = _filter_landing_qs_by_centre(qs, request)
+
+    # Zone/region scope for logged-in CRM user (and optional filter user).
+    from accounts.crm_zones import request_effective_scope_codes, scope_city_names, scope_match_values
+
+    codes = request_effective_scope_codes(request)
+    if codes is not None:
+        zone_q = Q()
+        for value in scope_match_values(codes):
+            zone_q |= Q(state__iexact=value)
+        for city_name in scope_city_names(codes):
+            zone_q |= Q(city__iexact=city_name)
+        qs = qs.filter(zone_q) if zone_q else qs.none()
+
     return qs.order_by("-created_date")
 
 
@@ -932,7 +1018,7 @@ def unified_dashboard_stats(request) -> dict:
         # Always break out campaign channels (website / fb / insta / LP / META)
         # so reports & charts can show each source separately.
         for row in crm_qs.values("source").annotate(count=Count("id")):
-            api_source = source_to_api(row["source"])
+            api_source = campaign_channel_api_key(row["source"]) or source_to_api(row["source"])
             source_counts[api_source] = source_counts.get(api_source, 0) + row["count"]
         for row in crm_qs.values("status").annotate(count=Count("id")):
             status_counts[row["status"]] = status_counts.get(row["status"], 0) + row["count"]
@@ -1071,6 +1157,28 @@ def unified_reminders(request) -> dict:
         meetings.extend(res["meetings"])
         follow_ups.extend(res["followUps"])
 
+    if not source_filter or _include_landing(source_filter):
+        landing_qs = _filter_landing_qs(request)
+        today = timezone.localdate()
+        next_week = today + timedelta(days=7)
+        # kids_enquiry has no status column (status lives in raw_payload)
+        meetings.extend(
+            landing_to_dict(row)
+            for row in landing_qs.filter(
+                meeting_date__isnull=False,
+                meeting_date__date__gte=today,
+                meeting_date__date__lte=next_week,
+            ).order_by("meeting_date")[:50]
+        )
+        follow_ups.extend(
+            landing_to_dict(row)
+            for row in landing_qs.filter(
+                next_follow_up_date__isnull=False,
+                next_follow_up_date__date__gte=today,
+                next_follow_up_date__date__lte=next_week,
+            ).order_by("next_follow_up_date")[:50]
+        )
+
     if not source_filter or _include_franchise_enquiry(source_filter):
         fe_qs = FranchiseEnquiry.objects.all()
         fe_qs = _filter_qs_by_city(fe_qs, request, field_name="city", franchise_city_fields=("franchise__city", "franchise__cityname"))
@@ -1100,33 +1208,54 @@ def unified_reminders(request) -> dict:
 def unified_lead_detail(raw_id: str, *, include_detail: bool = False, request=None) -> dict | None:
     kind, pk = parse_lead_id(raw_id)
     if kind == "crm":
-        qs = CrmLead.objects.filter(pk=pk).prefetch_related("notes")
+        qs = CrmLead.objects.filter(pk=pk).select_related("assigned_user").prefetch_related("notes")
         if request is not None:
             from accounts.crm_zones import filter_crm_lead_qs_by_zone
 
             qs = filter_crm_lead_qs_by_zone(qs, request)
         lead = qs.first()
-        return lead_to_dict(lead, include_detail=include_detail) if lead else None
+        if not lead:
+            return None
+        if include_detail:
+            _ensure_geo_assigned(lead, request)
+        return lead_to_dict(lead, include_detail=include_detail)
     if kind == "enquiry":
-        qs = Enquiry.objects.select_related("franchise").filter(pk=pk)
+        qs = Enquiry.objects.select_related("franchise", "assigned_user").filter(pk=pk)
         if request is not None:
             from accounts.crm_zones import filter_enquiry_qs_by_zone
 
             qs = filter_enquiry_qs_by_zone(qs, request)
         enquiry = qs.first()
-        return enquiry_to_dict(enquiry, include_detail=include_detail) if enquiry else None
+        if not enquiry:
+            return None
+        if include_detail:
+            _ensure_geo_assigned(enquiry, request)
+        return enquiry_to_dict(enquiry, include_detail=include_detail)
     if kind == "franchiseenquiry":
-        qs = FranchiseEnquiry.objects.select_related("franchise").filter(pk=pk)
+        qs = FranchiseEnquiry.objects.select_related("franchise", "assigned_user").filter(pk=pk)
         if request is not None:
             from accounts.crm_zones import filter_franchise_enquiry_qs_by_zone
 
             qs = filter_franchise_enquiry_qs_by_zone(qs, request)
         franchise_enq = qs.first()
-        return franchise_enquiry_to_dict(franchise_enq, include_detail=include_detail) if franchise_enq else None
+        if not franchise_enq:
+            return None
+        if include_detail:
+            _ensure_geo_assigned(franchise_enq, request)
+        return franchise_enquiry_to_dict(franchise_enq, include_detail=include_detail)
     if kind == "landing":
         row = KidsEnquiry.objects.filter(pk=pk).first()
         return landing_to_dict(row, include_detail=include_detail) if row else None
     return None
+
+
+def _ensure_geo_assigned(obj, request=None) -> None:
+    """If lead has city/state but no assignee, persist the territory CRM user immediately."""
+    if getattr(obj, "assigned_user_id", None):
+        return
+    _maybe_assign_lead(obj, request)
+    if getattr(obj, "assigned_user_id", None):
+        obj.save(update_fields=["assigned_user"])
 
 
 def update_unified_lead(raw_id: str, data: dict, *, include_detail: bool = False, request=None) -> dict | None:
@@ -1334,6 +1463,8 @@ def unified_reports_data(request) -> dict:
     requested_cities = [x.strip() for x in (_request_city_filter(request) or "").split(",") if x.strip()]
     codes = request_scope_state_codes(request)
 
+    source_filter = _request_source_filter(request)
+
     if requested_cities:
         # Scoped CRM: never include cities outside the region/zone.
         if codes is not None:
@@ -1351,7 +1482,7 @@ def unified_reports_data(request) -> dict:
         requested_cities = []
 
     for rc in requested_cities:
-        cities_data[rc] = {"admission": {}, "contact": {}, "campaign": {}, "franchise": {}}
+        cities_data[rc] = {"admission": {}, "landing": {}, "contact": {}, "campaign": {}, "franchise": {}}
 
     scope_cities_cf = None
     if codes is not None:
@@ -1374,7 +1505,7 @@ def unified_reports_data(request) -> dict:
         if city not in cities_data:
             if scope_cities_cf is not None and city.casefold() not in scope_cities_cf:
                 return
-            cities_data[city] = {"admission": {}, "contact": {}, "campaign": {}, "franchise": {}}
+            cities_data[city] = {"admission": {}, "landing": {}, "contact": {}, "campaign": {}, "franchise": {}}
         if source not in cities_data[city]:
             cities_data[city][source] = {}
         cities_data[city][source][status] = cities_data[city][source].get(status, 0) + count
@@ -1388,50 +1519,56 @@ def unified_reports_data(request) -> dict:
             Value("Unknown"),
         )
 
-    # 1. Admission (EnquiryType.ADMISSION)
-    admission_qs = _filter_enquiry_qs(request, EnquiryType.ADMISSION).select_related("franchise").order_by()
-    for row in (
-        admission_qs.annotate(report_city=_enquiry_report_city_expr())
-        .values("report_city", "status")
-        .annotate(count=Count("id"))
-    ):
-        mapped_status = _enquiry_status_to_crm(row["status"])
-        _add_count(row["report_city"], "admission", mapped_status, row["count"])
+    # 1. Website admission (EnquiryType.ADMISSION)
+    if _include_admission(source_filter):
+        admission_qs = _filter_enquiry_qs(request, EnquiryType.ADMISSION).select_related("franchise").order_by()
+        for row in (
+            admission_qs.annotate(report_city=_enquiry_report_city_expr())
+            .values("report_city", "status")
+            .annotate(count=Count("id"))
+        ):
+            mapped_status = _enquiry_status_to_crm(row["status"])
+            _add_count(row["report_city"], "admission", mapped_status, row["count"])
 
-    # 2. Contact (EnquiryType.CONTACT - CenterPage)
-    contact_qs = _filter_enquiry_qs(request, EnquiryType.CONTACT).select_related("franchise").order_by()
-    for row in (
-        contact_qs.annotate(report_city=_enquiry_report_city_expr())
-        .values("report_city", "status")
-        .annotate(count=Count("id"))
-    ):
-        mapped_status = _enquiry_status_to_crm(row["status"])
-        _add_count(row["report_city"], "contact", mapped_status, row["count"])
+    # 2. Centerpage (EnquiryType.CONTACT)
+    if _include_contact(source_filter):
+        contact_qs = _filter_enquiry_qs(request, EnquiryType.CONTACT).select_related("franchise").order_by()
+        for row in (
+            contact_qs.annotate(report_city=_enquiry_report_city_expr())
+            .values("report_city", "status")
+            .annotate(count=Count("id"))
+        ):
+            mapped_status = _enquiry_status_to_crm(row["status"])
+            _add_count(row["report_city"], "contact", mapped_status, row["count"])
 
-    # 3. Campaign (CrmLead / campaign_leads) — bucket by channel so LP / META
-    # show separately from Website / Facebook / Instagram.
-    crm_qs = _filter_crm_qs(request).order_by()
-    source_filter = _request_source_filter(request)
-    for row in crm_qs.values("city", "status", "source").annotate(count=Count("id")):
-        api_src = source_to_api(row["source"]) or "website"
-        if not source_filter:
-            # All Leads report: keep a single Campaign column (sum of channels)
-            _add_count(row["city"], "campaign", row["status"], row["count"])
-        elif source_filter == "campaign":
-            # Campaign + All Channels: one column group per channel
-            _add_count(row["city"], api_src, row["status"], row["count"])
-        else:
-            # Specific channel (website / july_lp / july_meta / …):
-            # store under "campaign" so the UI can label it as that channel only
-            _add_count(row["city"], "campaign", row["status"], row["count"])
+    # 3. Campaign (CrmLead / campaign_leads)
+    if not source_filter or _include_crm(source_filter):
+        crm_qs = _filter_crm_qs(request).order_by()
+        for row in crm_qs.values("city", "status", "source").annotate(count=Count("id")):
+            api_src = campaign_channel_api_key(row["source"]) or source_to_api(row["source"]) or "google"
+            if not source_filter:
+                _add_count(row["city"], "campaign", row["status"], row["count"])
+            elif source_filter in ("campaign", "franchise_all"):
+                _add_count(row["city"], api_src, row["status"], row["count"])
+            else:
+                _add_count(row["city"], "campaign", row["status"], row["count"])
 
     # 4. Franchise (FranchiseEnquiry)
-    franchise_qs = _filter_franchise_enquiry_qs(request).select_related("franchise").order_by()
-    for row in (
-        franchise_qs.annotate(report_city=_enquiry_report_city_expr())
-        .values("report_city", "status")
-        .annotate(count=Count("id"))
-    ):
-        _add_count(row["report_city"], "franchise", row["status"], row["count"])
+    if not source_filter or _include_franchise_enquiry(source_filter):
+        franchise_qs = _filter_franchise_enquiry_qs(request).select_related("franchise").order_by()
+        for row in (
+            franchise_qs.annotate(report_city=_enquiry_report_city_expr())
+            .values("report_city", "status")
+            .annotate(count=Count("id"))
+        ):
+            _add_count(row["report_city"], "franchise", row["status"], row["count"])
+
+    # 5. Landing (kids_enquiry) — city landing pages under Admission
+    if _include_landing(source_filter):
+        landing_qs = _filter_landing_qs(request).order_by()
+        for row in landing_qs.values("city", "raw_payload").iterator():
+            payload = row.get("raw_payload") if isinstance(row.get("raw_payload"), dict) else {}
+            mapped_status = str(payload.get("crm_status") or "").strip() or "untouched"
+            _add_count(row.get("city") or "Unknown", "landing", mapped_status, 1)
 
     return {"cities": cities_data}

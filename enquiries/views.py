@@ -759,7 +759,7 @@ class AdminCrmLeadNoteCreateView(APIView):
 
 
 class AdminCrmUsersView(APIView):
-    """List CRM users with real display names for reports filter."""
+    """List CRM users with real display names for reports filter / lead assignment."""
 
     permission_classes = [permissions.AllowAny]
 
@@ -768,7 +768,9 @@ class AdminCrmUsersView(APIView):
             return Response({"detail": "CRM login required."}, status=status.HTTP_403_FORBIDDEN)
         from .crm_users import list_crm_users_for_api
 
-        return Response({"users": list_crm_users_for_api()})
+        state = (request.query_params.get("state") or "").strip() or None
+        city = (request.query_params.get("city") or "").strip() or None
+        return Response({"users": list_crm_users_for_api(state=state, city=city)})
 
 
 class AdminCrmSendReminderView(APIView):
@@ -887,9 +889,21 @@ class AdminCrmCentresView(APIView):
                     )
                 qs = qs.filter(id__in=matched_ids)
 
-        from accounts.crm_zones import filter_franchise_qs_by_zone
+        from accounts.crm_zones import filter_franchise_qs_by_zone, resolve_scope_state_codes
 
-        qs = filter_franchise_qs_by_zone(qs, request)
+        scope_user_id = (
+            request.query_params.get("userId")
+            or request.query_params.get("scopeUserId")
+            or ""
+        ).strip()
+        codes = resolve_scope_state_codes(request, scope_user_id or None)
+        if codes is not None:
+            scoped = qs.none()
+            for code in codes:
+                scoped = scoped | filter_queryset_by_state(qs, code)
+            qs = scoped.distinct()
+        else:
+            qs = filter_franchise_qs_by_zone(qs, request)
 
         centres = [{"id": str(f.id), "name": f.name} for f in qs]
         return Response(centres)
@@ -1028,10 +1042,15 @@ class AdminCrmStatesView(APIView):
         from franchises.franchise_geo import state_to_display
         from franchises.models import Franchise
         from enquiries.models import FranchiseEnquiry
-        from accounts.crm_zones import request_scope_state_codes, scope_display_state_names
+        from accounts.crm_zones import resolve_scope_state_codes, scope_display_state_names
 
-        codes = request_scope_state_codes(request)
-        # Scoped CRM (zone or region): return the full state list for that scope.
+        scope_user_id = (
+            request.query_params.get("userId")
+            or request.query_params.get("scopeUserId")
+            or ""
+        ).strip()
+        codes = resolve_scope_state_codes(request, scope_user_id or None)
+        # Scoped CRM (logged-in and/or selected filter user): return that state list.
         if codes is not None:
             return Response([{"name": name} for name in scope_display_state_names(codes)])
 

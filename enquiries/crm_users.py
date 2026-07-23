@@ -44,22 +44,107 @@ def label_for_crm_user(user_id: int | None) -> str | None:
     return display_name_for_user(user)
 
 
-def list_crm_users_for_api() -> list[dict]:
-    return [
-        {
-            "id": user.id,
-            "label": display_name_for_user(user),
-            "fullName": display_name_for_user(user),
-            "email": user.email,
-        }
-        for user in crm_users_queryset()
-    ]
+def resolve_lead_state_code(state: str | None = None, city: str | None = None) -> str | None:
+    """Resolve a lead's state code from state text and/or city name."""
+    from franchises.franchise_geo import filter_queryset_by_city, state_to_code
+
+    code = state_to_code(state)
+    if code:
+        return code
+
+    city_name = (city or "").strip()
+    if not city_name:
+        return None
+
+    from franchises.models import Franchise, FranchiseLocation
+
+    loc = (
+        FranchiseLocation.objects.filter(is_active=True, city_name__iexact=city_name)
+        .exclude(state__isnull=True)
+        .exclude(state="")
+        .first()
+    )
+    if loc:
+        code = state_to_code(loc.state)
+        if code:
+            return code
+
+    franchise = filter_queryset_by_city(Franchise.objects.filter(is_active=True), city_name).first()
+    if franchise:
+        return state_to_code(
+            getattr(franchise, "statename", None) or getattr(franchise, "state", None)
+        )
+    return None
 
 
-def assigned_user_payload(user) -> dict:
-    if not user:
-        return {"assignedUserId": None, "assignedUserLabel": None}
+def crm_users_matching_geo(state: str | None = None, city: str | None = None) -> list[User]:
+    """
+    CRM handlers whose zone/region covers the lead's state (city used to infer state).
+    Prefers regional users; falls back to zonal users. National (unscoped) users are excluded.
+    """
+    from accounts.crm_zones import scope_state_codes_for_user
+
+    code = resolve_lead_state_code(state, city)
+    if not code:
+        return []
+
+    regional: list[User] = []
+    zonal: list[User] = []
+    for user in crm_users_queryset():
+        codes = scope_state_codes_for_user(user)
+        if not codes or code not in codes:
+            continue
+        if (getattr(user, "crm_region", None) or "").strip():
+            regional.append(user)
+        elif (getattr(user, "crm_zone", None) or "").strip():
+            zonal.append(user)
+    return regional if regional else zonal
+
+
+def suggest_assignee_for_geo(state: str | None = None, city: str | None = None) -> User | None:
+    """Best default assignee for a lead's city/state territory."""
+    matches = crm_users_matching_geo(state, city)
+    return matches[0] if matches else None
+
+
+def _user_api_dict(user: User) -> dict:
     return {
-        "assignedUserId": user.id,
-        "assignedUserLabel": display_name_for_user(user),
+        "id": user.id,
+        "label": display_name_for_user(user),
+        "fullName": display_name_for_user(user),
+        "email": user.email,
+        "crmZone": (getattr(user, "crm_zone", None) or "").strip().upper() or None,
+        "crmRegion": (getattr(user, "crm_region", None) or "").strip().upper() or None,
     }
+
+
+def list_crm_users_for_api(state: str | None = None, city: str | None = None) -> list[dict]:
+    """
+    List CRM users for filters / assignment.
+    When state or city is provided, only return users covering that territory.
+    """
+    if (state or "").strip() or (city or "").strip():
+        users = crm_users_matching_geo(state, city)
+    else:
+        users = list(crm_users_queryset())
+    return [_user_api_dict(user) for user in users]
+
+
+def assigned_user_payload(
+    user,
+    *,
+    state: str | None = None,
+    city: str | None = None,
+    include_suggestion: bool = False,
+) -> dict:
+    payload = {
+        "assignedUserId": user.id if user else None,
+        "assignedUserLabel": display_name_for_user(user) if user else None,
+    }
+    if include_suggestion and not user:
+        suggested = suggest_assignee_for_geo(state, city)
+        payload["suggestedAssignedUserId"] = suggested.id if suggested else None
+        payload["suggestedAssignedUserLabel"] = (
+            display_name_for_user(suggested) if suggested else None
+        )
+    return payload
