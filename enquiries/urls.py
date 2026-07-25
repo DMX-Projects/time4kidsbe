@@ -17,6 +17,7 @@ from .views import (
     CrmLeadCreateView,
     CrmLeadMeetingPreferenceView,
     MetaLeadWebhookView,
+    MetaLeadSyncView,
     EnquiryCreateView,
     EnquiryUpdateView,
     FranchiseEnquiryCreateView,
@@ -36,6 +37,8 @@ urlpatterns = [
     path("crm-leads/meeting-preference/", CrmLeadMeetingPreferenceView.as_view(), name="crm-lead-meeting-preference"),
     path("meta-leads/webhook/", MetaLeadWebhookView.as_view(), name="meta-lead-webhook"),
     path("meta-leads/webhook", MetaLeadWebhookView.as_view()),
+    path("meta-leads/sync/", MetaLeadSyncView.as_view(), name="meta-lead-sync"),
+    path("meta-leads/sync", MetaLeadSyncView.as_view()),
 
     path("admin/crm-leads/", AdminCrmLeadListView.as_view(), name="admin-crm-leads"),
     path("admin/crm-leads/reports/", AdminCrmReportsView.as_view(), name="admin-crm-leads-reports"),

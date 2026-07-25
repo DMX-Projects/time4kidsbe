@@ -46,6 +46,11 @@ def meta_app_secret() -> str:
     return (getattr(settings, "META_APP_SECRET", "") or "").strip()
 
 
+def meta_page_id() -> str:
+    configured = (getattr(settings, "META_PAGE_ID", "") or "").strip()
+    return configured or "187099544682886"
+
+
 def normalize_indian_mobile(raw: str) -> str:
     digits = re.sub(r"\D", "", str(raw or ""))
     if len(digits) == 12 and digits.startswith("91"):
@@ -254,7 +259,11 @@ def create_crm_lead_from_meta(
     return lead
 
 
-def process_leadgen_event(webhook_value: dict[str, Any]) -> dict[str, Any]:
+def process_leadgen_event(
+    webhook_value: dict[str, Any],
+    *,
+    form_name: str | None = None,
+) -> dict[str, Any]:
     leadgen_id = str(webhook_value.get("leadgen_id") or "").strip()
     if not leadgen_id:
         return {"ok": False, "error": "missing_leadgen_id"}
@@ -264,12 +273,14 @@ def process_leadgen_event(webhook_value: dict[str, Any]) -> dict[str, Any]:
 
     lead_payload = fetch_lead_by_id(leadgen_id)
     form_id = str(lead_payload.get("form_id") or webhook_value.get("form_id") or "").strip()
-    form_name = fetch_form_name(form_id) if form_id else ""
+    resolved_form_name = (form_name or "").strip()
+    if not resolved_form_name and form_id:
+        resolved_form_name = fetch_form_name(form_id)
 
     lead = create_crm_lead_from_meta(
         lead_payload=lead_payload,
         webhook_value=webhook_value,
-        form_name=form_name,
+        form_name=resolved_form_name,
     )
 
     try:
@@ -289,3 +300,79 @@ def process_leadgen_event(webhook_value: dict[str, Any]) -> dict[str, Any]:
         logger.exception("CRM emails failed for Meta lead id=%s crm_id=%s", leadgen_id, lead.pk)
 
     return {"ok": True, "crm_lead_id": lead.pk, "leadgen_id": leadgen_id}
+
+
+def sync_page_leads(*, per_form_limit: int = 20, max_forms: int = 100) -> dict[str, Any]:
+    """
+    Poll Meta Instant Forms for new leads and import into CRM.
+
+    Use as a reliable auto-sync backup while webhook delivery is Pending
+    (common for unpublished / new apps). Dedupes via meta_leadgen_id.
+    """
+    page_id = meta_page_id()
+    forms_payload = _graph_get(
+        f"{page_id}/leadgen_forms",
+        {"fields": "id,name", "limit": str(max(1, min(max_forms, 200)))},
+    )
+    forms = forms_payload.get("data") or []
+    summary = {
+        "ok": True,
+        "page_id": page_id,
+        "forms": len(forms),
+        "imported": 0,
+        "skipped": 0,
+        "failed": 0,
+        "results": [],
+    }
+
+    for form in forms:
+        form_id = str(form.get("id") or "").strip()
+        form_name = str(form.get("name") or "").strip()
+        if not form_id:
+            continue
+        try:
+            leads_payload = _graph_get(
+                f"{form_id}/leads",
+                {
+                    "fields": "id,created_time,form_id",
+                    "limit": str(max(1, min(per_form_limit, 50))),
+                },
+            )
+        except Exception as exc:
+            logger.exception("Meta form leads fetch failed form_id=%s", form_id)
+            summary["failed"] += 1
+            summary["results"].append({"ok": False, "form_id": form_id, "error": str(exc)})
+            continue
+
+        for lead in leads_payload.get("data") or []:
+            leadgen_id = str(lead.get("id") or "").strip()
+            if not leadgen_id:
+                continue
+            if already_imported(leadgen_id):
+                summary["skipped"] += 1
+                continue
+            try:
+                result = process_leadgen_event(
+                    {
+                        "leadgen_id": leadgen_id,
+                        "form_id": str(lead.get("form_id") or form_id),
+                        "page_id": page_id,
+                        "created_time": lead.get("created_time"),
+                    },
+                    form_name=form_name,
+                )
+                summary["results"].append(result)
+                if result.get("skipped"):
+                    summary["skipped"] += 1
+                elif result.get("ok"):
+                    summary["imported"] += 1
+                else:
+                    summary["failed"] += 1
+            except Exception as exc:
+                logger.exception("Meta lead sync failed leadgen_id=%s", leadgen_id)
+                summary["failed"] += 1
+                summary["results"].append(
+                    {"ok": False, "leadgen_id": leadgen_id, "form_id": form_id, "error": str(exc)}
+                )
+
+    return summary
