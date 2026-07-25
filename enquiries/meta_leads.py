@@ -55,6 +55,17 @@ def normalize_indian_mobile(raw: str) -> str:
     return digits
 
 
+def _is_meta_test_value(value: str) -> bool:
+    return str(value or "").strip().lower().startswith("<test lead")
+
+
+def _clean_text(value: str, *, fallback: str = "") -> str:
+    text = str(value or "").strip()
+    if not text or _is_meta_test_value(text):
+        return fallback
+    return text
+
+
 def verify_meta_signature(raw_body: bytes, signature_header: str | None) -> bool:
     """Validate X-Hub-Signature-256 when App Secret is configured."""
     secret = meta_app_secret()
@@ -157,10 +168,24 @@ def create_crm_lead_from_meta(
     form_name: str = "",
 ) -> CrmLead:
     fields = _field_map(lead_payload.get("field_data"))
-    full_name = (fields.get("full_name") or "").strip() or "Meta Lead"
-    mobile = normalize_indian_mobile(fields.get("phone") or "")
-    email = (fields.get("email") or "").strip().lower()
-    city = (fields.get("city") or "").strip()
+    raw_name = (fields.get("full_name") or "").strip()
+    raw_phone = (fields.get("phone") or "").strip()
+    raw_email = (fields.get("email") or "").strip().lower()
+    raw_city = (fields.get("city") or "").strip()
+    is_test_lead = any(
+        _is_meta_test_value(v)
+        for v in (raw_name, raw_phone, raw_city, fields.get("investment_answer", ""), fields.get("space_answer", ""))
+    ) or raw_email in {"test@meta.com", "test@fb.com"}
+
+    full_name = _clean_text(raw_name, fallback="Meta Test Lead" if is_test_lead else "Meta Lead")
+    mobile = normalize_indian_mobile(raw_phone)
+    if not mobile and is_test_lead:
+        # Meta Lead Ads Testing Tool sends placeholder phone text, not digits.
+        mobile = "9999999999"
+    email = "" if _is_meta_test_value(raw_email) else raw_email
+    if is_test_lead and not email:
+        email = "test@meta.com"
+    city = _clean_text(raw_city, fallback="Test City" if is_test_lead else "")
     state = (fields.get("state") or "").strip() or _infer_state_from_form_name(form_name)
 
     comments_parts = []
@@ -169,12 +194,19 @@ def create_crm_lead_from_meta(
     comments_parts.append("Source: Meta Lead Ads (Instant Form)")
     if form_name:
         comments_parts.append(f"Form: {form_name}")
+    if is_test_lead:
+        comments_parts.append("Meta Lead Ads Testing Tool lead (dummy field values).")
 
     investment_range = ""
-    if (fields.get("investment_answer") or "").strip().lower() in ("yes", "y"):
+    investment_answer = (fields.get("investment_answer") or "").strip()
+    if investment_answer.lower() in ("yes", "y") or (
+        is_test_lead and investment_answer and not _is_meta_test_value(investment_answer)
+    ):
+        investment_range = "₹10–15L"
+    elif is_test_lead:
         investment_range = "₹10–15L"
 
-    expected_start = (fields.get("start_answer") or "").strip()
+    expected_start = _clean_text(fields.get("start_answer") or "", fallback="Test" if is_test_lead else "")
 
     leadgen_id = str(
         lead_payload.get("id")
@@ -193,6 +225,7 @@ def create_crm_lead_from_meta(
         "meta_created_time": lead_payload.get("created_time") or webhook_value.get("created_time"),
         "meta_field_data": lead_payload.get("field_data") or [],
         "meta_webhook_value": webhook_value,
+        "meta_is_test_lead": is_test_lead,
         "pageType": "facebook_lead_ads",
         "campaign": form_name or form_id,
         "source": "july_meta",
