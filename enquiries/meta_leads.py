@@ -179,43 +179,92 @@ def _field_map(field_data: list[dict[str, Any]] | None) -> dict[str, str]:
         else:
             extras.append(f"{name}: {value}")
             # Soft-match custom franchise questions
-            lower = name.lower()
+            lower = name.lower().replace("_", " ")
             if "investment" in lower and value:
                 mapped.setdefault("investment_answer", value)
             if "space" in lower or "sq" in lower:
                 mapped.setdefault("space_answer", value)
-            if "when do you want" in lower or "start a preschool" in lower or "start" in lower:
+            if "when do you want" in lower or "start a preschool" in lower or (
+                "start" in lower and "preschool" in lower
+            ):
                 mapped.setdefault("start_answer", value)
+            if ("city" in lower or "location" in lower or "centre" in lower or "center" in lower) and value:
+                mapped.setdefault("city", value)
+            if "state" in lower and value:
+                mapped.setdefault("state", value)
+            if ("post" in lower and "code" in lower) or "pincode" in lower or "pin code" in lower:
+                mapped.setdefault("post_code", value)
     if extras:
         mapped["extra_qa"] = "\n".join(extras)
     return mapped
 
 
-def _infer_state_from_form_name(form_name: str) -> str:
+def _infer_location_from_form_name(form_name: str) -> tuple[str, str]:
+    """Return (city, state) guessed from Instant Form name."""
     text = (form_name or "").lower()
-    states = [
-        ("tamil nadu", "Tamil Nadu"),
-        ("karnataka", "Karnataka"),
-        ("andhra pradesh", "Andhra Pradesh"),
-        ("kerala", "Kerala"),
-        ("telangana", "Telangana"),
-        ("maharashtra", "Maharashtra"),
-        ("west bengal", "West Bengal"),
-        ("gujarat", "Gujarat"),
-        ("delhi", "Delhi"),
-        ("rajasthan", "Rajasthan"),
-        ("madhya pradesh", "Madhya Pradesh"),
+    city_state = [
+        ("hyderabad", "Hyderabad", "Telangana"),
+        ("secunderabad", "Secunderabad", "Telangana"),
+        ("telangana", "", "Telangana"),
+        ("bangalore", "Bengaluru", "Karnataka"),
+        ("bengaluru", "Bengaluru", "Karnataka"),
+        ("karnataka", "", "Karnataka"),
+        ("chennai", "Chennai", "Tamil Nadu"),
+        ("coimbatore", "Coimbatore", "Tamil Nadu"),
+        ("tamil nadu", "", "Tamil Nadu"),
+        ("madurai", "Madurai", "Tamil Nadu"),
+        ("pune", "Pune", "Maharashtra"),
+        ("mumbai", "Mumbai", "Maharashtra"),
+        ("nagpur", "Nagpur", "Maharashtra"),
+        ("maharashtra", "", "Maharashtra"),
+        ("kolkata", "Kolkata", "West Bengal"),
+        ("west bengal", "", "West Bengal"),
+        ("kochi", "Kochi", "Kerala"),
+        ("cochin", "Kochi", "Kerala"),
+        ("trivandrum", "Thiruvananthapuram", "Kerala"),
+        ("thiruvananthapuram", "Thiruvananthapuram", "Kerala"),
+        ("kerala", "", "Kerala"),
+        ("vijayawada", "Vijayawada", "Andhra Pradesh"),
+        ("vizag", "Visakhapatnam", "Andhra Pradesh"),
+        ("visakhapatnam", "Visakhapatnam", "Andhra Pradesh"),
+        ("andhra pradesh", "", "Andhra Pradesh"),
+        ("ahmedabad", "Ahmedabad", "Gujarat"),
+        ("gujarat", "", "Gujarat"),
+        ("jaipur", "Jaipur", "Rajasthan"),
+        ("rajasthan", "", "Rajasthan"),
+        ("delhi", "Delhi", "Delhi"),
+        ("noida", "Noida", "Uttar Pradesh"),
+        ("gurgaon", "Gurugram", "Haryana"),
+        ("gurugram", "Gurugram", "Haryana"),
     ]
-    for needle, label in states:
+    for needle, city, state in city_state:
         if needle in text:
-            return label
-    return ""
+            return city, state
+    return "", ""
+
+
+def _infer_state_from_form_name(form_name: str) -> str:
+    _city, state = _infer_location_from_form_name(form_name)
+    return state
 
 
 def already_imported(leadgen_id: str) -> bool:
     if not leadgen_id:
         return False
     return CrmLead.objects.filter(raw_payload__meta_leadgen_id=leadgen_id).exists()
+
+
+def _claim_leadgen_import(leadgen_id: str) -> bool:
+    """Cross-process short lock so webhook + multi-worker sync don't double-create."""
+    if not leadgen_id:
+        return False
+    try:
+        from django.core.cache import cache
+
+        return bool(cache.add(f"meta_lead_import:{leadgen_id}", "1", timeout=900))
+    except Exception:
+        logger.exception("Meta lead import cache lock failed leadgen_id=%s", leadgen_id)
+        return True
 
 
 def create_crm_lead_from_meta(
@@ -243,7 +292,15 @@ def create_crm_lead_from_meta(
     if is_test_lead and not email:
         email = "test@meta.com"
     city = _clean_text(raw_city, fallback="Test City" if is_test_lead else "")
-    state = (fields.get("state") or "").strip() or _infer_state_from_form_name(form_name)
+    state = (fields.get("state") or "").strip()
+    inferred_city, inferred_state = _infer_location_from_form_name(form_name)
+    if not state:
+        state = inferred_state
+    if not city:
+        city = inferred_city
+    post_code = (fields.get("post_code") or "").strip()
+    if post_code and _is_meta_test_value(post_code):
+        post_code = ""
 
     comments_parts = []
     if fields.get("extra_qa"):
@@ -251,6 +308,8 @@ def create_crm_lead_from_meta(
     comments_parts.append("Source: Meta Lead Ads (Instant Form)")
     if form_name:
         comments_parts.append(f"Form: {form_name}")
+    if post_code:
+        comments_parts.append(f"Pincode: {post_code}")
     if is_test_lead:
         comments_parts.append("Meta Lead Ads Testing Tool lead (dummy field values).")
 
@@ -283,6 +342,7 @@ def create_crm_lead_from_meta(
         "meta_field_data": lead_payload.get("field_data") or [],
         "meta_webhook_value": webhook_value,
         "meta_is_test_lead": is_test_lead,
+        "meta_post_code": post_code,
         "pageType": "facebook_lead_ads",
         "campaign": form_name or form_id,
         "source": "july_meta",
@@ -290,6 +350,11 @@ def create_crm_lead_from_meta(
 
     if not mobile:
         raise ValueError("Meta lead is missing a phone number.")
+
+    if leadgen_id and already_imported(leadgen_id):
+        existing = CrmLead.objects.filter(raw_payload__meta_leadgen_id=leadgen_id).order_by("-id").first()
+        if existing:
+            return existing
 
     lead = CrmLead.objects.create(
         full_name=full_name,
@@ -320,6 +385,13 @@ def process_leadgen_event(
     if not leadgen_id:
         return {"ok": False, "error": "missing_leadgen_id"}
 
+    if already_imported(leadgen_id):
+        return {"ok": True, "skipped": True, "leadgen_id": leadgen_id}
+
+    if not _claim_leadgen_import(leadgen_id):
+        return {"ok": True, "skipped": True, "leadgen_id": leadgen_id, "reason": "import_in_progress"}
+
+    # Re-check after claiming lock (another worker may have finished).
     if already_imported(leadgen_id):
         return {"ok": True, "skipped": True, "leadgen_id": leadgen_id}
 

@@ -91,7 +91,41 @@ def start_meta_leads_autosync() -> None:
     global _started
     if _started or _should_skip_process() or not _auto_sync_enabled():
         return
+
+    # Only one process should poll (gunicorn/multi-worker safe).
+    lock_path = getattr(settings, "BASE_DIR", None)
+    lock_file = None
+    try:
+        from pathlib import Path
+
+        path = Path(str(lock_path or ".")) / "logs" / "meta_leads_autosync.lock"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lock_file = open(path, "a+", encoding="utf-8")
+        if os.name == "nt":
+            import msvcrt
+
+            lock_file.seek(0)
+            try:
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+            except OSError:
+                lock_file.close()
+                logger.info("Meta leads auto-sync not started (another worker holds the lock)")
+                return
+        else:
+            import fcntl
+
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                lock_file.close()
+                logger.info("Meta leads auto-sync not started (another worker holds the lock)")
+                return
+    except Exception:
+        logger.exception("Meta leads auto-sync lock setup failed; starting without file lock")
+
     _started = True
+    # Keep lock_file open for process lifetime.
+    globals()["_meta_autosync_lock_file"] = lock_file
     thread = threading.Thread(target=_loop, name="meta-leads-autosync", daemon=True)
     thread.start()
     logger.info(
