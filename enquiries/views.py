@@ -1180,5 +1180,11 @@ class MetaLeadSyncView(APIView):
         except (TypeError, ValueError):
             max_forms = 100
 
-        summary = sync_page_leads(per_form_limit=per_form_limit, max_forms=max_forms)
+        try:
+            summary = sync_page_leads(per_form_limit=per_form_limit, max_forms=max_forms)
+        except Exception as exc:
+            return Response(
+                {"ok": False, "error": str(exc)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
         return Response(summary)
