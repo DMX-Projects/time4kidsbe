@@ -314,6 +314,14 @@ PARENT_FEE_QR_IMAGE_URL = os.getenv("PARENT_FEE_QR_IMAGE_URL", "").strip()
 # When using a static QR image, set the exact amount encoded in that QR (e.g. 1 for ₹1 test payments).
 PARENT_FEE_QR_FIXED_AMOUNT = os.getenv("PARENT_FEE_QR_FIXED_AMOUNT", "").strip()
 
+# --- Meta Lead Ads → CRM webhook ---
+# Callback URL: https://www.timekidspreschools.in/api/enquiries/meta-leads/webhook/
+# App: TIME Kids Lead CRM (developers.facebook.com) — subscribe Page → leadgen
+META_APP_ID = (os.getenv("META_APP_ID", "") or "").strip()
+META_APP_SECRET = (os.getenv("META_APP_SECRET", "") or "").strip()
+META_PAGE_ACCESS_TOKEN = (os.getenv("META_PAGE_ACCESS_TOKEN", "") or "").strip()
+META_WEBHOOK_VERIFY_TOKEN = (os.getenv("META_WEBHOOK_VERIFY_TOKEN", "") or "").strip()
+
 # Add file handler if enabled
 if ENABLE_FILE_LOGGING:
     (BASE_DIR / "logs").mkdir(exist_ok=True)

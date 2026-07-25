@@ -566,6 +566,13 @@ class CrmLeadCreateView(generics.CreateAPIView):
 
     def perform_create(self, serializer):
         lead = serializer.save()
+        # Demo / preview LPs can pass skipEmails=true so no acknowledgement or team mail goes out.
+        raw_skip = self.request.data.get("skipEmails")
+        if raw_skip is None:
+            raw_skip = self.request.data.get("skip_emails")
+        skip_emails = str(raw_skip or "").strip().lower() in ("1", "true", "yes", "y")
+        if skip_emails:
+            return
         try:
             from .emails import (
                 lead_source_label_for_crm_lead,
@@ -1069,3 +1076,69 @@ class AdminCrmStatesView(APIView):
                 states.add(display)
 
         return Response([{"name": name} for name in sorted(list(states), key=str.casefold)])
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class MetaLeadWebhookView(APIView):
+    """Meta Lead Ads webhook — verify challenge (GET) and ingest leadgen events (POST)."""
+
+    authentication_classes = []
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        from .meta_leads import meta_webhook_verify_token
+
+        mode = (request.query_params.get("hub.mode") or request.GET.get("hub.mode") or "").strip()
+        token = (
+            request.query_params.get("hub.verify_token")
+            or request.GET.get("hub.verify_token")
+            or ""
+        ).strip()
+        challenge = (
+            request.query_params.get("hub.challenge")
+            or request.GET.get("hub.challenge")
+            or ""
+        ).strip()
+        expected = meta_webhook_verify_token()
+        if mode == "subscribe" and expected and token == expected and challenge:
+            from django.http import HttpResponse
+
+            return HttpResponse(challenge, content_type="text/plain")
+        return Response({"detail": "Webhook verification failed."}, status=status.HTTP_403_FORBIDDEN)
+
+    def post(self, request):
+        from .meta_leads import process_leadgen_event, verify_meta_signature
+
+        raw_body = request.body or b""
+        signature = request.META.get("HTTP_X_HUB_SIGNATURE_256") or request.headers.get("X-Hub-Signature-256")
+        if not verify_meta_signature(raw_body, signature):
+            return Response({"detail": "Invalid signature."}, status=status.HTTP_403_FORBIDDEN)
+
+        payload = request.data if isinstance(request.data, dict) else {}
+        if payload.get("object") != "page":
+            return Response({"ok": True, "ignored": True})
+
+        results = []
+        for entry in payload.get("entry") or []:
+            for change in entry.get("changes") or []:
+                if change.get("field") != "leadgen":
+                    continue
+                value = change.get("value") or {}
+                try:
+                    results.append(process_leadgen_event(value))
+                except Exception as exc:
+                    import logging
+
+                    logging.getLogger(__name__).exception(
+                        "Meta leadgen processing failed for %s", value.get("leadgen_id")
+                    )
+                    results.append(
+                        {
+                            "ok": False,
+                            "leadgen_id": value.get("leadgen_id"),
+                            "error": str(exc),
+                        }
+                    )
+
+        # Always 200 so Meta does not retry endlessly on partial failures we already logged.
+        return Response({"ok": True, "results": results})
