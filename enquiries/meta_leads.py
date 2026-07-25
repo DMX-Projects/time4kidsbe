@@ -20,6 +20,10 @@ logger = logging.getLogger(__name__)
 GRAPH_API_VERSION = "v21.0"
 GRAPH_BASE = f"https://graph.facebook.com/{GRAPH_API_VERSION}"
 
+# Cached Page token resolved from a system-user / user token.
+_resolved_page_token: str | None = None
+
+
 # Common Meta Instant Form field names → CRM keys
 _FIELD_ALIASES = {
     "full_name": "full_name",
@@ -84,8 +88,13 @@ def verify_meta_signature(raw_body: bytes, signature_header: str | None) -> bool
     return hmac.compare_digest(digest, expected)
 
 
-def _graph_get(path: str, params: dict[str, str] | None = None) -> dict[str, Any]:
-    token = meta_page_access_token()
+def _graph_get_with_token(
+    path: str,
+    token: str,
+    params: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    from urllib.error import HTTPError
+
     if not token:
         raise RuntimeError("META_PAGE_ACCESS_TOKEN is not configured.")
 
@@ -93,8 +102,51 @@ def _graph_get(path: str, params: dict[str, str] | None = None) -> dict[str, Any
     query["access_token"] = token
     url = f"{GRAPH_BASE}/{path.lstrip('/')}?{urlencode(query)}"
     req = Request(url, method="GET", headers={"Accept": "application/json"})
-    with urlopen(req, timeout=20) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    try:
+        with urlopen(req, timeout=20) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except HTTPError as exc:
+        body = ""
+        try:
+            body = exc.read().decode("utf-8", errors="replace")
+        except Exception:
+            body = ""
+        raise RuntimeError(f"Meta Graph {exc.code}: {body or exc.reason}") from exc
+
+
+def resolve_page_access_token() -> str:
+    """
+    Prefer a true Page access token.
+
+    System User tokens often need:
+      GET /{page-id}?fields=access_token
+    before /{page-id}/leadgen_forms will work.
+    """
+    global _resolved_page_token
+    if _resolved_page_token:
+        return _resolved_page_token
+
+    configured = meta_page_access_token()
+    if not configured:
+        raise RuntimeError("META_PAGE_ACCESS_TOKEN is not configured.")
+
+    page_id = meta_page_id()
+    try:
+        data = _graph_get_with_token(page_id, configured, {"fields": "access_token,name"})
+        page_token = str(data.get("access_token") or "").strip()
+        if page_token:
+            _resolved_page_token = page_token
+            logger.info("Resolved Meta Page access token for page_id=%s", page_id)
+            return page_token
+    except Exception:
+        logger.exception("Could not resolve Page token from configured token; using configured token as-is")
+
+    _resolved_page_token = configured
+    return configured
+
+
+def _graph_get(path: str, params: dict[str, str] | None = None) -> dict[str, Any]:
+    return _graph_get_with_token(path, resolve_page_access_token(), params)
 
 
 def fetch_lead_by_id(leadgen_id: str) -> dict[str, Any]:
