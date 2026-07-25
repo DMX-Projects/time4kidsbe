@@ -1142,3 +1142,43 @@ class MetaLeadWebhookView(APIView):
 
         # Always 200 so Meta does not retry endlessly on partial failures we already logged.
         return Response({"ok": True, "results": results})
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class MetaLeadSyncView(APIView):
+    """Poll Meta forms and import new leads (cron-friendly auto-sync backup)."""
+
+    authentication_classes = []
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        import os
+
+        from .meta_leads import meta_webhook_verify_token, sync_page_leads
+
+        provided = (
+            request.headers.get("X-Meta-Sync-Token")
+            or request.META.get("HTTP_X_META_SYNC_TOKEN")
+            or request.data.get("token")
+            or ""
+        ).strip()
+        auth_header = (request.headers.get("Authorization") or request.META.get("HTTP_AUTHORIZATION") or "").strip()
+        expected = meta_webhook_verify_token()
+        cron_secret = (os.getenv("CRON_SECRET") or "").strip()
+        authorized = bool(expected and provided == expected) or (
+            bool(cron_secret) and auth_header == f"Bearer {cron_secret}"
+        )
+        if not authorized:
+            return Response({"detail": "Unauthorized."}, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            per_form_limit = int(request.data.get("perFormLimit") or request.data.get("per_form_limit") or 20)
+        except (TypeError, ValueError):
+            per_form_limit = 20
+        try:
+            max_forms = int(request.data.get("maxForms") or request.data.get("max_forms") or 100)
+        except (TypeError, ValueError):
+            max_forms = 100
+
+        summary = sync_page_leads(per_form_limit=per_form_limit, max_forms=max_forms)
+        return Response(summary)

@@ -321,6 +321,13 @@ META_APP_ID = (os.getenv("META_APP_ID", "") or "").strip()
 META_APP_SECRET = (os.getenv("META_APP_SECRET", "") or "").strip()
 META_PAGE_ACCESS_TOKEN = (os.getenv("META_PAGE_ACCESS_TOKEN", "") or "").strip()
 META_WEBHOOK_VERIFY_TOKEN = (os.getenv("META_WEBHOOK_VERIFY_TOKEN", "") or "").strip()
+META_PAGE_ID = (os.getenv("META_PAGE_ID", "") or "").strip() or "187099544682886"
+# In-process poller (no cron). Default: on when META_PAGE_ACCESS_TOKEN is set.
+# META_LEADS_AUTO_SYNC=0 to disable. Interval seconds (min 60).
+try:
+    META_LEADS_AUTO_SYNC_SECONDS = max(60, int(os.getenv("META_LEADS_AUTO_SYNC_SECONDS", "300") or "300"))
+except (TypeError, ValueError):
+    META_LEADS_AUTO_SYNC_SECONDS = 300
 
 # Add file handler if enabled
 if ENABLE_FILE_LOGGING:
