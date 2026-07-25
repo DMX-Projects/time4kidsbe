@@ -79,15 +79,17 @@ class FranchiseEnquiry(models.Model):
         max_length=30,
         choices=[
             ("untouched", "Untouched"),
-            ("hot", "Hot"),
-            ("warm", "Warm"),
-            ("follow_up", "Follow-up"),
-            ("cold", "Cold"),
-            ("converted_mou_signed", "Converted – MOU Signed"),
-            ("converted_agreement_signed", "Converted – Agreement Signed"),
-            ("join_later", "Join Later"),
-            ("not_interested", "Not Interested"),
             ("not_answering_calls", "Not Answering Calls"),
+            ("interested", "Interested"),
+            ("follow_up", "Follow-up"),
+            ("join_later", "Join Later"),
+            ("cold", "Cold"),
+            ("warm", "Warm"),
+            ("hot", "Hot"),
+            ("converted_mou_signed", "Converted – MOU"),
+            ("converted_agreement_signed", "Converted – Agreement"),
+            ("not_interested", "Not Interested"),
+            ("wrong_enquiry", "Wrong enquiry"),
         ],
         default="untouched",
     )
@@ -175,11 +177,12 @@ class CrmLeadStatus(models.TextChoices):
     WRONG_ENQUIRY = "wrong_enquiry", "Wrong enquiry"
 
     # Franchise specific
+    INTERESTED = "interested", "Interested"
     HOT = "hot", "Hot"
     WARM = "warm", "Warm"
     COLD = "cold", "Cold"
-    CONVERTED_MOU = "converted_mou_signed", "Converted – MOU Signed"
-    CONVERTED_AGREEMENT = "converted_agreement_signed", "Converted – Agreement Signed"
+    CONVERTED_MOU = "converted_mou_signed", "Converted – MOU"
+    CONVERTED_AGREEMENT = "converted_agreement_signed", "Converted – Agreement"
     JOIN_LATER = "join_later", "Join Later"
     NOT_ANSWERING_CALLS = "not_answering_calls", "Not Answering Calls"
 
