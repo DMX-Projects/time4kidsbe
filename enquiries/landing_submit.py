@@ -195,6 +195,7 @@ def handle_landing_enquiry_post(post_data: Any):
             city=getattr(record, "city", None) or getattr(record, "location", None) or "",
             phone=getattr(record, "mobileno", None) or getattr(record, "mobile", None) or "",
             lead_email=getattr(record, "email", None) or "",
+            lead_kind="admission",
         )
     except Exception:
         logger.exception("Landing enquiry email failed for id=%s", record.pk)
