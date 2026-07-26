@@ -364,7 +364,9 @@ def unified_crm_cities(state: str | None = None, request=None) -> list[str]:
     from django.db.models import Q
     from accounts.crm_zones import (
         clamp_requested_states,
+        city_match_variants,
         filter_franchise_qs_by_zone,
+        resolve_scope_cities,
         resolve_scope_state_codes,
         scope_city_names,
         scope_match_values,
@@ -392,7 +394,20 @@ def unified_crm_cities(state: str | None = None, request=None) -> list[str]:
                 if s.casefold() in allowed_cf or state_in_codes(s, codes):
                     kept.append(state_to_display(s) or s)
             state_scoped = ",".join(kept) if kept else None
-        return scope_city_names(codes, state_scoped)
+        cities = scope_city_names(codes, state_scoped)
+        user_cities = resolve_scope_cities(request, scope_user_id) if request is not None else None
+        if user_cities is not None:
+            allowed = {c.casefold() for c in user_cities}
+            expanded = {v.casefold() for c in user_cities for v in city_match_variants(c)}
+            cities = [c for c in cities if c.casefold() in expanded or c.casefold() in allowed]
+            # Always include configured city names even if not yet in franchise master.
+            have = {c.casefold() for c in cities}
+            for c in user_cities:
+                if c.casefold() not in have:
+                    cities.append(c)
+                    have.add(c.casefold())
+            cities = sorted(cities, key=str.casefold)
+        return cities
 
     cities: set[str] = set()
     state = clamp_requested_states(request, state) if request is not None else state
