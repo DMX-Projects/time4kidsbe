@@ -294,10 +294,9 @@ class EnquiryCreateView(generics.CreateAPIView):
         try:
             from .emails import (
                 lead_source_label_for_enquiry,
-                send_crm_heads_new_lead_reminder,
+                assign_and_notify_new_lead,
                 send_enquiry_email,
             )
-            from common.form_emails import centre_details_from_franchise
 
             email_sent = send_enquiry_email(enquiry)
 
@@ -306,11 +305,9 @@ class EnquiryCreateView(generics.CreateAPIView):
             else:
                 logger.warning(f"Failed to send email notification for enquiry from {enquiry.name}")
 
-            centre_name, _, _ = centre_details_from_franchise(enquiry.franchise)
-            send_crm_heads_new_lead_reminder(
-                name=enquiry.name or "",
+            assign_and_notify_new_lead(
+                enquiry,
                 lead_source=lead_source_label_for_enquiry(enquiry),
-                centre_name=centre_name or enquiry.city or "",
             )
         except Exception as e:
             logger.error(f"Error sending enquiry email notification: {str(e)}")
@@ -384,7 +381,7 @@ class FranchiseEnquiryCreateView(generics.CreateAPIView):
         logger = logging.getLogger(__name__)
 
         try:
-            from .emails import send_crm_heads_new_lead_reminder, send_franchise_enquiry_email
+            from .emails import assign_and_notify_new_lead, send_franchise_enquiry_email
 
             email_sent = send_franchise_enquiry_email(lead)
 
@@ -393,11 +390,7 @@ class FranchiseEnquiryCreateView(generics.CreateAPIView):
             else:
                 logger.warning(f"Failed to send email notification for franchise lead from {lead.name}")
 
-            send_crm_heads_new_lead_reminder(
-                name=lead.name or "",
-                lead_source="Franchise",
-                centre_name=(lead.franchise.name if lead.franchise else "") or lead.city or "",
-            )
+            assign_and_notify_new_lead(lead, lead_source="Franchise")
         except Exception as e:
             logger.error(f"Error sending franchise enquiry email notification: {str(e)}")
             logger.error(traceback.format_exc())
@@ -576,19 +569,14 @@ class CrmLeadCreateView(generics.CreateAPIView):
         try:
             from .emails import (
                 lead_source_label_for_crm_lead,
-                send_crm_heads_new_lead_reminder,
+                assign_and_notify_new_lead,
                 send_crm_lead_enquiry_emails,
             )
 
             send_crm_lead_enquiry_emails(lead)
-            send_crm_heads_new_lead_reminder(
-                name=getattr(lead, "full_name", None) or getattr(lead, "name", None) or "",
+            assign_and_notify_new_lead(
+                lead,
                 lead_source=lead_source_label_for_crm_lead(lead),
-                centre_name=(
-                    getattr(lead, "preferred_centre_location", None)
-                    or getattr(lead, "city", None)
-                    or ""
-                ),
             )
         except Exception:
             import logging

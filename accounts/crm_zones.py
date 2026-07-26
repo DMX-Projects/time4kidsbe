@@ -119,24 +119,108 @@ def request_scope_state_codes(request) -> list[str] | None:
     """
     Effective CRM geographic scope as state codes.
     None = national (unrestricted).
-    Regional users get region states; zonal users get full zone states.
+    Uses crm_states when set; else region; else zone.
     """
-    region = request_crm_region(request)
-    if region:
-        return region_state_codes(region)
-    zone = request_crm_zone(request)
-    if zone:
-        return zone_state_codes(zone)
-    return None
+    user = _authenticated_user(request)
+    if not user:
+        return None
+    return scope_state_codes_for_user(user)
+
+
+def request_scope_cities(request) -> list[str] | None:
+    """Logged-in CRM user's city list, or None if not city-restricted."""
+    return scope_city_names_for_user(_authenticated_user(request))
+
+
+def resolve_scope_cities(request, scope_user_id: str | None = None) -> list[str] | None:
+    """
+    Effective city list for geo dropdowns / lead filters.
+    Intersects viewer cities with filter-user cities when both are set.
+    None = not city-restricted.
+    """
+    viewer_cities = request_scope_cities(request)
+
+    target_cities = None
+    raw = (scope_user_id or "").strip().lower()
+    if raw and raw not in ("unassigned", "all"):
+        try:
+            from accounts.models import User
+
+            target = User.objects.filter(pk=int(raw), is_active=True).first()
+            target_cities = scope_city_names_for_user(target)
+        except (TypeError, ValueError):
+            target_cities = None
+
+    if viewer_cities is None and target_cities is None:
+        return None
+    if viewer_cities is None:
+        return list(target_cities or [])
+    if target_cities is None:
+        return list(viewer_cities)
+    allowed = {c.casefold() for c in viewer_cities}
+    return [c for c in target_cities if c.casefold() in allowed]
+
+
+def request_effective_scope_cities(request) -> list[str] | None:
+    user_filter = _request_filter_user_id(request)
+    if user_filter and user_filter not in ("unassigned", "none", "null", "all"):
+        return resolve_scope_cities(request, user_filter)
+    return request_scope_cities(request)
+
+
+def parse_crm_states(raw: str | None) -> list[str]:
+    """Parse comma-separated state codes/names from User.crm_states."""
+    codes: list[str] = []
+    seen: set[str] = set()
+    for part in (raw or "").split(","):
+        s = part.strip()
+        if not s:
+            continue
+        code = state_to_code(s) or (s.upper() if len(s) <= 3 else None)
+        if code and code not in seen:
+            seen.add(code)
+            codes.append(code)
+    return codes
+
+
+def parse_crm_cities(raw: str | None) -> list[str]:
+    """Parse comma-separated city/district names from User.crm_cities."""
+    cities: list[str] = []
+    seen: set[str] = set()
+    for part in (raw or "").split(","):
+        name = part.strip()
+        if not name:
+            continue
+        key = name.casefold()
+        if key not in seen:
+            seen.add(key)
+            cities.append(name)
+    return cities
+
+
+def scope_city_names_for_user(user) -> list[str] | None:
+    """
+    Explicit city list for a CRM user, or None if not city-restricted.
+    Empty list means city-restricted with no cities configured.
+    """
+    if not user:
+        return None
+    raw = (getattr(user, "crm_cities", None) or "").strip()
+    if not raw:
+        return None
+    return parse_crm_cities(raw)
 
 
 def scope_state_codes_for_user(user) -> list[str] | None:
     """
     Geographic scope for a CRM user account.
-    None = national / unrestricted (no zone or region set).
+    None = national / unrestricted (no zone, region, or crm_states set).
     """
     if not user:
         return None
+    explicit = parse_crm_states(getattr(user, "crm_states", None))
+    if explicit:
+        return explicit
     region = normalize_region(getattr(user, "crm_region", None))
     if region:
         return region_state_codes(region)
@@ -315,78 +399,138 @@ def _state_field_q_for_codes(field: str, codes: list[str]) -> Q:
     return q
 
 
+def city_match_variants(city: str) -> list[str]:
+    """Return known spelling variants for a city/district name."""
+    name = (city or "").strip()
+    if not name:
+        return []
+    aliases = {
+        "alappuzha": ("Alappuzha", "Alleppey"),
+        "alleppey": ("Alappuzha", "Alleppey"),
+        "kasaragod": ("Kasaragod", "Kasargod"),
+        "kasargod": ("Kasaragod", "Kasargod"),
+        "trivandrum": ("Trivandrum", "Thiruvananthapuram"),
+        "thiruvananthapuram": ("Trivandrum", "Thiruvananthapuram"),
+        "kozhikode": ("Kozhikode", "Calicut"),
+        "cannanore": ("Kannur", "Cannanore"),
+        "kannur": ("Kannur", "Cannanore"),
+    }
+    variants = aliases.get(name.casefold())
+    if variants:
+        return list(variants)
+    return [name, name.title()]
+
+
+def _city_field_q(field: str, cities: list[str]) -> Q:
+    q = Q()
+    for city in cities:
+        for variant in city_match_variants(city):
+            q |= Q(**{f"{field}__iexact": variant})
+    return q
+
+
 def filter_enquiry_qs_by_zone(qs, request):
     codes = request_effective_scope_codes(request)
-    if codes is None:
+    cities = request_effective_scope_cities(request)
+    if codes is None and cities is None:
         return qs
     from franchises.models import Franchise
     from franchises.franchise_geo import filter_queryset_by_state
 
     city_names: set[str] = set()
-    for code in codes:
-        for f in filter_queryset_by_state(Franchise.objects.filter(is_active=True), code):
-            for raw in (getattr(f, "cityname", None), getattr(f, "city", None)):
-                name = (raw or "").strip()
-                if name:
-                    city_names.add(name)
-                    city_names.add(name.title())
+    if cities is not None:
+        for city in cities:
+            city_names.update(city_match_variants(city))
+    elif codes is not None:
+        for code in codes:
+            for f in filter_queryset_by_state(Franchise.objects.filter(is_active=True), code):
+                for raw in (getattr(f, "cityname", None), getattr(f, "city", None)):
+                    name = (raw or "").strip()
+                    if name:
+                        city_names.add(name)
+                        city_names.add(name.title())
 
-    zone_q = _state_field_q_for_codes("franchise__state", codes) | _state_field_q_for_codes(
-        "franchise__statename", codes
-    )
+    zone_q = Q()
+    if codes is not None:
+        zone_q = _state_field_q_for_codes("franchise__state", codes) | _state_field_q_for_codes(
+            "franchise__statename", codes
+        )
     if city_names:
         city_q = Q()
         for city in city_names:
             city_q |= Q(city__iexact=city)
-        zone_q |= Q(franchise__isnull=True) & city_q
-    else:
+        if codes is not None:
+            zone_q = zone_q | (Q(franchise__isnull=True) & city_q)
+            if cities is not None:
+                zone_q = zone_q & city_q
+        else:
+            zone_q = city_q
+    elif codes is not None:
         zone_q |= Q(pk__in=[])
     return qs.filter(zone_q)
 
 
 def filter_franchise_enquiry_qs_by_zone(qs, request):
     codes = request_effective_scope_codes(request)
-    if codes is None:
+    cities = request_effective_scope_cities(request)
+    if codes is None and cities is None:
         return qs
-    zone_q = (
-        _state_field_q_for_codes("state", codes)
-        | _state_field_q_for_codes("franchise__state", codes)
-        | _state_field_q_for_codes("franchise__statename", codes)
-    )
+    zone_q = Q()
+    if codes is not None:
+        zone_q = (
+            _state_field_q_for_codes("state", codes)
+            | _state_field_q_for_codes("franchise__state", codes)
+            | _state_field_q_for_codes("franchise__statename", codes)
+        )
+    if cities is not None:
+        city_q = _city_field_q("city", cities)
+        zone_q = zone_q & city_q if codes is not None else city_q
     return qs.filter(zone_q)
 
 
 def filter_crm_lead_qs_by_zone(qs, request):
     codes = request_effective_scope_codes(request)
-    if codes is None:
+    cities = request_effective_scope_cities(request)
+    if codes is None and cities is None:
         return qs
     from franchises.models import Franchise
     from franchises.franchise_geo import filter_queryset_by_state
 
     city_names: set[str] = set()
     centre_names: set[str] = set()
-    for code in codes:
-        for f in filter_queryset_by_state(Franchise.objects.filter(is_active=True), code):
-            for raw in (getattr(f, "cityname", None), getattr(f, "city", None)):
-                name = (raw or "").strip()
-                if name:
-                    city_names.add(name)
-                    city_names.add(name.title())
-            fname = (f.name or "").strip()
-            if fname:
-                centre_names.add(fname)
+    if cities is not None:
+        for city in cities:
+            city_names.update(city_match_variants(city))
+    elif codes is not None:
+        for code in codes:
+            for f in filter_queryset_by_state(Franchise.objects.filter(is_active=True), code):
+                for raw in (getattr(f, "cityname", None), getattr(f, "city", None)):
+                    name = (raw or "").strip()
+                    if name:
+                        city_names.add(name)
+                        city_names.add(name.title())
+                fname = (f.name or "").strip()
+                if fname:
+                    centre_names.add(fname)
 
-    zone_q = _state_field_q_for_codes("state", codes)
+    zone_q = Q()
+    if codes is not None:
+        zone_q = _state_field_q_for_codes("state", codes)
     if city_names:
         cq = Q()
         for city in city_names:
             cq |= Q(city__iexact=city)
-        zone_q |= cq
-    if centre_names:
+        if codes is not None and cities is not None:
+            zone_q = zone_q & cq
+        elif codes is not None:
+            zone_q = zone_q | cq
+        else:
+            zone_q = cq
+    if centre_names and cities is None:
         zc = Q()
         for name in centre_names:
             zc |= Q(preferred_centre_location__iexact=name)
-        zone_q |= zc
+        zone_q = zone_q | zc
     return qs.filter(zone_q)
 
 

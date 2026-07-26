@@ -410,15 +410,14 @@ def process_leadgen_event(
     try:
         from .emails import (
             lead_source_label_for_crm_lead,
-            send_crm_heads_new_lead_reminder,
+            assign_and_notify_new_lead,
             send_crm_lead_enquiry_emails,
         )
 
         send_crm_lead_enquiry_emails(lead)
-        send_crm_heads_new_lead_reminder(
-            name=lead.full_name or "",
+        assign_and_notify_new_lead(
+            lead,
             lead_source=lead_source_label_for_crm_lead(lead),
-            centre_name=lead.preferred_centre_location or lead.city or "",
         )
     except Exception:
         logger.exception("CRM emails failed for Meta lead id=%s crm_id=%s", leadgen_id, lead.pk)

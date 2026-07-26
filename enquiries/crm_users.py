@@ -79,32 +79,80 @@ def resolve_lead_state_code(state: str | None = None, city: str | None = None) -
 
 def crm_users_matching_geo(state: str | None = None, city: str | None = None) -> list[User]:
     """
-    CRM handlers whose zone/region covers the lead's state (city used to infer state).
-    Prefers regional users; falls back to zonal users. National (unscoped) users are excluded.
+    CRM handlers whose territory covers the lead's state/city.
+    City-restricted users (e.g. Kerala districts) are listed first when city matches.
+    National (unscoped) users are excluded.
     """
-    from accounts.crm_zones import scope_state_codes_for_user
+    from accounts.crm_zones import (
+        city_match_variants,
+        scope_city_names_for_user,
+        scope_state_codes_for_user,
+    )
 
     code = resolve_lead_state_code(state, city)
     if not code:
         return []
 
-    regional: list[User] = []
-    zonal: list[User] = []
+    lead_city = (city or "").strip()
+    lead_city_keys = {v.casefold() for v in city_match_variants(lead_city)} if lead_city else set()
+
+    city_specific: list[User] = []
+    state_scoped: list[User] = []
+
     for user in crm_users_queryset():
         codes = scope_state_codes_for_user(user)
         if not codes or code not in codes:
             continue
-        if (getattr(user, "crm_region", None) or "").strip():
-            regional.append(user)
-        elif (getattr(user, "crm_zone", None) or "").strip():
-            zonal.append(user)
-    return regional if regional else zonal
+
+        user_cities = scope_city_names_for_user(user)
+        if user_cities is None:
+            state_scoped.append(user)
+            continue
+
+        if not lead_city:
+            # Lead has no city — include city-scoped users for this state
+            city_specific.append(user)
+            continue
+
+        matched = False
+        for c in user_cities:
+            for variant in city_match_variants(c):
+                if variant.casefold() in lead_city_keys or variant.casefold() == lead_city.casefold():
+                    matched = True
+                    break
+            if matched:
+                break
+        if matched:
+            city_specific.append(user)
+
+    # Prefer narrower territories when assigning (fewer states = more specific).
+    city_specific.sort(key=lambda u: u.id)
+    state_scoped.sort(
+        key=lambda u: (len(scope_state_codes_for_user(u) or []), u.id)
+    )
+    return city_specific + state_scoped
 
 
 def suggest_assignee_for_geo(state: str | None = None, city: str | None = None) -> User | None:
-    """Best default assignee for a lead's city/state territory."""
+    """Best default assignee: prefer city-matched user, else state-level handler."""
     matches = crm_users_matching_geo(state, city)
     return matches[0] if matches else None
+
+
+def emails_for_geo_handlers(state: str | None = None, city: str | None = None) -> list[str]:
+    """Unique CRM emails that should be notified for a lead in this territory."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for user in crm_users_matching_geo(state, city):
+        email = (user.email or "").strip()
+        if not email:
+            continue
+        key = email.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(email)
+    return out
 
 
 def _user_api_dict(user: User) -> dict:
@@ -115,6 +163,8 @@ def _user_api_dict(user: User) -> dict:
         "email": user.email,
         "crmZone": (getattr(user, "crm_zone", None) or "").strip().upper() or None,
         "crmRegion": (getattr(user, "crm_region", None) or "").strip().upper() or None,
+        "crmStates": (getattr(user, "crm_states", None) or "").strip() or None,
+        "crmCities": (getattr(user, "crm_cities", None) or "").strip() or None,
     }
 
 

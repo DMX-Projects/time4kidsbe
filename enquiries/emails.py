@@ -371,23 +371,41 @@ def send_crm_heads_new_lead_reminder(
     name: str,
     lead_source: str,
     centre_name: str = "",
+    state: str = "",
+    city: str = "",
+    phone: str = "",
+    lead_email: str = "",
 ) -> bool:
     """
-    Notify the single zonal head + single regional head that a new lead came in.
-    Includes name, lead source, centre name, and CRM login link.
-    Recipients from CRM_ZONAL_HEAD_EMAIL / CRM_REGIONAL_HEAD_EMAIL.
+    Notify territory CRM users (by state/city mapping) that a new lead came in.
+    Also includes optional CRM_ZONAL_HEAD_EMAIL / CRM_REGIONAL_HEAD_EMAIL from settings.
     """
     from django.conf import settings
 
+    from .crm_users import emails_for_geo_handlers
+
+    recipients: list[str] = []
+    seen: set[str] = set()
+
+    for addr in emails_for_geo_handlers(state or None, city or centre_name or None):
+        key = addr.casefold()
+        if key not in seen:
+            seen.add(key)
+            recipients.append(addr)
+
     zonal = (getattr(settings, "CRM_ZONAL_HEAD_EMAIL", None) or "").strip()
     regional = (getattr(settings, "CRM_REGIONAL_HEAD_EMAIL", None) or "").strip()
-    recipients = []
     for addr in (zonal, regional):
-        if addr and addr.lower() not in {r.lower() for r in recipients}:
+        if addr and addr.casefold() not in seen:
+            seen.add(addr.casefold())
             recipients.append(addr)
 
     if not recipients:
-        logger.info("CRM heads reminder skipped — set CRM_ZONAL_HEAD_EMAIL / CRM_REGIONAL_HEAD_EMAIL")
+        logger.info(
+            "CRM lead reminder skipped — no territory users for state=%r city=%r and no head emails set",
+            state,
+            city or centre_name,
+        )
         return False
     if not sendgrid_api_key():
         logger.warning("CRM heads reminder skipped — SENDGRID_API_KEY not set")
@@ -396,35 +414,128 @@ def send_crm_heads_new_lead_reminder(
     display_name = (name or "").strip() or "—"
     source = (lead_source or "").strip() or "—"
     centre = (centre_name or "").strip() or "—"
+    place_city = (city or "").strip() or centre
+    place_state = (state or "").strip() or "—"
+    phone_disp = (phone or "").strip() or "—"
+    email_disp = (lead_email or "").strip() or "—"
     login_url = _crm_admin_login_url()
-    subject = f"New CRM lead reminder — {display_name} ({source})"
+    subject = f"New CRM lead — {display_name} ({source})"
     plain = (
-        "New lead received.\n\n"
+        "New lead received in your territory.\n\n"
         f"Name: {display_name}\n"
+        f"Phone: {phone_disp}\n"
+        f"Email: {email_disp}\n"
         f"Lead source: {source}\n"
-        f"Centre name: {centre}\n\n"
+        f"State: {place_state}\n"
+        f"City / Centre: {place_city}\n\n"
         f"Login to CRM to check this lead:\n{login_url}\n"
     )
     safe_login = html.escape(login_url)
     html_content = f"""
     <html><body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-      <p><strong>New lead received.</strong></p>
+      <p><strong>New lead received in your territory.</strong></p>
       <p>
         <strong>Name:</strong> {html.escape(display_name)}<br>
+        <strong>Phone:</strong> {html.escape(phone_disp)}<br>
+        <strong>Email:</strong> {html.escape(email_disp)}<br>
         <strong>Lead source:</strong> {html.escape(source)}<br>
-        <strong>Centre name:</strong> {html.escape(centre)}
+        <strong>State:</strong> {html.escape(place_state)}<br>
+        <strong>City / Centre:</strong> {html.escape(place_city)}
       </p>
       <p>Login to CRM to check this lead:<br>
         <a href="{safe_login}">{safe_login}</a>
       </p>
     </body></html>
     """
-    return send_sendgrid_message(
+    ok = send_sendgrid_message(
         to_emails=recipients,
         subject=subject,
         plain_text_content=plain,
         html_content=html_content,
         from_email=default_from_email(),
+    )
+    if ok:
+        logger.info(
+            "CRM territory notify ok recipients=%s state=%r city=%r source=%r",
+            len(recipients),
+            place_state,
+            place_city,
+            source,
+        )
+    return ok
+
+
+def assign_and_notify_new_lead(obj, *, lead_source: str = "") -> bool:
+    """
+    Assign lead to best territory CRM user (if unassigned) and email matching handlers.
+    Works for CrmLead, FranchiseEnquiry, Enquiry, and similar objects with state/city.
+    """
+    from .crm_users import suggest_assignee_for_geo
+
+    state = (getattr(obj, "state", None) or "").strip()
+    city = (getattr(obj, "city", None) or "").strip()
+    franchise = getattr(obj, "franchise", None)
+    if franchise is not None:
+        if not state:
+            state = (
+                getattr(franchise, "statename", None)
+                or getattr(franchise, "state", None)
+                or ""
+            ).strip()
+        if not city:
+            try:
+                from franchises.franchise_geo import effective_city
+
+                city = (effective_city(franchise) or "").strip() or city
+            except Exception:
+                pass
+
+    centre = (
+        getattr(obj, "preferred_centre_location", None)
+        or getattr(obj, "centre_name", None)
+        or (franchise.name if franchise is not None else None)
+        or city
+        or ""
+    )
+    name = (
+        getattr(obj, "full_name", None)
+        or getattr(obj, "name", None)
+        or ""
+    )
+    phone = (
+        getattr(obj, "mobile", None)
+        or getattr(obj, "mobileno", None)
+        or getattr(obj, "phone", None)
+        or ""
+    )
+    lead_email = getattr(obj, "email", None) or ""
+
+    if hasattr(obj, "assigned_user_id") and not getattr(obj, "assigned_user_id", None):
+        suggested = suggest_assignee_for_geo(state, city or centre)
+        if suggested:
+            obj.assigned_user = suggested
+            try:
+                obj.save(update_fields=["assigned_user"])
+            except Exception:
+                logger.exception("Failed to save assigned_user for %s id=%s", type(obj).__name__, getattr(obj, "pk", None))
+
+    source = (lead_source or "").strip()
+    if not source:
+        if hasattr(obj, "source"):
+            source = lead_source_label_for_crm_lead(obj)
+        elif hasattr(obj, "enquiry_type"):
+            source = lead_source_label_for_enquiry(obj)
+        else:
+            source = "CRM"
+
+    return send_crm_heads_new_lead_reminder(
+        name=name,
+        lead_source=source,
+        centre_name=str(centre or ""),
+        state=state,
+        city=city or str(centre or ""),
+        phone=str(phone or ""),
+        lead_email=str(lead_email or ""),
     )
 
 

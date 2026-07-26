@@ -63,6 +63,20 @@ class User(AbstractBaseUser, PermissionsMixin):
         default="",
         help_text="CRM only: blank = full zone/national; otherwise a region code (e.g. NORTH_R1).",
     )
+    # Optional explicit state codes (comma-separated, e.g. "AP,TG"). When set, overrides zone/region for scope.
+    crm_states = models.CharField(
+        max_length=120,
+        blank=True,
+        default="",
+        help_text="CRM only: comma-separated state codes (e.g. AP,TG,KL). Overrides zone/region when set.",
+    )
+    # Optional city/district list (comma-separated). When set, further narrows leads within crm_states.
+    crm_cities = models.CharField(
+        max_length=800,
+        blank=True,
+        default="",
+        help_text="CRM only: comma-separated cities/districts (e.g. Ernakulam,Kollam).",
+    )
 
     is_staff = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)

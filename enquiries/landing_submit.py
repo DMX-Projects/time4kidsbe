@@ -191,6 +191,10 @@ def handle_landing_enquiry_post(post_data: Any):
             name=getattr(record, "name", None) or "",
             lead_source=f"Landing ({source})" if source else "Landing",
             centre_name=getattr(record, "centre_name", None) or getattr(record, "location", None) or "",
+            state=getattr(record, "state", None) or "",
+            city=getattr(record, "city", None) or getattr(record, "location", None) or "",
+            phone=getattr(record, "mobileno", None) or getattr(record, "mobile", None) or "",
+            lead_email=getattr(record, "email", None) or "",
         )
     except Exception:
         logger.exception("Landing enquiry email failed for id=%s", record.pk)
