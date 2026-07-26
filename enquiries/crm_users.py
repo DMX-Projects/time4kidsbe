@@ -139,11 +139,34 @@ def suggest_assignee_for_geo(state: str | None = None, city: str | None = None) 
     return matches[0] if matches else None
 
 
-def emails_for_geo_handlers(state: str | None = None, city: str | None = None) -> list[str]:
-    """Unique CRM emails that should be notified for a lead in this territory."""
+def emails_for_geo_handlers(
+    state: str | None = None,
+    city: str | None = None,
+    *,
+    lead_kind: str | None = None,
+) -> list[str]:
+    """
+    Unique CRM emails that should be notified for a lead in this territory.
+    lead_kind: ``franchise`` | ``admission`` | None (any notify flag).
+    """
+    kind = (lead_kind or "").strip().lower()
     seen: set[str] = set()
     out: list[str] = []
     for user in crm_users_matching_geo(state, city):
+        if kind in ("franchise", "franchiseenquiry", "campaign", "websiteleads", "paidcampaign"):
+            if not getattr(user, "crm_notify_franchise", False):
+                continue
+        elif kind in ("admission", "landing", "enquiry"):
+            if not getattr(user, "crm_notify_admission", False):
+                continue
+        else:
+            # Fallback: either franchise or admission notify
+            if not (
+                getattr(user, "crm_notify_franchise", False)
+                or getattr(user, "crm_notify_admission", False)
+                or getattr(user, "crm_notify_leads", False)
+            ):
+                continue
         email = (user.email or "").strip()
         if not email:
             continue
@@ -153,6 +176,27 @@ def emails_for_geo_handlers(state: str | None = None, city: str | None = None) -
         seen.add(key)
         out.append(email)
     return out
+
+
+def resolve_notify_lead_kind(obj=None, lead_source: str = "") -> str:
+    """Map a lead object / source label to franchise | admission | other."""
+    source = (lead_source or "").strip().lower()
+    if obj is not None:
+        model = type(obj).__name__.lower()
+        if "franchise" in model:
+            return "franchise"
+        if model == "crmlead":
+            return "franchise"  # campaign / website franchise pipeline
+        if model in ("enquiry", "kidsenquiry"):
+            et = (getattr(obj, "enquiry_type", None) or "").strip().upper()
+            if et == "FRANCHISE":
+                return "franchise"
+            return "admission"
+    if any(k in source for k in ("franchise", "campaign", "meta", "google", "website lead", "paid")):
+        return "franchise"
+    if any(k in source for k in ("admission", "landing", "contact")):
+        return "admission"
+    return "other"
 
 
 def _user_api_dict(user: User) -> dict:

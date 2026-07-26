@@ -77,6 +77,19 @@ class User(AbstractBaseUser, PermissionsMixin):
         default="",
         help_text="CRM only: comma-separated cities/districts (e.g. Ernakulam,Kollam).",
     )
+    # When True, user gets email alerts for new leads in their territory (ZM / RM).
+    crm_notify_leads = models.BooleanField(
+        default=False,
+        help_text="Deprecated: use crm_notify_franchise / crm_notify_admission.",
+    )
+    crm_notify_franchise = models.BooleanField(
+        default=False,
+        help_text="Receive new-lead emails for Franchise leads in this territory.",
+    )
+    crm_notify_admission = models.BooleanField(
+        default=False,
+        help_text="Receive new-lead emails for Admission leads in this territory.",
+    )
 
     is_staff = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)

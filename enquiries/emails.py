@@ -375,6 +375,7 @@ def send_crm_heads_new_lead_reminder(
     city: str = "",
     phone: str = "",
     lead_email: str = "",
+    lead_kind: str | None = None,
 ) -> bool:
     """
     Notify territory CRM users (by state/city mapping) that a new lead came in.
@@ -387,7 +388,11 @@ def send_crm_heads_new_lead_reminder(
     recipients: list[str] = []
     seen: set[str] = set()
 
-    for addr in emails_for_geo_handlers(state or None, city or centre_name or None):
+    for addr in emails_for_geo_handlers(
+        state or None,
+        city or centre_name or None,
+        lead_kind=lead_kind,
+    ):
         key = addr.casefold()
         if key not in seen:
             seen.add(key)
@@ -402,9 +407,10 @@ def send_crm_heads_new_lead_reminder(
 
     if not recipients:
         logger.info(
-            "CRM lead reminder skipped — no territory users for state=%r city=%r and no head emails set",
+            "CRM lead reminder skipped — no territory users for state=%r city=%r kind=%r and no head emails set",
             state,
             city or centre_name,
+            lead_kind,
         )
         return False
     if not sendgrid_api_key():
@@ -456,11 +462,12 @@ def send_crm_heads_new_lead_reminder(
     )
     if ok:
         logger.info(
-            "CRM territory notify ok recipients=%s state=%r city=%r source=%r",
+            "CRM territory notify ok recipients=%s state=%r city=%r source=%r kind=%r",
             len(recipients),
             place_state,
             place_city,
             source,
+            lead_kind,
         )
     return ok
 
@@ -470,7 +477,7 @@ def assign_and_notify_new_lead(obj, *, lead_source: str = "") -> bool:
     Assign lead to best territory CRM user (if unassigned) and email matching handlers.
     Works for CrmLead, FranchiseEnquiry, Enquiry, and similar objects with state/city.
     """
-    from .crm_users import suggest_assignee_for_geo
+    from .crm_users import resolve_notify_lead_kind, suggest_assignee_for_geo
 
     state = (getattr(obj, "state", None) or "").strip()
     city = (getattr(obj, "city", None) or "").strip()
@@ -528,6 +535,8 @@ def assign_and_notify_new_lead(obj, *, lead_source: str = "") -> bool:
         else:
             source = "CRM"
 
+    lead_kind = resolve_notify_lead_kind(obj, source)
+
     return send_crm_heads_new_lead_reminder(
         name=name,
         lead_source=source,
@@ -536,6 +545,7 @@ def assign_and_notify_new_lead(obj, *, lead_source: str = "") -> bool:
         city=city or str(centre or ""),
         phone=str(phone or ""),
         lead_email=str(lead_email or ""),
+        lead_kind=lead_kind,
     )
 
 

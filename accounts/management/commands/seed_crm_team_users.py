@@ -3,6 +3,10 @@ Seed real CRM team users from franchise/admission mapping sheets.
 
   python manage.py seed_crm_team_users
   python manage.py seed_crm_team_users --force-password
+
+New-lead emails:
+  - Franchise → pink Franchise sheet heads (crm_notify_franchise)
+  - Admission → pink Admission sheet heads (crm_notify_admission)
 """
 
 from django.contrib.auth import get_user_model
@@ -22,6 +26,7 @@ KERALA_NORTH = "Kasaragod,Kannur,Malappuram,Kozhikode,Wayanad,Thrissur,Palakkad"
 KERALA_SOUTH = "Ernakulam,Kottayam,Alappuzha,Kollam,Trivandrum,Pathanamthitta,Idukki"
 
 # One account per person (Option A) — union of franchise + admission sheets.
+# Pink rows on both sheets: Tejbal, Sujee, Gaurav, Jyoti.
 TEAM_USERS = (
     {
         "email": "tejbal@timekidspreschools.com",
@@ -29,6 +34,8 @@ TEAM_USERS = (
         "zone": "SOUTH",
         "states": "AP,TG",
         "cities": "",
+        "notify_franchise": True,
+        "notify_admission": True,
     },
     {
         "email": "saikishore@timekidspreschools.com",
@@ -36,6 +43,8 @@ TEAM_USERS = (
         "zone": "SOUTH",
         "states": "AP,TG",
         "cities": "",
+        "notify_franchise": False,
+        "notify_admission": False,
     },
     {
         "email": "harshit@timekidspreschools.com",
@@ -43,6 +52,8 @@ TEAM_USERS = (
         "zone": "SOUTH",
         "states": "AP,TG",
         "cities": "",
+        "notify_franchise": False,
+        "notify_admission": False,
     },
     {
         "email": "sujee@timekidspreschools.com",
@@ -50,6 +61,8 @@ TEAM_USERS = (
         "zone": "SOUTH",
         "states": "KA",
         "cities": "",
+        "notify_franchise": True,
+        "notify_admission": True,
     },
     {
         "email": "thimmesh.k@timekidspreschools.com",
@@ -57,6 +70,8 @@ TEAM_USERS = (
         "zone": "SOUTH",
         "states": "KA",
         "cities": "",
+        "notify_franchise": False,
+        "notify_admission": False,
     },
     {
         "email": "gaurav@timekidspreschools.com",
@@ -64,6 +79,8 @@ TEAM_USERS = (
         "zone": "SOUTH",
         "states": "TN,KL,MH",
         "cities": "",
+        "notify_franchise": True,
+        "notify_admission": True,
     },
     {
         "email": "jayaraj@timekidspreschools.com",
@@ -71,6 +88,8 @@ TEAM_USERS = (
         "zone": "SOUTH",
         "states": "TN",
         "cities": "",
+        "notify_franchise": False,
+        "notify_admission": False,
     },
     {
         "email": "sivaraman@timekidspreschools.com",
@@ -78,6 +97,8 @@ TEAM_USERS = (
         "zone": "SOUTH",
         "states": "TN",
         "cities": "",
+        "notify_franchise": False,
+        "notify_admission": False,
     },
     {
         "email": "joejoseph@timekidspreschools.com",
@@ -85,6 +106,8 @@ TEAM_USERS = (
         "zone": "SOUTH",
         "states": "KL",
         "cities": KERALA_ALL,
+        "notify_franchise": False,
+        "notify_admission": False,
     },
     {
         "email": "satishmenon@timekidspreschools.com",
@@ -92,6 +115,8 @@ TEAM_USERS = (
         "zone": "SOUTH",
         "states": "KL",
         "cities": KERALA_SOUTH,
+        "notify_franchise": False,
+        "notify_admission": False,
     },
     {
         "email": "anoopkunjan@timekidspreschools.com",
@@ -99,6 +124,8 @@ TEAM_USERS = (
         "zone": "SOUTH",
         "states": "KL",
         "cities": "",
+        "notify_franchise": False,
+        "notify_admission": False,
     },
     {
         "email": "vivek@timekidspreschools.com",
@@ -106,6 +133,8 @@ TEAM_USERS = (
         "zone": "SOUTH",
         "states": "KL",
         "cities": KERALA_NORTH,
+        "notify_franchise": False,
+        "notify_admission": False,
     },
     {
         "email": "deepaknikam@timekidspreschools.com",
@@ -113,6 +142,8 @@ TEAM_USERS = (
         "zone": "WEST",
         "states": "MH",
         "cities": "",
+        "notify_franchise": False,
+        "notify_admission": False,
     },
     {
         "email": "jyoti.mishra@timekidspreschools.com",
@@ -120,6 +151,8 @@ TEAM_USERS = (
         "zone": "EAST",
         "states": "BR,CT,OR,JK",
         "cities": "",
+        "notify_franchise": True,
+        "notify_admission": True,
     },
 )
 
@@ -161,6 +194,8 @@ class Command(BaseCommand):
         for item in TEAM_USERS:
             email = item["email"].strip().lower()
             user = User.objects.filter(email__iexact=email).first()
+            notify_f = bool(item.get("notify_franchise"))
+            notify_a = bool(item.get("notify_admission"))
             fields = {
                 "role": UserRole.CRM,
                 "full_name": item["name"],
@@ -168,6 +203,10 @@ class Command(BaseCommand):
                 "crm_region": "",
                 "crm_states": item["states"],
                 "crm_cities": item["cities"],
+                "crm_notify_franchise": notify_f,
+                "crm_notify_admission": notify_a,
+                # Keep legacy flag in sync for any old code paths
+                "crm_notify_leads": notify_f or notify_a,
                 "is_active": True,
             }
             if user:
@@ -176,24 +215,27 @@ class Command(BaseCommand):
                 if force_password:
                     user.set_password(DEFAULT_PASSWORD)
                 user.save()
-                self.stdout.write(
-                    self.style.SUCCESS(
-                        f"Updated: {item['name']} <{email}> states={item['states']}"
-                        + (f" cities=set" if item["cities"] else "")
-                    )
-                )
+                action = "Updated"
             else:
-                user = User.objects.create_user(
+                User.objects.create_user(
                     email=email,
                     username=email,
                     password=DEFAULT_PASSWORD,
                     **fields,
                 )
-                self.stdout.write(
-                    self.style.SUCCESS(
-                        f"Created: {item['name']} <{email}> states={item['states']}"
-                    )
+                action = "Created"
+            flags = []
+            if notify_f:
+                flags.append("franchise")
+            if notify_a:
+                flags.append("admission")
+            flag_txt = "+".join(flags) if flags else "none"
+            self.stdout.write(
+                self.style.SUCCESS(
+                    f"{action}: {item['name']} <{email}> states={item['states']} "
+                    f"(notify={flag_txt})"
                 )
+            )
 
         if not keep_placeholders:
             deactivated = (
@@ -206,3 +248,9 @@ class Command(BaseCommand):
         self.stdout.write("")
         self.stdout.write(self.style.NOTICE(f"Default password: {DEFAULT_PASSWORD}"))
         self.stdout.write(self.style.NOTICE("Super Admin unchanged: admin@timekids.com"))
+        self.stdout.write(
+            self.style.NOTICE(
+                "Emails: Franchise + Admission pink heads "
+                "(Tejbal, Sujee, Gaurav, Jyoti)."
+            )
+        )
