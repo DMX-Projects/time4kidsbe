@@ -322,6 +322,17 @@ META_APP_SECRET = (os.getenv("META_APP_SECRET", "") or "").strip()
 META_PAGE_ACCESS_TOKEN = (os.getenv("META_PAGE_ACCESS_TOKEN", "") or "").strip()
 META_WEBHOOK_VERIFY_TOKEN = (os.getenv("META_WEBHOOK_VERIFY_TOKEN", "") or "").strip()
 META_PAGE_ID = (os.getenv("META_PAGE_ID", "") or "").strip() or "187099544682886"
+# Only import Instant Form leads created on/after this date (YYYY-MM-DD).
+# Stops auto-sync from pulling old historical form leads before campaigns go live.
+META_LEADS_SYNC_SINCE = (os.getenv("META_LEADS_SYNC_SINCE", "") or "").strip()
+# Only sync Instant Forms matching these name prefixes (used when exact list disabled).
+# Default in code: "BCWW TK". Use "*" to allow all form names.
+META_LEADS_FORM_PREFIXES = (os.getenv("META_LEADS_FORM_PREFIXES", "BCWW TK") or "BCWW TK").strip()
+# Exact form names (comma-separated). Empty = built-in 48 BCWW TK campaign forms.
+# META_LEADS_FORM_NAMES=* disables the exact list (falls back to prefixes).
+META_LEADS_FORM_NAMES = (os.getenv("META_LEADS_FORM_NAMES", "") or "").strip()
+# Optional exact form IDs (comma-separated). Empty = rely on form names.
+META_LEADS_FORM_IDS = (os.getenv("META_LEADS_FORM_IDS", "") or "").strip()
 # In-process poller (no cron). Default: on when META_PAGE_ACCESS_TOKEN is set.
 # META_LEADS_AUTO_SYNC=0 to disable. Interval seconds (min 60).
 try:

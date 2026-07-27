@@ -6,7 +6,9 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import re
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -53,6 +55,181 @@ def meta_app_secret() -> str:
 def meta_page_id() -> str:
     configured = (getattr(settings, "META_PAGE_ID", "") or "").strip()
     return configured or "187099544682886"
+
+
+def meta_leads_sync_since() -> datetime | None:
+    """
+    Only import Meta Instant Form leads created on/after this moment.
+
+    Set META_LEADS_SYNC_SINCE=YYYY-MM-DD (or full ISO datetime) so auto-sync
+    does not keep pulling historical Instant Form leads before campaigns start.
+    """
+    raw = (
+        getattr(settings, "META_LEADS_SYNC_SINCE", None)
+        or os.getenv("META_LEADS_SYNC_SINCE")
+        or ""
+    )
+    raw = str(raw).strip()
+    if not raw:
+        return None
+    try:
+        # Date-only → start of that day UTC
+        if len(raw) <= 10:
+            d = datetime.strptime(raw[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            return d
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed
+    except ValueError:
+        logger.warning("Invalid META_LEADS_SYNC_SINCE=%r — ignoring cutoff", raw)
+        return None
+
+
+def _parse_meta_created_time(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(float(value), tz=timezone.utc)
+        except (OSError, OverflowError, ValueError):
+            return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.isdigit():
+        try:
+            return datetime.fromtimestamp(int(text), tz=timezone.utc)
+        except (OSError, OverflowError, ValueError):
+            return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed
+    except ValueError:
+        return None
+
+
+def is_before_sync_cutoff(created_time: Any) -> bool:
+    """True when lead is older than META_LEADS_SYNC_SINCE (should not import)."""
+    since = meta_leads_sync_since()
+    if since is None:
+        return False
+    created = _parse_meta_created_time(created_time)
+    if created is None:
+        # Without a timestamp, allow webhook/live imports; block only clearly old sync rows.
+        return False
+    return created < since
+
+
+# Exact Instant Form names from the campaign sheet (6 states × 8 segments = 48).
+# Only these Facebook Lead Forms are imported into CRM.
+BCWW_TK_CAMPAIGN_FORM_NAMES: frozenset[str] = frozenset(
+    {
+        f"BCWW TK {state} {segment}"
+        for state in (
+            "Tamil Nadu",
+            "Karnataka",
+            "Andhra Pradesh",
+            "Kerala",
+            "Telangana",
+            "Maharashtra",
+        )
+        for segment in (
+            "All Interest P1",
+            "RMK P1",
+            "LLK P1",
+            "Income P1",
+            "All Interest Ex P1",
+            "RMK Ex P1",
+            "LLK Ex P1",
+            "Income Ex P1",
+        )
+    }
+)
+
+
+def meta_leads_form_id_allowlist() -> set[str]:
+    """Optional exact Instant Form IDs (comma-separated META_LEADS_FORM_IDS)."""
+    raw = (
+        getattr(settings, "META_LEADS_FORM_IDS", None)
+        or os.getenv("META_LEADS_FORM_IDS")
+        or ""
+    )
+    return {part.strip() for part in str(raw).split(",") if part.strip()}
+
+
+def meta_leads_form_name_allowlist() -> set[str] | None:
+    """
+    Exact form-name allowlist.
+
+    Default: the 48 BCWW TK campaign forms from the sheet.
+    META_LEADS_FORM_NAMES=name1,name2 → custom exact list.
+    META_LEADS_FORM_NAMES=* → disable exact-name gate (use prefixes / IDs only).
+    """
+    raw = getattr(settings, "META_LEADS_FORM_NAMES", None)
+    if raw is None:
+        raw = os.getenv("META_LEADS_FORM_NAMES")
+    if raw is None or not str(raw).strip():
+        return set(BCWW_TK_CAMPAIGN_FORM_NAMES)
+    text = str(raw).strip()
+    if text == "*":
+        return None
+    return {part.strip() for part in text.split(",") if part.strip()}
+
+
+def meta_leads_form_prefixes() -> list[str]:
+    """
+    Fallback name-prefix filter when exact allowlist is disabled (*).
+
+    META_LEADS_FORM_PREFIXES=* → allow all form names (IDs allowlist still applies).
+    """
+    raw = getattr(settings, "META_LEADS_FORM_PREFIXES", None)
+    if raw is None:
+        raw = os.getenv("META_LEADS_FORM_PREFIXES")
+    if raw is None:
+        return ["BCWW TK"]
+    text = str(raw).strip()
+    if not text:
+        return ["BCWW TK"]
+    if text == "*":
+        return []
+    return [part.strip() for part in text.split(",") if part.strip()]
+
+
+def is_allowed_meta_form(*, form_id: str = "", form_name: str = "") -> bool:
+    """
+    Gate Instant Form imports to the campaign sheet forms only.
+
+    Priority:
+    1. META_LEADS_FORM_IDS — exact form ID always allowed.
+    2. Exact form-name allowlist (default: 48 BCWW TK forms).
+    3. If exact list disabled (*): META_LEADS_FORM_PREFIXES (default BCWW TK).
+    """
+    form_id = str(form_id or "").strip()
+    form_name = str(form_name or "").strip()
+    id_allow = meta_leads_form_id_allowlist()
+    name_allow = meta_leads_form_name_allowlist()
+
+    if id_allow and form_id and form_id in id_allow:
+        return True
+
+    if name_allow is not None:
+        if not form_name:
+            return False
+        return form_name.casefold() in {n.casefold() for n in name_allow}
+
+    # Exact name list disabled — fall back to prefixes / open.
+    prefixes = meta_leads_form_prefixes()
+    if not prefixes:
+        if id_allow:
+            return bool(form_id and form_id in id_allow)
+        return True
+    if not form_name:
+        return False
+    name_l = form_name.lower()
+    return any(name_l.startswith(prefix.lower()) for prefix in prefixes)
 
 
 def normalize_indian_mobile(raw: str) -> str:
@@ -385,6 +562,29 @@ def process_leadgen_event(
     if not leadgen_id:
         return {"ok": False, "error": "missing_leadgen_id"}
 
+    early_form_id = str(webhook_value.get("form_id") or "").strip()
+    early_form_name = (form_name or "").strip()
+    if early_form_name or early_form_id:
+        if early_form_name and not is_allowed_meta_form(
+            form_id=early_form_id, form_name=early_form_name
+        ):
+            return {
+                "ok": True,
+                "skipped": True,
+                "leadgen_id": leadgen_id,
+                "reason": "form_not_allowed",
+                "form_name": early_form_name,
+                "form_id": early_form_id,
+            }
+
+    if is_before_sync_cutoff(webhook_value.get("created_time")):
+        return {
+            "ok": True,
+            "skipped": True,
+            "leadgen_id": leadgen_id,
+            "reason": "before_sync_since",
+        }
+
     if already_imported(leadgen_id):
         return {"ok": True, "skipped": True, "leadgen_id": leadgen_id}
 
@@ -396,10 +596,28 @@ def process_leadgen_event(
         return {"ok": True, "skipped": True, "leadgen_id": leadgen_id}
 
     lead_payload = fetch_lead_by_id(leadgen_id)
+    if is_before_sync_cutoff(lead_payload.get("created_time") or webhook_value.get("created_time")):
+        return {
+            "ok": True,
+            "skipped": True,
+            "leadgen_id": leadgen_id,
+            "reason": "before_sync_since",
+        }
+
     form_id = str(lead_payload.get("form_id") or webhook_value.get("form_id") or "").strip()
     resolved_form_name = (form_name or "").strip()
     if not resolved_form_name and form_id:
         resolved_form_name = fetch_form_name(form_id)
+
+    if not is_allowed_meta_form(form_id=form_id, form_name=resolved_form_name):
+        return {
+            "ok": True,
+            "skipped": True,
+            "leadgen_id": leadgen_id,
+            "reason": "form_not_allowed",
+            "form_name": resolved_form_name,
+            "form_id": form_id,
+        }
 
     lead = create_crm_lead_from_meta(
         lead_payload=lead_payload,
@@ -431,8 +649,13 @@ def sync_page_leads(*, per_form_limit: int = 20, max_forms: int = 100) -> dict[s
 
     Use as a reliable auto-sync backup while webhook delivery is Pending
     (common for unpublished / new apps). Dedupes via meta_leadgen_id.
+
+    Honours META_LEADS_SYNC_SINCE and META_LEADS_FORM_PREFIXES so only the
+    paid-campaign Instant Forms (BCWW TK …) are imported — not old city forms.
     """
     page_id = meta_page_id()
+    since = meta_leads_sync_since()
+    prefixes = meta_leads_form_prefixes()
     forms_payload = _graph_get(
         f"{page_id}/leadgen_forms",
         {"fields": "id,name", "limit": str(max(1, min(max_forms, 200)))},
@@ -441,35 +664,74 @@ def sync_page_leads(*, per_form_limit: int = 20, max_forms: int = 100) -> dict[s
     summary = {
         "ok": True,
         "page_id": page_id,
-        "forms": len(forms),
+        "forms_total": len(forms),
+        "forms": 0,
         "imported": 0,
         "skipped": 0,
+        "skipped_old": 0,
+        "skipped_form": 0,
         "failed": 0,
+        "sync_since": since.isoformat() if since else None,
+        "form_prefixes": prefixes,
         "results": [],
     }
+
+    lead_query: dict[str, str] = {
+        "fields": "id,created_time,form_id",
+        "limit": str(max(1, min(per_form_limit, 50))),
+    }
+    if since is not None:
+        # Meta Lead Ads filtering — only leads created after cutoff.
+        lead_query["filtering"] = json.dumps(
+            [
+                {
+                    "field": "time_created",
+                    "operator": "GREATER_THAN",
+                    "value": int(since.timestamp()),
+                }
+            ]
+        )
 
     for form in forms:
         form_id = str(form.get("id") or "").strip()
         form_name = str(form.get("name") or "").strip()
         if not form_id:
             continue
-        try:
-            leads_payload = _graph_get(
-                f"{form_id}/leads",
-                {
-                    "fields": "id,created_time,form_id",
-                    "limit": str(max(1, min(per_form_limit, 50))),
-                },
-            )
-        except Exception as exc:
-            logger.exception("Meta form leads fetch failed form_id=%s", form_id)
-            summary["failed"] += 1
-            summary["results"].append({"ok": False, "form_id": form_id, "error": str(exc)})
+        if not is_allowed_meta_form(form_id=form_id, form_name=form_name):
+            summary["skipped_form"] += 1
             continue
+        summary["forms"] += 1
+        try:
+            leads_payload = _graph_get(f"{form_id}/leads", lead_query)
+        except Exception as exc:
+            # Some forms reject filtering — fall back and rely on local cutoff.
+            if "filtering" in lead_query:
+                try:
+                    fallback = {
+                        "fields": lead_query["fields"],
+                        "limit": lead_query["limit"],
+                    }
+                    leads_payload = _graph_get(f"{form_id}/leads", fallback)
+                except Exception as exc2:
+                    logger.exception("Meta form leads fetch failed form_id=%s", form_id)
+                    summary["failed"] += 1
+                    summary["results"].append(
+                        {"ok": False, "form_id": form_id, "error": str(exc2)}
+                    )
+                    continue
+            else:
+                logger.exception("Meta form leads fetch failed form_id=%s", form_id)
+                summary["failed"] += 1
+                summary["results"].append({"ok": False, "form_id": form_id, "error": str(exc)})
+                continue
 
         for lead in leads_payload.get("data") or []:
             leadgen_id = str(lead.get("id") or "").strip()
             if not leadgen_id:
+                continue
+            if is_before_sync_cutoff(lead.get("created_time")):
+                summary["skipped_old"] += 1
+                summary["skipped"] += 1
                 continue
             if already_imported(leadgen_id):
                 summary["skipped"] += 1
@@ -485,7 +747,13 @@ def sync_page_leads(*, per_form_limit: int = 20, max_forms: int = 100) -> dict[s
                     form_name=form_name,
                 )
                 summary["results"].append(result)
-                if result.get("skipped"):
+                if result.get("reason") == "before_sync_since":
+                    summary["skipped_old"] += 1
+                    summary["skipped"] += 1
+                elif result.get("reason") == "form_not_allowed":
+                    summary["skipped_form"] += 1
+                    summary["skipped"] += 1
+                elif result.get("skipped"):
                     summary["skipped"] += 1
                 elif result.get("ok"):
                     summary["imported"] += 1
