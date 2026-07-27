@@ -35,6 +35,11 @@ from django.utils import timezone
 from .communication_sms import send_otp_sms
 
 
+def _is_campaign_readonly_user(request) -> bool:
+    email = str(getattr(getattr(request, "user", None), "email", "") or "").strip().lower()
+    return email == "sachin.dhakate@time4education.com"
+
+
 def _normalize_otp_phone(raw: str) -> str:
     digits = re.sub(r"\D", "", str(raw or ""))
     if len(digits) == 12 and digits.startswith("91"):
@@ -651,6 +656,8 @@ class AdminCrmLeadDetailView(APIView):
     def patch(self, request, pk):
         if not can_view_crm_leads(request):
             return Response({"detail": "CRM login required."}, status=status.HTTP_403_FORBIDDEN)
+        if _is_campaign_readonly_user(request):
+            return Response({"detail": "View-only account."}, status=status.HTTP_403_FORBIDDEN)
 
         from .crm_api import update_unified_lead
 
@@ -716,6 +723,8 @@ class AdminCrmLeadNoteCreateView(APIView):
     def post(self, request, pk):
         if not can_view_crm_leads(request):
             return Response({"detail": "CRM login required."}, status=status.HTTP_403_FORBIDDEN)
+        if _is_campaign_readonly_user(request):
+            return Response({"detail": "View-only account."}, status=status.HTTP_403_FORBIDDEN)
 
         from .crm_api import note_to_dict, parse_lead_id
 
@@ -780,6 +789,8 @@ class AdminCrmSendReminderView(APIView):
     def post(self, request):
         if not can_view_crm_leads(request):
             return Response({"detail": "CRM login required."}, status=status.HTTP_403_FORBIDDEN)
+        if _is_campaign_readonly_user(request):
+            return Response({"detail": "View-only account."}, status=status.HTTP_403_FORBIDDEN)
 
         channel = (request.data.get("channel") or "email").strip().lower()
         if channel == "whatsapp":
