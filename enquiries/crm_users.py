@@ -4,6 +4,250 @@ from __future__ import annotations
 
 from accounts.models import User, UserRole
 
+# TKPL list — Zonal Managers who may reassign leads to territory users.
+ZONAL_MANAGER_ASSIGN_EMAILS = frozenset(
+    {
+        "tejbal@timekidspreschools.com",
+        "gaurav@timekidspreschools.com",
+        "jyoti.mishra@timekidspreschools.com",
+    }
+)
+
+# National CRM super admins who may also reassign leads.
+CRM_SUPER_ADMIN_ASSIGN_EMAILS = frozenset(
+    {
+        "admin@timekids.com",
+        "jayesh@time4education.com",
+        "bethleena@timekidspreschools.com",
+    }
+)
+
+CRM_LEAD_ASSIGNER_EMAILS = ZONAL_MANAGER_ASSIGN_EMAILS | CRM_SUPER_ADMIN_ASSIGN_EMAILS
+
+# TKPL designations that may receive leads (not Zonal Manager / Super Admin).
+# Regional Manager, Manager, Dy Manager, Assistant Manager only.
+CRM_ASSIGNABLE_HANDLER_EMAILS = frozenset(
+    {
+        # Dy Manager
+        "saikishore@timekidspreschools.com",
+        # Assistant Manager
+        "harshit@timekidspreschools.com",
+        "sivaraman@timekidspreschools.com",
+        "anoopkunjan@timekidspreschools.com",
+        # Regional Manager
+        "sujee@timekidspreschools.com",
+        "joejoseph@timekidspreschools.com",
+        "vivek@timekidspreschools.com",
+        # Manager
+        "thimmesh.k@timekidspreschools.com",
+        "jayaraj@timekidspreschools.com",
+        "satishmenon@timekidspreschools.com",
+        "deepaknikam@timekidspreschools.com",
+    }
+)
+
+CRM_ASSIGNABLE_DESIGNATIONS = (
+    "Regional Manager",
+    "Manager",
+    "Dy Manager",
+    "Assistant Manager",
+)
+
+# TKPL Franchise sheet — handlers under each Zonal Manager (Select User / assign for franchise leads).
+ZONAL_MANAGER_FRANCHISE_TEAM_EMAILS: dict[str, frozenset[str]] = {
+    "tejbal@timekidspreschools.com": frozenset(
+        {
+            "saikishore@timekidspreschools.com",  # Dy Manager — AP/TS
+            "harshit@timekidspreschools.com",  # Assistant Manager — AP/TS
+            "sujee@timekidspreschools.com",  # Regional Manager — Karnataka
+        }
+    ),
+    "gaurav@timekidspreschools.com": frozenset(
+        {
+            "jayaraj@timekidspreschools.com",  # Manager — Tamil Nadu
+            "joejoseph@timekidspreschools.com",  # Regional Manager — Kerala
+            "satishmenon@timekidspreschools.com",  # Manager — Kerala
+            "vivek@timekidspreschools.com",  # Regional Manager — Kerala
+            "deepaknikam@timekidspreschools.com",  # Manager — Maharashtra
+        }
+    ),
+    # Bihar / Chhattisgarh / Orissa / JK — no franchise handlers on sheet; full handler list.
+    "jyoti.mishra@timekidspreschools.com": frozenset(),
+}
+
+# TKPL Admission sheet — handlers under each Zonal Manager (Select User / assign for admission leads).
+ZONAL_MANAGER_ADMISSION_TEAM_EMAILS: dict[str, frozenset[str]] = {
+    "tejbal@timekidspreschools.com": frozenset(
+        {
+            "saikishore@timekidspreschools.com",  # Dy Manager — AP/TS
+            "harshit@timekidspreschools.com",  # Assistant Manager — AP/TS
+            "sujee@timekidspreschools.com",  # Regional Manager — Karnataka
+            "thimmesh.k@timekidspreschools.com",  # Manager — Karnataka
+        }
+    ),
+    "gaurav@timekidspreschools.com": frozenset(
+        {
+            "jayaraj@timekidspreschools.com",  # Manager — Tamil Nadu
+            "sivaraman@timekidspreschools.com",  # Assistant Manager — Tamil Nadu
+            "joejoseph@timekidspreschools.com",  # Regional Manager — Kerala
+            "satishmenon@timekidspreschools.com",  # Manager — Kerala
+            "anoopkunjan@timekidspreschools.com",  # Assistant Manager — Kerala
+            "vivek@timekidspreschools.com",  # Regional Manager — Kerala
+            "deepaknikam@timekidspreschools.com",  # Manager — Maharashtra
+        }
+    ),
+    # Bihar / Chhattisgarh / Orissa / JK — no admission handlers on sheet; full handler list.
+    "jyoti.mishra@timekidspreschools.com": frozenset(),
+}
+
+
+def user_can_assign_crm_leads(user) -> bool:
+    """True for Zonal Managers (TKPL list) and national CRM super admins."""
+    if user is None:
+        return False
+    email = str(getattr(user, "email", "") or "").strip().lower()
+    return email in CRM_LEAD_ASSIGNER_EMAILS
+
+
+def is_assignable_handler_user(user) -> bool:
+    """True for RM / Manager / Dy Manager / Assistant Manager (not Zonal Manager)."""
+    if user is None or not getattr(user, "is_active", False):
+        return False
+    email = str(getattr(user, "email", "") or "").strip().lower()
+    return email in CRM_ASSIGNABLE_HANDLER_EMAILS
+
+
+def _filter_assignable_handlers(users: list[User]) -> list[User]:
+    return [u for u in users if is_assignable_handler_user(u)]
+
+
+def all_assignable_handler_users() -> list[User]:
+    """All TKPL RM / Manager / Dy Manager / Assistant Manager accounts."""
+    return _filter_assignable_handlers(list(crm_users_queryset()))
+
+
+def zonal_franchise_uses_full_handler_list(viewer) -> bool:
+    """Zonal Manager with no franchise team — show every assignable handler."""
+    if not viewer:
+        return False
+    email = str(getattr(viewer, "email", "") or "").strip().lower()
+    team = ZONAL_MANAGER_FRANCHISE_TEAM_EMAILS.get(email)
+    return team is not None and len(team) == 0
+
+
+def zonal_admission_uses_full_handler_list(viewer) -> bool:
+    """Zonal Manager with no admission team — show every assignable handler."""
+    if not viewer:
+        return False
+    email = str(getattr(viewer, "email", "") or "").strip().lower()
+    team = ZONAL_MANAGER_ADMISSION_TEAM_EMAILS.get(email)
+    return team is not None and len(team) == 0
+
+
+def _viewer_from_request(request) -> User | None:
+    if request is None:
+        return None
+    user = getattr(request, "user", None)
+    if user is not None and getattr(user, "is_authenticated", False):
+        return user
+    forced = getattr(request, "_force_auth_user", None)
+    if forced is not None and getattr(forced, "is_authenticated", False):
+        return forced
+    return None
+
+
+def normalize_crm_pipeline(raw: str | None) -> str | None:
+    """``franchise`` | ``admission`` | None (geo-only, no zonal team sheet)."""
+    value = (raw or "").strip().lower().replace("-", "_")
+    if not value:
+        return None
+    if value in ("franchise", "campaign", "websiteleads", "paidcampaign", "franchise_all", "crm"):
+        return "franchise"
+    if value in ("admission", "landing", "contact", "centerpage", "enquiry"):
+        return "admission"
+    if value == "franchiseenquiry":
+        return "franchise"
+    return None
+
+
+def zonal_manager_team_users(viewer, pipeline: str | None = None) -> list[User]:
+    """Assignable handlers on the TKPL franchise/admission sheet for this Zonal Manager."""
+    email = str(getattr(viewer, "email", "") or "").strip().lower()
+    pipe = normalize_crm_pipeline(pipeline)
+    if pipe == "franchise":
+        team_emails = ZONAL_MANAGER_FRANCHISE_TEAM_EMAILS.get(email)
+    elif pipe == "admission":
+        team_emails = ZONAL_MANAGER_ADMISSION_TEAM_EMAILS.get(email)
+    else:
+        return []
+    if not team_emails:
+        return []
+    return [
+        user
+        for user in crm_users_queryset()
+        if (user.email or "").strip().lower() in team_emails
+    ]
+
+
+def _merge_user_lists(primary: list[User], extra: list[User]) -> list[User]:
+    seen = {user.id for user in primary}
+    merged = list(primary)
+    for user in extra:
+        if user.id not in seen:
+            seen.add(user.id)
+            merged.append(user)
+    return merged
+
+
+def _zonal_team_users_for_context(
+    request,
+    state_param: str | None = None,
+    city_param: str | None = None,
+    pipeline: str | None = None,
+) -> list[User]:
+    """Zonal manager's franchise/admission team — full team or narrowed to state/city filter."""
+    viewer = _viewer_from_request(request)
+    if not viewer:
+        return []
+    team = zonal_manager_team_users(viewer, pipeline)
+    if not team:
+        return []
+    state_s = (state_param or "").strip()
+    city_s = (city_param or "").strip()
+    if not state_s and not city_s:
+        return team
+    geo_ids = {user.id for user in crm_users_matching_geo_filter(state_s or None, city_s or None)}
+    return [user for user in team if user.id in geo_ids]
+
+
+def sanitize_crm_filter_user_id(raw: str | None) -> str | None:
+    """
+    CRM dashboard ``userId`` query param.
+    Returns empty → None, unassigned tokens, or assignable handler id string.
+    Super admins / zonal managers / other CRM logins are rejected.
+    """
+    value = (raw or "").strip().lower()
+    if not value:
+        return None
+    if value in ("unassigned", "none", "null", "all"):
+        return value
+    try:
+        uid = int(value)
+    except (TypeError, ValueError):
+        return None
+    user = User.objects.filter(pk=uid, role__iexact=UserRole.CRM.value, is_active=True).first()
+    if not is_assignable_handler_user(user):
+        return None
+    return str(uid)
+
+
+def sanitize_crm_scope_user_id(raw: str | None) -> str | None:
+    """Geo API scope user — assignable territory handlers only."""
+    cleaned = sanitize_crm_filter_user_id(raw)
+    if not cleaned or cleaned in ("unassigned", "none", "null", "all"):
+        return None
+    return cleaned
+
 
 def crm_users_queryset():
     """Active CRM users excluding Super Admin (manager login, not a lead handler)."""
@@ -133,6 +377,63 @@ def crm_users_matching_geo(state: str | None = None, city: str | None = None) ->
     return city_specific + state_scoped
 
 
+def _parse_geo_csv(raw: str | None) -> list[str]:
+    return [part.strip() for part in (raw or "").split(",") if part.strip()]
+
+
+def crm_users_matching_geo_filter(
+    state_param: str | None = None,
+    city_param: str | None = None,
+) -> list[User]:
+    """Union of territory handlers for comma-separated state/city dashboard filters."""
+    states = _parse_geo_csv(state_param)
+    cities = _parse_geo_csv(city_param)
+    if not states and not cities:
+        return []
+
+    seen_ids: set[int] = set()
+    matched: list[User] = []
+
+    def _add(users: list[User]) -> None:
+        for user in users:
+            if user.id in seen_ids:
+                continue
+            seen_ids.add(user.id)
+            matched.append(user)
+
+    if cities:
+        if states:
+            for state in states:
+                for city in cities:
+                    _add(crm_users_matching_geo(state, city))
+        else:
+            for city in cities:
+                _add(crm_users_matching_geo(None, city))
+    else:
+        for state in states:
+            _add(crm_users_matching_geo(state, None))
+
+    return matched
+
+
+def crm_users_matching_request_scope(request, pipeline: str | None = None) -> list[User]:
+    """Handlers whose territory overlaps the logged-in viewer's CRM scope."""
+    from accounts.crm_zones import request_effective_scope_codes, scope_display_state_names
+
+    pipe = normalize_crm_pipeline(pipeline)
+    codes = request_effective_scope_codes(request)
+    if codes is None:
+        return list(crm_users_queryset())
+    state_names = scope_display_state_names(codes)
+    if not state_names:
+        return zonal_manager_team_users(_viewer_from_request(request), pipe)
+    geo_users = crm_users_matching_geo_filter(",".join(state_names), None)
+    if pipe:
+        team = zonal_manager_team_users(_viewer_from_request(request), pipe)
+        return _merge_user_lists(geo_users, team)
+    return geo_users
+
+
 def suggest_assignee_for_geo(state: str | None = None, city: str | None = None) -> User | None:
     """Best default assignee: prefer city-matched user, else state-level handler."""
     matches = crm_users_matching_geo(state, city)
@@ -212,16 +513,100 @@ def _user_api_dict(user: User) -> dict:
     }
 
 
-def list_crm_users_for_api(state: str | None = None, city: str | None = None) -> list[dict]:
+def list_crm_users_for_api(
+    state: str | None = None,
+    city: str | None = None,
+    *,
+    for_assign: bool = False,
+    request=None,
+    pipeline: str | None = None,
+) -> list[dict]:
     """
     List CRM users for filters / assignment.
     When state or city is provided, only return users covering that territory.
+    With no geo filter, scope to the viewer's region (national viewers see all).
+    ``for_assign=True`` limits to RM / Manager / Dy Manager / Assistant Manager.
+    ``pipeline=franchise`` applies TKPL franchise zonal team sheets; ``admission`` for admission sheet.
     """
-    if (state or "").strip() or (city or "").strip():
-        users = crm_users_matching_geo(state, city)
+    pipe = normalize_crm_pipeline(pipeline)
+    state_s = (state or "").strip()
+    city_s = (city or "").strip()
+    viewer = _viewer_from_request(request)
+    if for_assign and pipe == "franchise" and zonal_franchise_uses_full_handler_list(viewer):
+        return [_user_api_dict(user) for user in all_assignable_handler_users()]
+    if for_assign and pipe == "admission" and zonal_admission_uses_full_handler_list(viewer):
+        return [_user_api_dict(user) for user in all_assignable_handler_users()]
+    if state_s or city_s:
+        users = crm_users_matching_geo_filter(state_s or None, city_s or None)
+    elif request is not None:
+        users = crm_users_matching_request_scope(request, pipe)
     else:
         users = list(crm_users_queryset())
+    if for_assign:
+        users = _filter_assignable_handlers(users)
+        if request is not None and pipe:
+            team = _zonal_team_users_for_context(request, state_s or None, city_s or None, pipe)
+            users = _merge_user_lists(users, _filter_assignable_handlers(team))
     return [_user_api_dict(user) for user in users]
+
+
+def assignee_candidates_for_lead(
+    *,
+    state: str | None = None,
+    city: str | None = None,
+    national: bool = False,
+    assigner=None,
+    franchise_lead: bool = False,
+    admission_lead: bool = False,
+) -> list[User]:
+    """
+    Users a lead may be assigned to — RM / Manager / Dy Manager / Assistant Manager only.
+    Prefer territory match; national assigners fall back to full handler list.
+    """
+    if franchise_lead and zonal_franchise_uses_full_handler_list(assigner):
+        return all_assignable_handler_users()
+    if admission_lead and zonal_admission_uses_full_handler_list(assigner):
+        return all_assignable_handler_users()
+    if (state or "").strip() or (city or "").strip():
+        matched = _filter_assignable_handlers(
+            crm_users_matching_geo_filter(state, city)
+        )
+        if matched:
+            return matched
+    if national:
+        return _filter_assignable_handlers(list(crm_users_queryset()))
+    return []
+
+
+def is_valid_assignee_for_lead(
+    assignee: User,
+    *,
+    state: str | None = None,
+    city: str | None = None,
+    assigner=None,
+    franchise_lead: bool = False,
+    admission_lead: bool = False,
+) -> bool:
+    """Validate target is an assignable handler (RM/Manager/Dy/AM) in territory."""
+    if not is_assignable_handler_user(assignee):
+        return False
+    if franchise_lead and zonal_franchise_uses_full_handler_list(assigner):
+        return True
+    if admission_lead and zonal_admission_uses_full_handler_list(assigner):
+        return True
+    assigner_email = str(getattr(assigner, "email", "") or "").strip().lower()
+    national = assigner_email in CRM_SUPER_ADMIN_ASSIGN_EMAILS
+    candidates = assignee_candidates_for_lead(
+        state=state,
+        city=city,
+        national=national,
+        assigner=assigner,
+        franchise_lead=franchise_lead,
+        admission_lead=admission_lead,
+    )
+    if not candidates and national:
+        return True
+    return any(u.id == assignee.id for u in candidates)
 
 
 def assigned_user_payload(

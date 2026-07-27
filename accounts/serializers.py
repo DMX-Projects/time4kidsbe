@@ -14,6 +14,15 @@ from accounts.profile_access import parent_login_context, driver_profile_for_use
 from .models import User, UserRole
 
 
+def _crm_user_can_assign(user) -> bool:
+    try:
+        from enquiries.crm_users import user_can_assign_crm_leads
+
+        return user_can_assign_crm_leads(user)
+    except Exception:
+        return False
+
+
 def _normalize_phone10(identifier: str) -> str | None:
     digits = re.sub(r"\D", "", (identifier or "").strip())
     if len(digits) >= 10:
@@ -409,6 +418,7 @@ class CrmTokenObtainPairSerializer(TokenObtainPairSerializer):
                 "is_superuser": user.is_superuser,
                 "crm_zone": getattr(user, "crm_zone", "") or "",
                 "crm_region": getattr(user, "crm_region", "") or "",
+                "can_assign_users": _crm_user_can_assign(user),
             },
         }
 

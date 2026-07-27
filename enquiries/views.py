@@ -774,7 +774,51 @@ class AdminCrmUsersView(APIView):
 
         state = (request.query_params.get("state") or "").strip() or None
         city = (request.query_params.get("city") or "").strip() or None
-        return Response({"users": list_crm_users_for_api(state=state, city=city)})
+        pipeline = (
+            request.query_params.get("pipeline")
+            or request.query_params.get("leadKind")
+            or request.query_params.get("lead_kind")
+            or ""
+        ).strip() or None
+        for_assign_raw = (request.query_params.get("forAssign") or "").strip().lower()
+        for_assign = for_assign_raw not in ("0", "false", "no")
+        return Response(
+            {
+                "users": list_crm_users_for_api(
+                    state=state,
+                    city=city,
+                    for_assign=for_assign,
+                    request=request,
+                    pipeline=pipeline,
+                )
+            }
+        )
+
+
+class AdminCrmCampaignsView(APIView):
+    """Distinct paid-campaign names (Meta form / UTM) for CRM filter dropdown."""
+
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        if not can_view_crm_leads(request):
+            return Response({"detail": "CRM login required."}, status=status.HTTP_403_FORBIDDEN)
+        from .crm_api import unified_crm_campaign_names
+
+        return Response({"campaigns": unified_crm_campaign_names(request)})
+
+
+class AdminCrmMediumsView(APIView):
+    """Distinct UTM medium values for CRM filter dropdown."""
+
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        if not can_view_crm_leads(request):
+            return Response({"detail": "CRM login required."}, status=status.HTTP_403_FORBIDDEN)
+        from .crm_api import unified_crm_medium_names
+
+        return Response({"mediums": unified_crm_medium_names(request)})
 
 
 class AdminCrmSendReminderView(APIView):
@@ -896,13 +940,15 @@ class AdminCrmCentresView(APIView):
                 qs = qs.filter(id__in=matched_ids)
 
         from accounts.crm_zones import filter_franchise_qs_by_zone, resolve_scope_state_codes
+        from enquiries.crm_users import sanitize_crm_scope_user_id
 
-        scope_user_id = (
+        raw_scope = (
             request.query_params.get("userId")
             or request.query_params.get("scopeUserId")
             or ""
         ).strip()
-        codes = resolve_scope_state_codes(request, scope_user_id or None)
+        scope_user_id = sanitize_crm_scope_user_id(raw_scope) if raw_scope else None
+        codes = resolve_scope_state_codes(request, scope_user_id)
         if codes is not None:
             scoped = qs.none()
             for code in codes:
@@ -1049,13 +1095,15 @@ class AdminCrmStatesView(APIView):
         from franchises.models import Franchise
         from enquiries.models import FranchiseEnquiry
         from accounts.crm_zones import resolve_scope_state_codes, scope_display_state_names
+        from enquiries.crm_users import sanitize_crm_scope_user_id
 
-        scope_user_id = (
+        raw_scope = (
             request.query_params.get("userId")
             or request.query_params.get("scopeUserId")
             or ""
         ).strip()
-        codes = resolve_scope_state_codes(request, scope_user_id or None)
+        scope_user_id = sanitize_crm_scope_user_id(raw_scope) if raw_scope else None
+        codes = resolve_scope_state_codes(request, scope_user_id)
         # Scoped CRM (logged-in and/or selected filter user): return that state list.
         if codes is not None:
             return Response([{"name": name} for name in scope_display_state_names(codes)])

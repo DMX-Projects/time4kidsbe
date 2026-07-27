@@ -2,6 +2,8 @@ from django.urls import path
 
 from .views import (
     AdminAllEnquiryListView,
+    AdminCrmCampaignsView,
+    AdminCrmMediumsView,
     AdminCrmCentresView,
     AdminCrmCitiesView,
     AdminCrmLeadDetailView,
@@ -46,6 +48,8 @@ urlpatterns = [
     path("admin/crm-leads/reminders/", AdminCrmLeadRemindersView.as_view(), name="admin-crm-leads-reminders"),
     path("admin/crm-leads/send-reminder/", AdminCrmSendReminderView.as_view(), name="admin-crm-send-reminder"),
     path("admin/crm-centres/", AdminCrmCentresView.as_view(), name="admin-crm-centres"),
+    path("admin/crm-campaigns/", AdminCrmCampaignsView.as_view(), name="admin-crm-campaigns"),
+    path("admin/crm-mediums/", AdminCrmMediumsView.as_view(), name="admin-crm-mediums"),
     path("admin/crm-cities/", AdminCrmCitiesView.as_view(), name="admin-crm-cities"),
     path("admin/crm-states/", AdminCrmStatesView.as_view(), name="admin-crm-states"),
     path("admin/crm-users/", AdminCrmUsersView.as_view(), name="admin-crm-users"),
