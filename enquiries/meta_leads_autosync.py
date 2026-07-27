@@ -67,11 +67,16 @@ def _run_once() -> None:
 
         summary = sync_page_leads(per_form_limit=20, max_forms=100)
         logger.info(
-            "Meta leads auto-sync: forms=%s imported=%s skipped=%s failed=%s",
+            "Meta leads auto-sync: forms=%s/%s imported=%s skipped=%s skipped_old=%s skipped_form=%s failed=%s since=%s prefixes=%s",
             summary.get("forms"),
+            summary.get("forms_total"),
             summary.get("imported"),
             summary.get("skipped"),
+            summary.get("skipped_old"),
+            summary.get("skipped_form"),
             summary.get("failed"),
+            summary.get("sync_since"),
+            summary.get("form_prefixes"),
         )
     except Exception:
         logger.exception("Meta leads auto-sync failed")
