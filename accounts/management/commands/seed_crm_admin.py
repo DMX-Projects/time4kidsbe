@@ -1,8 +1,8 @@
 """
-Create the default CRM admin user (same as timekids_crm_clone seed).
+Create CRM super-admin logins (national access — all zones, all leads).
 
   python manage.py seed_crm_admin
-  python manage.py seed_crm_admin --password "Admin@123"
+  python manage.py seed_crm_admin --force-password
 """
 
 from django.contrib.auth import get_user_model
@@ -12,55 +12,71 @@ from accounts.models import UserRole
 
 User = get_user_model()
 
-DEFAULT_EMAIL = "admin@timekids.com"
-DEFAULT_PASSWORD = "Admin@123"
-DEFAULT_NAME = "CRM Super Admin"
+# National CRM admins — empty crm_zone / crm_region = Super Admin (all India).
+CRM_SUPER_ADMINS = (
+    {
+        "email": "admin@timekids.com",
+        "name": "CRM Super Admin",
+        "password": "Admin@123",
+    },
+    {
+        "email": "jayesh@time4education.com",
+        "name": "Jayesh",
+        "password": "Jayesh@Crm47",
+    },
+    {
+        "email": "bethleena@timekidspreschools.com",
+        "name": "Bethleena",
+        "password": "Bethleena@Crm62",
+    },
+)
 
 
 class Command(BaseCommand):
-    help = "Seed default CRM admin login (admin@timekids.com) like timekids_crm_clone."
+    help = "Seed CRM super-admin logins (national / all-India access)."
 
     def add_arguments(self, parser):
-        parser.add_argument("--email", default=DEFAULT_EMAIL, help="CRM admin email")
-        parser.add_argument("--password", default=DEFAULT_PASSWORD, help="CRM admin password")
-        parser.add_argument("--name", default=DEFAULT_NAME, help="Full name")
         parser.add_argument(
             "--force-password",
             action="store_true",
-            help="Reset password if the CRM admin already exists",
+            help="Reset passwords for all super-admin accounts that already exist",
         )
 
     def handle(self, *args, **options):
-        email = (options["email"] or DEFAULT_EMAIL).strip().lower()
-        password = options["password"] or DEFAULT_PASSWORD
-        name = (options.get("name") or DEFAULT_NAME).strip()
         force_password = bool(options.get("force_password"))
 
-        user = User.objects.filter(email__iexact=email).first()
-        if user:
-            user.role = UserRole.CRM
-            user.is_active = True
-            user.full_name = name or user.full_name
-            user.crm_zone = ""
-            user.crm_region = ""
-            if force_password:
-                user.set_password(password)
-            user.save()
-            self.stdout.write(
-                self.style.SUCCESS(
-                    f"CRM admin ready: {email} (password updated={force_password})"
-                )
-            )
-            return
+        for entry in CRM_SUPER_ADMINS:
+            email = (entry["email"] or "").strip().lower()
+            password = entry["password"] or ""
+            name = (entry.get("name") or "").strip() or "CRM Super Admin"
 
-        User.objects.create_user(
-            email=email,
-            username=email,
-            password=password,
-            role=UserRole.CRM,
-            full_name=name,
-            is_active=True,
-            crm_zone="",
-            crm_region="",
-        )
-        self.stdout.write(self.style.SUCCESS(f"Created CRM admin: {email} / {password}"))
+            user = User.objects.filter(email__iexact=email).first()
+            if user:
+                user.role = UserRole.CRM
+                user.is_active = True
+                user.full_name = name or user.full_name
+                user.crm_zone = ""
+                user.crm_region = ""
+                if force_password:
+                    user.set_password(password)
+                user.save()
+                self.stdout.write(
+                    self.style.SUCCESS(
+                        f"CRM super admin ready: {email} (password updated={force_password})"
+                    )
+                )
+                continue
+
+            User.objects.create_user(
+                email=email,
+                username=email,
+                password=password,
+                role=UserRole.CRM,
+                full_name=name,
+                is_active=True,
+                crm_zone="",
+                crm_region="",
+            )
+            self.stdout.write(self.style.SUCCESS(f"Created CRM super admin: {email} / {password}"))
+
+        self.stdout.write(self.style.NOTICE("Super admins: national access (all zones, all lead types)."))

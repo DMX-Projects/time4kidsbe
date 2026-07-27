@@ -30,7 +30,7 @@ TEAM_USERS = (
     {
         "email": "tejbal@timekidspreschools.com",
         "name": "Tejbal Singh",
-        "password": "Tejbal@Crm26",
+        "password": "Tejbal@Crm74",
         "zone": "SOUTH",
         "states": "AP,TG",
         "cities": "",
@@ -40,7 +40,7 @@ TEAM_USERS = (
     {
         "email": "saikishore@timekidspreschools.com",
         "name": "Sai Kishore",
-        "password": "SaiKish@Crm26",
+        "password": "SaiKish@Crm19",
         "zone": "SOUTH",
         "states": "AP,TG",
         "cities": "",
@@ -50,7 +50,7 @@ TEAM_USERS = (
     {
         "email": "harshit@timekidspreschools.com",
         "name": "Harshit Katare",
-        "password": "Harshit@Crm26",
+        "password": "Harshit@Crm58",
         "zone": "SOUTH",
         "states": "AP,TG",
         "cities": "",
@@ -60,7 +60,7 @@ TEAM_USERS = (
     {
         "email": "sujee@timekidspreschools.com",
         "name": "Sujee",
-        "password": "Sujee@Crm26",
+        "password": "Sujee@Crm83",
         "zone": "SOUTH",
         "states": "KA",
         "cities": "",
@@ -70,7 +70,7 @@ TEAM_USERS = (
     {
         "email": "thimmesh.k@timekidspreschools.com",
         "name": "Thimmesh",
-        "password": "Thimmesh@Crm26",
+        "password": "Thimmesh@Crm27",
         "zone": "SOUTH",
         "states": "KA",
         "cities": "",
@@ -80,7 +80,7 @@ TEAM_USERS = (
     {
         "email": "gaurav@timekidspreschools.com",
         "name": "Gaurav Grover",
-        "password": "Gaurav@Crm26",
+        "password": "Gaurav@Crm91",
         "zone": "SOUTH",
         "states": "TN,KL,MH",
         "cities": "",
@@ -90,7 +90,7 @@ TEAM_USERS = (
     {
         "email": "jayaraj@timekidspreschools.com",
         "name": "M. Jayaraj",
-        "password": "Jayaraj@Crm26",
+        "password": "Jayaraj@Crm46",
         "zone": "SOUTH",
         "states": "TN",
         "cities": "",
@@ -100,7 +100,7 @@ TEAM_USERS = (
     {
         "email": "sivaraman@timekidspreschools.com",
         "name": "Sivaraman",
-        "password": "Sivaraman@Crm26",
+        "password": "Sivaraman@Crm12",
         "zone": "SOUTH",
         "states": "TN",
         "cities": "",
@@ -110,7 +110,7 @@ TEAM_USERS = (
     {
         "email": "joejoseph@timekidspreschools.com",
         "name": "Joe",
-        "password": "JoeJoseph@Crm26",
+        "password": "JoeJoseph@Crm65",
         "zone": "SOUTH",
         "states": "KL",
         "cities": KERALA_ALL,
@@ -120,7 +120,7 @@ TEAM_USERS = (
     {
         "email": "satishmenon@timekidspreschools.com",
         "name": "Satish Menon",
-        "password": "Satish@Crm26",
+        "password": "Satish@Crm88",
         "zone": "SOUTH",
         "states": "KL",
         "cities": KERALA_SOUTH,
@@ -130,7 +130,7 @@ TEAM_USERS = (
     {
         "email": "anoopkunjan@timekidspreschools.com",
         "name": "Anoop Kunjan",
-        "password": "Anoop@Crm26",
+        "password": "Anoop@Crm34",
         "zone": "SOUTH",
         "states": "KL",
         "cities": "",
@@ -140,7 +140,7 @@ TEAM_USERS = (
     {
         "email": "vivek@timekidspreschools.com",
         "name": "Vivek RT",
-        "password": "Vivek@Crm26",
+        "password": "Vivek@Crm57",
         "zone": "SOUTH",
         "states": "KL",
         "cities": KERALA_NORTH,
@@ -150,7 +150,7 @@ TEAM_USERS = (
     {
         "email": "deepaknikam@timekidspreschools.com",
         "name": "Deepak Nikam",
-        "password": "Deepak@Crm26",
+        "password": "Deepak@Crm22",
         "zone": "WEST",
         "states": "MH",
         "cities": "",
@@ -160,7 +160,7 @@ TEAM_USERS = (
     {
         "email": "jyoti.mishra@timekidspreschools.com",
         "name": "Jyoti Mishra",
-        "password": "Jyoti@Crm26",
+        "password": "Jyoti@Crm79",
         "zone": "EAST",
         "states": "BR,CT,OR,JK",
         "cities": "",

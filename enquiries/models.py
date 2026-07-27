@@ -205,6 +205,8 @@ class CrmLead(models.Model):
     utm_source = models.CharField(max_length=150, blank=True, default="")
     utm_medium = models.CharField(max_length=150, blank=True, default="")
     utm_campaign = models.CharField(max_length=150, blank=True, default="")
+    utm_content = models.CharField(max_length=150, blank=True, default="")
+    utm_term = models.CharField(max_length=150, blank=True, default="")
     status = models.CharField(max_length=30, choices=CrmLeadStatus.choices, default=CrmLeadStatus.UNTOUCHED)
     meeting_date = models.DateTimeField(null=True, blank=True)
     next_follow_up_date = models.DateTimeField(null=True, blank=True)

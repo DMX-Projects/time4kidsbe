@@ -218,6 +218,8 @@ class CrmLeadSerializer(serializers.ModelSerializer):
     utmSource = serializers.CharField(source="utm_source", required=False, allow_blank=True, write_only=True)
     utmMedium = serializers.CharField(source="utm_medium", required=False, allow_blank=True, write_only=True)
     utmCampaign = serializers.CharField(source="utm_campaign", required=False, allow_blank=True, write_only=True)
+    utmContent = serializers.CharField(source="utm_content", required=False, allow_blank=True, write_only=True)
+    utmTerm = serializers.CharField(source="utm_term", required=False, allow_blank=True, write_only=True)
 
     class Meta:
         model = CrmLead
@@ -247,6 +249,10 @@ class CrmLeadSerializer(serializers.ModelSerializer):
             "utmMedium",
             "utm_campaign",
             "utmCampaign",
+            "utm_content",
+            "utmContent",
+            "utm_term",
+            "utmTerm",
             "status",
             "raw_payload",
             "created_at",
@@ -267,6 +273,8 @@ class CrmLeadSerializer(serializers.ModelSerializer):
             "utm_source": {"required": False, "allow_blank": True},
             "utm_medium": {"required": False, "allow_blank": True},
             "utm_campaign": {"required": False, "allow_blank": True},
+            "utm_content": {"required": False, "allow_blank": True},
+            "utm_term": {"required": False, "allow_blank": True},
         }
 
     def validate(self, attrs):
@@ -288,16 +296,23 @@ class CrmLeadSerializer(serializers.ModelSerializer):
             raw = dict(getattr(request, "data", {}) or {})
             validated_data["raw_payload"] = raw
 
-        # Persist page type + campaign from LP forms into dedicated columns.
-        page_type = str(raw.get("pageType") or raw.get("page_type") or "").strip()
-        campaign = str(raw.get("campaign") or raw.get("utmCampaign") or raw.get("utm_campaign") or "").strip()
-        if page_type and not (validated_data.get("utm_source") or "").strip():
-            validated_data["utm_source"] = page_type
-        if campaign and not (validated_data.get("utm_campaign") or "").strip():
-            validated_data["utm_campaign"] = campaign
-        # Only store medium when the form/URL actually sent one (do not invent landing_page).
-        medium = str(raw.get("utmMedium") or raw.get("utm_medium") or "").strip()
-        if medium and not (validated_data.get("utm_medium") or "").strip():
-            validated_data["utm_medium"] = medium
+        # Persist UTM params from the ad URL (Source / Medium / Campaign / Content / Term).
+        def _pick(*keys: str) -> str:
+            for key in keys:
+                value = str(raw.get(key) or "").strip()
+                if value:
+                    return value
+            return ""
+
+        if not (validated_data.get("utm_source") or "").strip():
+            validated_data["utm_source"] = _pick("utmSource", "utm_source")
+        if not (validated_data.get("utm_medium") or "").strip():
+            validated_data["utm_medium"] = _pick("utmMedium", "utm_medium")
+        if not (validated_data.get("utm_campaign") or "").strip():
+            validated_data["utm_campaign"] = _pick("utmCampaign", "utm_campaign", "campaign")
+        if not (validated_data.get("utm_content") or "").strip():
+            validated_data["utm_content"] = _pick("utmContent", "utm_content")
+        if not (validated_data.get("utm_term") or "").strip():
+            validated_data["utm_term"] = _pick("utmTerm", "utm_term")
 
         return super().create(validated_data)

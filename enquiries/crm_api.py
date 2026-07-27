@@ -46,10 +46,27 @@ FRANCHISE_CAMPAIGN_SOURCES = (
     CrmLeadSource.LP_WB,
 )
 
+# Dedicated CRM logins restricted to Paid Campaign (franchise campaign channels only).
+CAMPAIGN_ONLY_CRM_EMAILS = {
+    "sachin.dhakate@time4education.com",
+}
+
 GOOGLE_CAMPAIGN_SOURCES = (
     CrmLeadSource.JULY_LP,
     CrmLeadSource.LP_WB,
 )
+
+# Inline LP form page names (separate from dynamic UTM campaign).
+LP_FORM_NAME = {
+    CrmLeadSource.JULY_LP: "lp-tkktam",
+    CrmLeadSource.JULY_META: "meta-tkktam",
+    CrmLeadSource.LP_WB: "lp-wb",
+}
+
+
+def crm_lead_form_name(lead: CrmLead) -> str:
+    """Which LP form was used (lp-tkktam / meta-tkktam / lp-wb)."""
+    return LP_FORM_NAME.get(lead.source, "")
 
 
 def campaign_channel_api_key(source: str | None) -> str:
@@ -135,11 +152,15 @@ def lead_to_dict(lead: CrmLead, *, include_detail: bool = False) -> dict:
         "expectedStartDate": lead.expected_start_date or None,
         "source": source_to_api(lead.source),
         "landingPageUrl": lead.landing_page_url or "",
-        "pageType": (lead.utm_source or source_to_api(lead.source) or ""),
+        "formName": crm_lead_form_name(lead),
+        "pageType": crm_lead_form_name(lead) or (lead.utm_source or source_to_api(lead.source) or ""),
+        # Dynamic UTM params from the ad URL (Source / Medium / Campaign / Content / Term)
         "campaign": lead.utm_campaign or "",
         "utmSource": lead.utm_source or "",
         "utmMedium": lead.utm_medium or "",
         "utmCampaign": lead.utm_campaign or "",
+        "utmContent": getattr(lead, "utm_content", "") or "",
+        "utmTerm": getattr(lead, "utm_term", "") or "",
         "comments": lead.comments or "",
         "status": lead.status,
         "meetingDate": _dt(lead.meeting_date),
@@ -177,6 +198,10 @@ def _parse_request_dates(request):
 
 
 def _request_centre_ids(request) -> list[int]:
+    user = getattr(request, "user", None)
+    email = str(getattr(user, "email", "") or "").strip().lower()
+    if email in CAMPAIGN_ONLY_CRM_EMAILS:
+        return []
     raw = (_query_params(request).get("centreId") or _query_params(request).get("centre_id") or "").strip()
     if not raw:
         return []
@@ -446,11 +471,20 @@ def unified_crm_cities(state: str | None = None, request=None) -> list[str]:
 
 
 def _request_source_filter(request) -> str | None:
+    user = getattr(request, "user", None)
+    email = str(getattr(user, "email", "") or "").strip().lower()
+    if email in CAMPAIGN_ONLY_CRM_EMAILS:
+        # Hard-lock this account to Paid Campaign view.
+        return "campaign"
     return (_query_params(request).get("source") or "").strip().lower() or None
 
 
 def _request_user_filter(request) -> str | None:
     """``userId`` query: numeric id, ``unassigned``, or empty (all)."""
+    user = getattr(request, "user", None)
+    email = str(getattr(user, "email", "") or "").strip().lower()
+    if email in CAMPAIGN_ONLY_CRM_EMAILS:
+        return None
     return (_query_params(request).get("userId") or "").strip().lower() or None
 
 
@@ -1222,6 +1256,12 @@ def unified_reminders(request) -> dict:
 
 def unified_lead_detail(raw_id: str, *, include_detail: bool = False, request=None) -> dict | None:
     kind, pk = parse_lead_id(raw_id)
+    if request is not None:
+        user = getattr(request, "user", None)
+        email = str(getattr(user, "email", "") or "").strip().lower()
+        if email in CAMPAIGN_ONLY_CRM_EMAILS and kind != "crm":
+            # Campaign-only login cannot open Admission/Contact/Franchise/Landing detail pages.
+            return None
     if kind == "crm":
         qs = CrmLead.objects.filter(pk=pk).select_related("assigned_user").prefetch_related("notes")
         if request is not None:
