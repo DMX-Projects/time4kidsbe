@@ -643,24 +643,36 @@ def process_leadgen_event(
     return {"ok": True, "crm_lead_id": lead.pk, "leadgen_id": leadgen_id}
 
 
-def sync_page_leads(*, per_form_limit: int = 20, max_forms: int = 100) -> dict[str, Any]:
+def sync_page_leads(*, per_form_limit: int = 20, max_forms: int = 200) -> dict[str, Any]:
     """
     Poll Meta Instant Forms for new leads and import into CRM.
 
     Use as a reliable auto-sync backup while webhook delivery is Pending
     (common for unpublished / new apps). Dedupes via meta_leadgen_id.
 
-    Honours META_LEADS_SYNC_SINCE and META_LEADS_FORM_PREFIXES so only the
-    paid-campaign Instant Forms (BCWW TK …) are imported — not old city forms.
+    Honours META_LEADS_SYNC_SINCE and the BCWW TK form allowlist so only the
+    paid-campaign Instant Forms are imported — not old city forms.
     """
     page_id = meta_page_id()
     since = meta_leads_sync_since()
     prefixes = meta_leads_form_prefixes()
-    forms_payload = _graph_get(
-        f"{page_id}/leadgen_forms",
-        {"fields": "id,name", "limit": str(max(1, min(max_forms, 200)))},
-    )
-    forms = forms_payload.get("data") or []
+    forms: list[dict[str, Any]] = []
+    after: str | None = None
+    form_cap = max(1, min(max_forms, 500))
+    while len(forms) < form_cap:
+        params: dict[str, str] = {
+            "fields": "id,name",
+            "limit": str(min(100, form_cap - len(forms))),
+        }
+        if after:
+            params["after"] = after
+        forms_payload = _graph_get(f"{page_id}/leadgen_forms", params)
+        batch = forms_payload.get("data") or []
+        forms.extend(batch)
+        after = ((forms_payload.get("paging") or {}).get("cursors") or {}).get("after")
+        if not after or not batch:
+            break
+    forms = forms[:form_cap]
     summary = {
         "ok": True,
         "page_id": page_id,

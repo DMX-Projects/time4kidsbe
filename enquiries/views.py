@@ -1223,9 +1223,9 @@ class MetaLeadSyncView(APIView):
         except (TypeError, ValueError):
             per_form_limit = 20
         try:
-            max_forms = int(request.data.get("maxForms") or request.data.get("max_forms") or 100)
+            max_forms = int(request.data.get("maxForms") or request.data.get("max_forms") or 200)
         except (TypeError, ValueError):
-            max_forms = 100
+            max_forms = 200
 
         try:
             summary = sync_page_leads(per_form_limit=per_form_limit, max_forms=max_forms)
