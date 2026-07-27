@@ -16,8 +16,6 @@ from accounts.models import UserRole
 
 User = get_user_model()
 
-DEFAULT_PASSWORD = "TimeKids@Crm1"
-
 KERALA_ALL = (
     "Kasaragod,Kannur,Malappuram,Kozhikode,Wayanad,Thrissur,Palakkad,"
     "Ernakulam,Kottayam,Alappuzha,Kollam,Trivandrum,Pathanamthitta,Idukki"
@@ -27,10 +25,12 @@ KERALA_SOUTH = "Ernakulam,Kottayam,Alappuzha,Kollam,Trivandrum,Pathanamthitta,Id
 
 # One account per person (Option A) — union of franchise + admission sheets.
 # Pink rows on both sheets: Tejbal, Sujee, Gaurav, Jyoti.
+# Unique password per user; Super Admin (admin@timekids.com) is never touched here.
 TEAM_USERS = (
     {
         "email": "tejbal@timekidspreschools.com",
         "name": "Tejbal Singh",
+        "password": "Tejbal@Crm26",
         "zone": "SOUTH",
         "states": "AP,TG",
         "cities": "",
@@ -40,6 +40,7 @@ TEAM_USERS = (
     {
         "email": "saikishore@timekidspreschools.com",
         "name": "Sai Kishore",
+        "password": "SaiKish@Crm26",
         "zone": "SOUTH",
         "states": "AP,TG",
         "cities": "",
@@ -49,6 +50,7 @@ TEAM_USERS = (
     {
         "email": "harshit@timekidspreschools.com",
         "name": "Harshit Katare",
+        "password": "Harshit@Crm26",
         "zone": "SOUTH",
         "states": "AP,TG",
         "cities": "",
@@ -58,6 +60,7 @@ TEAM_USERS = (
     {
         "email": "sujee@timekidspreschools.com",
         "name": "Sujee",
+        "password": "Sujee@Crm26",
         "zone": "SOUTH",
         "states": "KA",
         "cities": "",
@@ -67,6 +70,7 @@ TEAM_USERS = (
     {
         "email": "thimmesh.k@timekidspreschools.com",
         "name": "Thimmesh",
+        "password": "Thimmesh@Crm26",
         "zone": "SOUTH",
         "states": "KA",
         "cities": "",
@@ -76,6 +80,7 @@ TEAM_USERS = (
     {
         "email": "gaurav@timekidspreschools.com",
         "name": "Gaurav Grover",
+        "password": "Gaurav@Crm26",
         "zone": "SOUTH",
         "states": "TN,KL,MH",
         "cities": "",
@@ -85,6 +90,7 @@ TEAM_USERS = (
     {
         "email": "jayaraj@timekidspreschools.com",
         "name": "M. Jayaraj",
+        "password": "Jayaraj@Crm26",
         "zone": "SOUTH",
         "states": "TN",
         "cities": "",
@@ -94,6 +100,7 @@ TEAM_USERS = (
     {
         "email": "sivaraman@timekidspreschools.com",
         "name": "Sivaraman",
+        "password": "Sivaraman@Crm26",
         "zone": "SOUTH",
         "states": "TN",
         "cities": "",
@@ -103,6 +110,7 @@ TEAM_USERS = (
     {
         "email": "joejoseph@timekidspreschools.com",
         "name": "Joe",
+        "password": "JoeJoseph@Crm26",
         "zone": "SOUTH",
         "states": "KL",
         "cities": KERALA_ALL,
@@ -112,6 +120,7 @@ TEAM_USERS = (
     {
         "email": "satishmenon@timekidspreschools.com",
         "name": "Satish Menon",
+        "password": "Satish@Crm26",
         "zone": "SOUTH",
         "states": "KL",
         "cities": KERALA_SOUTH,
@@ -121,6 +130,7 @@ TEAM_USERS = (
     {
         "email": "anoopkunjan@timekidspreschools.com",
         "name": "Anoop Kunjan",
+        "password": "Anoop@Crm26",
         "zone": "SOUTH",
         "states": "KL",
         "cities": "",
@@ -130,6 +140,7 @@ TEAM_USERS = (
     {
         "email": "vivek@timekidspreschools.com",
         "name": "Vivek RT",
+        "password": "Vivek@Crm26",
         "zone": "SOUTH",
         "states": "KL",
         "cities": KERALA_NORTH,
@@ -139,6 +150,7 @@ TEAM_USERS = (
     {
         "email": "deepaknikam@timekidspreschools.com",
         "name": "Deepak Nikam",
+        "password": "Deepak@Crm26",
         "zone": "WEST",
         "states": "MH",
         "cities": "",
@@ -148,6 +160,7 @@ TEAM_USERS = (
     {
         "email": "jyoti.mishra@timekidspreschools.com",
         "name": "Jyoti Mishra",
+        "password": "Jyoti@Crm26",
         "zone": "EAST",
         "states": "BR,CT,OR,JK",
         "cities": "",
@@ -193,6 +206,7 @@ class Command(BaseCommand):
 
         for item in TEAM_USERS:
             email = item["email"].strip().lower()
+            password = item["password"]
             user = User.objects.filter(email__iexact=email).first()
             notify_f = bool(item.get("notify_franchise"))
             notify_a = bool(item.get("notify_admission"))
@@ -213,14 +227,14 @@ class Command(BaseCommand):
                 for key, value in fields.items():
                     setattr(user, key, value)
                 if force_password:
-                    user.set_password(DEFAULT_PASSWORD)
+                    user.set_password(password)
                 user.save()
                 action = "Updated"
             else:
                 User.objects.create_user(
                     email=email,
                     username=email,
-                    password=DEFAULT_PASSWORD,
+                    password=password,
                     **fields,
                 )
                 action = "Created"
@@ -232,8 +246,8 @@ class Command(BaseCommand):
             flag_txt = "+".join(flags) if flags else "none"
             self.stdout.write(
                 self.style.SUCCESS(
-                    f"{action}: {item['name']} <{email}> states={item['states']} "
-                    f"(notify={flag_txt})"
+                    f"{action}: {item['name']} <{email}> / {password} "
+                    f"states={item['states']} (notify={flag_txt})"
                 )
             )
 
@@ -246,8 +260,10 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING(f"Deactivated placeholder CRM users: {deactivated}"))
 
         self.stdout.write("")
-        self.stdout.write(self.style.NOTICE(f"Default password: {DEFAULT_PASSWORD}"))
-        self.stdout.write(self.style.NOTICE("Super Admin unchanged: admin@timekids.com"))
+        self.stdout.write(self.style.NOTICE("Unique passwords per user (Super Admin unchanged):"))
+        self.stdout.write(self.style.NOTICE("  admin@timekids.com / Admin@123"))
+        for item in TEAM_USERS:
+            self.stdout.write(f"  {item['email']:<40} / {item['password']}")
         self.stdout.write(
             self.style.NOTICE(
                 "Emails: Franchise + Admission pink heads "
