@@ -235,6 +235,29 @@ class CrmLead(models.Model):
         return f"Campaign lead from {self.full_name} ({self.source})"
 
 
+class MetaLeadSuppress(models.Model):
+    """
+    Meta Instant Form leadgen IDs that must never be imported again.
+
+    Written when a Meta lead is first imported into CRM, and again on CRM delete.
+    So if the campaign_leads row is removed (CRM UI or raw SQL), auto-sync /
+    webhook will still skip that same Meta lead. Only brand-new leadgen IDs sync.
+    """
+
+    leadgen_id = models.CharField(max_length=64, unique=True, db_index=True)
+    form_id = models.CharField(max_length=64, blank=True, default="")
+    form_name = models.CharField(max_length=255, blank=True, default="")
+    crm_lead_id = models.IntegerField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "meta_lead_suppress"
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return f"Suppressed Meta leadgen {self.leadgen_id}"
+
+
 class CrmLeadNote(models.Model):
     lead = models.ForeignKey(CrmLead, on_delete=models.CASCADE, related_name="notes")
     content = models.TextField()

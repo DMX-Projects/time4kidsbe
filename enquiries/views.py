@@ -670,6 +670,38 @@ class AdminCrmLeadDetailView(APIView):
             return Response({"message": "Lead not found"}, status=status.HTTP_404_NOT_FOUND)
         return Response(data)
 
+    def delete(self, request, pk):
+        if not can_view_crm_leads(request):
+            return Response({"detail": "CRM login required."}, status=status.HTTP_403_FORBIDDEN)
+        if _is_campaign_readonly_user(request):
+            return Response({"detail": "View-only account."}, status=status.HTTP_403_FORBIDDEN)
+
+        from .crm_api import parse_lead_id
+        from .models import CrmLead, Enquiry, FranchiseEnquiry, KidsEnquiry
+
+        try:
+            kind, numeric_id = parse_lead_id(pk)
+        except (TypeError, ValueError):
+            return Response({"message": "Lead not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        deleted = False
+        if kind == "crm":
+            lead = CrmLead.objects.filter(pk=numeric_id).first()
+            if lead:
+                # pre_delete signal suppresses Meta leadgen_id so sync won't restore it.
+                lead.delete()
+                deleted = True
+        elif kind == "enquiry":
+            deleted = bool(Enquiry.objects.filter(pk=numeric_id).delete()[0])
+        elif kind == "franchiseenquiry":
+            deleted = bool(FranchiseEnquiry.objects.filter(pk=numeric_id).delete()[0])
+        elif kind == "landing":
+            deleted = bool(KidsEnquiry.objects.filter(pk=numeric_id).delete()[0])
+
+        if not deleted:
+            return Response({"message": "Lead not found"}, status=status.HTTP_404_NOT_FOUND)
+        return Response({"ok": True, "deleted": True})
+
 
 class AdminCrmLeadStatsView(APIView):
     """CRM dashboard stats — clone-compatible response."""
