@@ -32,7 +32,7 @@ TEAM_USERS = (
         "name": "Tejbal Singh",
         "password": "Tejbal@Crm74",
         "zone": "SOUTH",
-        "states": "AP,TG",
+        "states": "AP,TG,KA",
         "cities": "",
         "notify_franchise": True,
         "notify_admission": True,

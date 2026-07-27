@@ -30,7 +30,7 @@ REGION_STATE_CODES: dict[str, tuple[str, ...]] = {
     "NORTH_R1": ("DL", "HR"),
     "NORTH_R2": ("UP", "PB"),
     # South
-    "SOUTH_R1": ("AP", "TG"),
+    "SOUTH_R1": ("AP", "TG", "KA"),
     "SOUTH_R2": ("TN", "KL"),
     # East
     "EAST_R1": ("WB", "OR"),
@@ -60,6 +60,13 @@ REGION_LABELS: dict[str, str] = {
     "EAST_R2": "East Region 2",
     "WEST_R1": "West Region 1",
     "WEST_R2": "West Region 2",
+}
+
+# Zonal Manager territories (TKPL) — merged with User.crm_states when set.
+ZONAL_MANAGER_SCOPE_CODES: dict[str, tuple[str, ...]] = {
+    "tejbal@timekidspreschools.com": ("AP", "TG", "KA"),
+    "gaurav@timekidspreschools.com": ("TN", "KL", "MH"),
+    "jyoti.mishra@timekidspreschools.com": ("BR", "CT", "OR", "JK"),
 }
 
 
@@ -138,6 +145,11 @@ def resolve_scope_cities(request, scope_user_id: str | None = None) -> list[str]
     Intersects viewer cities with filter-user cities when both are set.
     None = not city-restricted.
     """
+    if scope_user_id:
+        from enquiries.crm_users import sanitize_crm_scope_user_id
+
+        scope_user_id = sanitize_crm_scope_user_id(scope_user_id)
+
     viewer_cities = request_scope_cities(request)
 
     target_cities = None
@@ -218,9 +230,18 @@ def scope_state_codes_for_user(user) -> list[str] | None:
     """
     if not user:
         return None
+    email = (getattr(user, "email", "") or "").strip().lower()
+    zonal_codes = list(ZONAL_MANAGER_SCOPE_CODES.get(email, ()))
     explicit = parse_crm_states(getattr(user, "crm_states", None))
-    if explicit:
-        return explicit
+    if zonal_codes or explicit:
+        merged: list[str] = []
+        seen: set[str] = set()
+        for code in zonal_codes + (explicit or []):
+            if code not in seen:
+                seen.add(code)
+                merged.append(code)
+        if merged:
+            return merged
     region = normalize_region(getattr(user, "crm_region", None))
     if region:
         return region_state_codes(region)
@@ -237,6 +258,11 @@ def resolve_scope_state_codes(request, scope_user_id: str | None = None) -> list
     to a selected filter user's zone/region (``userId`` on the request).
     None = unrestricted.
     """
+    if scope_user_id:
+        from enquiries.crm_users import sanitize_crm_scope_user_id
+
+        scope_user_id = sanitize_crm_scope_user_id(scope_user_id)
+
     viewer_codes = request_scope_state_codes(request)
 
     target_codes = None
@@ -262,12 +288,16 @@ def resolve_scope_state_codes(request, scope_user_id: str | None = None) -> list
 
 
 def _request_filter_user_id(request) -> str | None:
-    """``userId`` query param from dashboard filters (numeric id, ``unassigned``, or empty)."""
+    """``userId`` query param from dashboard filters (assignable handler id or unassigned)."""
     if request is None:
         return None
     params = getattr(request, "query_params", None) or getattr(request, "GET", {})
-    raw = (params.get("userId") or "").strip().lower()
-    return raw or None
+    raw = (params.get("userId") or "").strip()
+    if not raw:
+        return None
+    from enquiries.crm_users import sanitize_crm_filter_user_id
+
+    return sanitize_crm_filter_user_id(raw)
 
 
 def request_effective_scope_codes(request) -> list[str] | None:
