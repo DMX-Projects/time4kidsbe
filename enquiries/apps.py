@@ -6,6 +6,9 @@ class EnquiriesConfig(AppConfig):
     name = "enquiries"
 
     def ready(self):
+        # Suppress deleted Meta Instant Form leadgen IDs so sync does not restore them.
+        from . import signals  # noqa: F401
+
         # Hands-off Meta Lead Ads → CRM polling while webhooks are Pending.
         try:
             from .meta_leads_autosync import start_meta_leads_autosync

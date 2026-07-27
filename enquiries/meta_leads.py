@@ -15,7 +15,7 @@ from urllib.request import Request, urlopen
 
 from django.conf import settings
 
-from .models import CrmLead, CrmLeadSource
+from .models import CrmLead, CrmLeadSource, MetaLeadSuppress
 
 logger = logging.getLogger(__name__)
 
@@ -428,7 +428,65 @@ def _infer_state_from_form_name(form_name: str) -> str:
 def already_imported(leadgen_id: str) -> bool:
     if not leadgen_id:
         return False
+    if MetaLeadSuppress.objects.filter(leadgen_id=leadgen_id).exists():
+        return True
     return CrmLead.objects.filter(raw_payload__meta_leadgen_id=leadgen_id).exists()
+
+
+def suppress_meta_leadgen(
+    leadgen_id: str,
+    *,
+    form_id: str = "",
+    form_name: str = "",
+    crm_lead_id: int | None = None,
+) -> None:
+    """
+    Remember a Meta leadgen permanently.
+
+    Used both when a lead is first imported and when a CRM row is deleted,
+    so even a raw database DELETE cannot cause auto-sync to restore it.
+    """
+    leadgen_id = str(leadgen_id or "").strip()
+    if not leadgen_id:
+        return
+    MetaLeadSuppress.objects.update_or_create(
+        leadgen_id=leadgen_id,
+        defaults={
+            "form_id": str(form_id or "").strip()[:64],
+            "form_name": str(form_name or "").strip()[:255],
+            "crm_lead_id": crm_lead_id,
+        },
+    )
+
+
+def suppress_meta_lead_from_crm_lead(lead: CrmLead) -> None:
+    """If this CRM row came from Meta Instant Form, suppress its leadgen_id."""
+    payload = lead.raw_payload if isinstance(lead.raw_payload, dict) else {}
+    leadgen_id = str(payload.get("meta_leadgen_id") or "").strip()
+    if not leadgen_id:
+        return
+    suppress_meta_leadgen(
+        leadgen_id,
+        form_id=str(payload.get("meta_form_id") or ""),
+        form_name=str(payload.get("meta_form_name") or ""),
+        crm_lead_id=getattr(lead, "pk", None),
+    )
+
+
+def mark_meta_leadgen_imported(
+    *,
+    leadgen_id: str,
+    form_id: str = "",
+    form_name: str = "",
+    crm_lead_id: int | None = None,
+) -> None:
+    """Record Instant Form leadgen on first import so DB deletes won't re-sync it."""
+    suppress_meta_leadgen(
+        leadgen_id,
+        form_id=form_id,
+        form_name=form_name,
+        crm_lead_id=crm_lead_id,
+    )
 
 
 def _claim_leadgen_import(leadgen_id: str) -> bool:
@@ -550,6 +608,14 @@ def create_crm_lead_from_meta(
         utm_campaign=form_name or form_id or ad_id,
         raw_payload=raw_payload,
     )
+    # Permanent ledger: deleting this CRM row (even via SQL) must not re-import.
+    if leadgen_id:
+        mark_meta_leadgen_imported(
+            leadgen_id=leadgen_id,
+            form_id=form_id,
+            form_name=form_name,
+            crm_lead_id=lead.pk,
+        )
     return lead
 
 
@@ -643,24 +709,36 @@ def process_leadgen_event(
     return {"ok": True, "crm_lead_id": lead.pk, "leadgen_id": leadgen_id}
 
 
-def sync_page_leads(*, per_form_limit: int = 20, max_forms: int = 100) -> dict[str, Any]:
+def sync_page_leads(*, per_form_limit: int = 20, max_forms: int = 200) -> dict[str, Any]:
     """
     Poll Meta Instant Forms for new leads and import into CRM.
 
     Use as a reliable auto-sync backup while webhook delivery is Pending
     (common for unpublished / new apps). Dedupes via meta_leadgen_id.
 
-    Honours META_LEADS_SYNC_SINCE and META_LEADS_FORM_PREFIXES so only the
-    paid-campaign Instant Forms (BCWW TK …) are imported — not old city forms.
+    Honours META_LEADS_SYNC_SINCE and the BCWW TK form allowlist so only the
+    paid-campaign Instant Forms are imported — not old city forms.
     """
     page_id = meta_page_id()
     since = meta_leads_sync_since()
     prefixes = meta_leads_form_prefixes()
-    forms_payload = _graph_get(
-        f"{page_id}/leadgen_forms",
-        {"fields": "id,name", "limit": str(max(1, min(max_forms, 200)))},
-    )
-    forms = forms_payload.get("data") or []
+    forms: list[dict[str, Any]] = []
+    after: str | None = None
+    form_cap = max(1, min(max_forms, 500))
+    while len(forms) < form_cap:
+        params: dict[str, str] = {
+            "fields": "id,name",
+            "limit": str(min(100, form_cap - len(forms))),
+        }
+        if after:
+            params["after"] = after
+        forms_payload = _graph_get(f"{page_id}/leadgen_forms", params)
+        batch = forms_payload.get("data") or []
+        forms.extend(batch)
+        after = ((forms_payload.get("paging") or {}).get("cursors") or {}).get("after")
+        if not after or not batch:
+            break
+    forms = forms[:form_cap]
     summary = {
         "ok": True,
         "page_id": page_id,

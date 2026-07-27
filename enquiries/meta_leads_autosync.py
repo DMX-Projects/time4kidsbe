@@ -65,7 +65,7 @@ def _run_once() -> None:
     try:
         from .meta_leads import sync_page_leads
 
-        summary = sync_page_leads(per_form_limit=20, max_forms=100)
+        summary = sync_page_leads(per_form_limit=20, max_forms=200)
         logger.info(
             "Meta leads auto-sync: forms=%s/%s imported=%s skipped=%s skipped_old=%s skipped_form=%s failed=%s since=%s prefixes=%s",
             summary.get("forms"),
