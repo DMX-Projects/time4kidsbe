@@ -63,14 +63,58 @@ LP_FORM_NAME = {
     CrmLeadSource.LP_WB: "lp-wb",
 }
 
+_GOOGLE_ADS_URL_MARKERS = (
+    "gclid=",
+    "gad_source=",
+    "gad_campaignid=",
+    "gbraid=",
+    "wbraid=",
+)
+
+
+def is_google_ads_landing_url(url: str | None) -> bool:
+    """True when the stored landing URL carries Google Ads auto-tagging params."""
+    text = (url or "").lower()
+    return any(marker in text for marker in _GOOGLE_ADS_URL_MARKERS)
+
+
+def effective_crm_source(lead: CrmLead) -> str:
+    """
+    Channel source for CRM.
+    Google Ads traffic on any LP (including Meta-named LP) counts as Google.
+    """
+    if is_google_ads_landing_url(getattr(lead, "landing_page_url", None)):
+        return CrmLeadSource.JULY_LP
+    return lead.source or ""
+
 
 def crm_lead_form_name(lead: CrmLead) -> str:
-    """Which LP form was used (lp-tkktam / meta-tkktam / lp-wb)."""
+    """Which LP form was used (lp-tkktam / meta-tkktam / lp-wb). Blank for Instant Forms."""
+    utm_source = (getattr(lead, "utm_source", None) or "").strip().lower()
+    if utm_source == "facebook_lead_ads":
+        return ""
+
+    raw = getattr(lead, "raw_payload", None) or {}
+    if isinstance(raw, dict):
+        page = str(raw.get("pageType") or raw.get("page_type") or "").strip().lower()
+        if page in ("meta-tkktam", "lp-tkktam", "lp-wb"):
+            return page
+
+    url = (getattr(lead, "landing_page_url", None) or "").lower()
+    if "timekids-meta-tkktam" in url:
+        return "meta-tkktam"
+    if "timekids-lp-wb" in url:
+        return "lp-wb"
+    if "timekids-lp-tkktam" in url:
+        return "lp-tkktam"
+
     return LP_FORM_NAME.get(lead.source, "")
 
 
-def campaign_channel_api_key(source: str | None) -> str:
-    """Map stored form source to CRM channel key (Google merges LP + WB)."""
+def campaign_channel_api_key(source: str | None, landing_page_url: str | None = None) -> str:
+    """Map stored form source to CRM channel key (Google merges LP + WB + Google Ads on Meta LP)."""
+    if is_google_ads_landing_url(landing_page_url):
+        return "google"
     api = source_to_api(source) if source else ""
     if api in ("july_lp", "lp_wb"):
         return "google"
@@ -150,10 +194,10 @@ def lead_to_dict(lead: CrmLead, *, include_detail: bool = False) -> dict:
         "franchiseType": lead.franchise_type or None,
         "investmentRange": lead.investment_range or None,
         "expectedStartDate": lead.expected_start_date or None,
-        "source": source_to_api(lead.source),
+        "source": source_to_api(effective_crm_source(lead)),
         "landingPageUrl": lead.landing_page_url or "",
         "formName": crm_lead_form_name(lead),
-        "pageType": crm_lead_form_name(lead) or (lead.utm_source or source_to_api(lead.source) or ""),
+        "pageType": crm_lead_form_name(lead) or (lead.utm_source or source_to_api(effective_crm_source(lead)) or ""),
         # Dynamic UTM params from the ad URL (Source / Medium / Campaign / Content / Term)
         "campaign": lead.utm_campaign or "",
         "utmSource": lead.utm_source or "",
@@ -823,12 +867,23 @@ def _filter_crm_qs(
     source_filter = _request_source_filter(request)
     if source_filter and _include_crm(source_filter):
         if source_filter not in ("campaign", "franchise_all"):
+            google_ads_landing_q = (
+                Q(landing_page_url__icontains="gclid=")
+                | Q(landing_page_url__icontains="gad_source=")
+                | Q(landing_page_url__icontains="gad_campaignid=")
+                | Q(landing_page_url__icontains="gbraid=")
+                | Q(landing_page_url__icontains="wbraid=")
+            )
             if source_filter == "google":
-                qs = qs.filter(source__in=GOOGLE_CAMPAIGN_SOURCES)
+                # Google LP/WB sources + any Meta LP submit that arrived via Google Ads.
+                qs = qs.filter(Q(source__in=GOOGLE_CAMPAIGN_SOURCES) | google_ads_landing_q)
             else:
                 mapped = normalize_source_from_api(source_filter)
                 if mapped in FRANCHISE_CAMPAIGN_SOURCES:
                     qs = qs.filter(source=mapped)
+                    # Meta Instant Form / Meta LP organic only — not Google Ads clicks on Meta LP.
+                    if mapped == CrmLeadSource.JULY_META:
+                        qs = qs.exclude(google_ads_landing_q)
     elif source_filter and not _include_crm(source_filter):
         return CrmLead.objects.none()
 
@@ -1147,8 +1202,11 @@ def unified_dashboard_stats(request) -> dict:
         crm_qs = _filter_crm_qs(request)
         # Always break out campaign channels (website / fb / insta / LP / META)
         # so reports & charts can show each source separately.
-        for row in crm_qs.values("source").annotate(count=Count("id")):
-            api_source = campaign_channel_api_key(row["source"]) or source_to_api(row["source"])
+        for row in crm_qs.values("source", "landing_page_url").annotate(count=Count("id")):
+            api_source = (
+                campaign_channel_api_key(row["source"], row.get("landing_page_url"))
+                or source_to_api(row["source"])
+            )
             source_counts[api_source] = source_counts.get(api_source, 0) + row["count"]
         for row in crm_qs.values("status").annotate(count=Count("id")):
             status_counts[row["status"]] = status_counts.get(row["status"], 0) + row["count"]
@@ -1697,8 +1755,12 @@ def unified_reports_data(request) -> dict:
     # 3. Campaign (CrmLead / campaign_leads)
     if not source_filter or _include_crm(source_filter):
         crm_qs = _filter_crm_qs(request).order_by()
-        for row in crm_qs.values("city", "status", "source").annotate(count=Count("id")):
-            api_src = campaign_channel_api_key(row["source"]) or source_to_api(row["source"]) or "google"
+        for row in crm_qs.values("city", "status", "source", "landing_page_url").annotate(count=Count("id")):
+            api_src = (
+                campaign_channel_api_key(row["source"], row.get("landing_page_url"))
+                or source_to_api(row["source"])
+                or "google"
+            )
             if not source_filter:
                 _add_count(row["city"], "campaign", row["status"], row["count"])
             elif source_filter in ("campaign", "franchise_all"):

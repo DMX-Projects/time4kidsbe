@@ -559,6 +559,10 @@ def lead_source_label_for_enquiry(enquiry) -> str:
 
 
 def lead_source_label_for_crm_lead(lead) -> str:
+    from .crm_api import is_google_ads_landing_url
+
+    if is_google_ads_landing_url(getattr(lead, "landing_page_url", None)):
+        return "Google"
     raw = (getattr(lead, "source", None) or "").strip().lower()
     mapping = {
         "web": "Website (CRM)",

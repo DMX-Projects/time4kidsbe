@@ -315,4 +315,35 @@ class CrmLeadSerializer(serializers.ModelSerializer):
         if not (validated_data.get("utm_term") or "").strip():
             validated_data["utm_term"] = _pick("utmTerm", "utm_term")
 
+        # Google Ads click on any LP (including Meta-named) → store as Google channel.
+        from .crm_api import is_google_ads_landing_url
+        from .models import CrmLeadSource
+
+        landing_url = (
+            validated_data.get("landing_page_url")
+            or _pick("landingPageUrl", "landing_page_url")
+            or ""
+        )
+        if landing_url and not (validated_data.get("landing_page_url") or "").strip():
+            validated_data["landing_page_url"] = landing_url
+
+        if is_google_ads_landing_url(landing_url):
+            src = (validated_data.get("source") or "").strip().lower()
+            if src in ("", "july_meta", "july-meta", "meta"):
+                validated_data["source"] = CrmLeadSource.JULY_LP
+            if not (validated_data.get("utm_source") or "").strip():
+                validated_data["utm_source"] = "google"
+            if not (validated_data.get("utm_medium") or "").strip():
+                validated_data["utm_medium"] = "cpc"
+            if not (validated_data.get("utm_campaign") or "").strip():
+                try:
+                    from urllib.parse import urlparse, parse_qs
+
+                    qs = parse_qs(urlparse(landing_url).query)
+                    gad = (qs.get("gad_campaignid") or qs.get("campaignid") or [""])[0]
+                    if gad:
+                        validated_data["utm_campaign"] = str(gad)
+                except Exception:
+                    pass
+
         return super().create(validated_data)
