@@ -71,7 +71,7 @@ ZONAL_MANAGER_FRANCHISE_TEAM_EMAILS: dict[str, frozenset[str]] = {
             "deepaknikam@timekidspreschools.com",  # Manager — Maharashtra
         }
     ),
-    # Bihar / Chhattisgarh / Orissa / JK — no franchise handlers on sheet; full handler list.
+    # Bihar / Chhattisgarh / Orissa / West Bengal — no franchise handlers on sheet; full handler list.
     "jyoti.mishra@timekidspreschools.com": frozenset(),
 }
 
@@ -96,7 +96,7 @@ ZONAL_MANAGER_ADMISSION_TEAM_EMAILS: dict[str, frozenset[str]] = {
             "deepaknikam@timekidspreschools.com",  # Manager — Maharashtra
         }
     ),
-    # Bihar / Chhattisgarh / Orissa / JK — no admission handlers on sheet; full handler list.
+    # Bihar / Chhattisgarh / Orissa / West Bengal — no admission handlers on sheet; full handler list.
     "jyoti.mishra@timekidspreschools.com": frozenset(),
 }
 

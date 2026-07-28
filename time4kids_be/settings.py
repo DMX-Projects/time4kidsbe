@@ -233,6 +233,16 @@ CRM_DIRECT_FROM_EMAIL = (
 # One zonal head (all 4 zones) + one regional head (all 8 regions) — new-lead reminders
 CRM_ZONAL_HEAD_EMAIL = (os.getenv("CRM_ZONAL_HEAD_EMAIL", "") or "").strip()
 CRM_REGIONAL_HEAD_EMAIL = (os.getenv("CRM_REGIONAL_HEAD_EMAIL", "") or "").strip()
+# Comma-separated extra recipients that should always get CRM lead reminders.
+CRM_LEAD_ALWAYS_NOTIFY_EMAILS = [
+    addr.strip()
+    for addr in (os.getenv("CRM_LEAD_ALWAYS_NOTIFY_EMAILS", "") or "").split(",")
+    if addr.strip()
+]
+# CRM lead reminder master switch:
+# - True: send reminders (includes all CRM handlers).
+# - False: send no CRM lead reminder emails.
+CRM_NOTIFY_ALL_HANDLERS = (os.getenv("CRM_NOTIFY_ALL_HANDLERS", "True") or "True").strip().lower() == "true"
 
 # Email delivery safety:
 # - Local/dev (DEBUG=True): do NOT send real emails by default.

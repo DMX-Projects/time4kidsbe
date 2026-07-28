@@ -162,8 +162,11 @@ TEAM_USERS = (
         "name": "Jyoti Mishra",
         "password": "Jyoti@Crm79",
         "zone": "EAST",
-        "states": "BR,CT,OR,JK",
-        "cities": "",
+        "states": "BR,CT,OR,WB",
+        "cities": (
+            "Patna,Bhadrak,Bhubaneswar,Cuttack,Khurda,"
+            "Asansol,Barasat,Durgapur,Hooghly,Howrah,Kolkata,Siliguri"
+        ),
         "notify_franchise": True,
         "notify_admission": True,
     },

@@ -66,7 +66,7 @@ REGION_LABELS: dict[str, str] = {
 ZONAL_MANAGER_SCOPE_CODES: dict[str, tuple[str, ...]] = {
     "tejbal@timekidspreschools.com": ("AP", "TG", "KA"),
     "gaurav@timekidspreschools.com": ("TN", "KL", "MH"),
-    "jyoti.mishra@timekidspreschools.com": ("BR", "CT", "OR", "JK"),
+    "jyoti.mishra@timekidspreschools.com": ("BR", "CT", "OR", "WB"),
 }
 
 
@@ -444,6 +444,26 @@ def city_match_variants(city: str) -> list[str]:
         "kozhikode": ("Kozhikode", "Calicut"),
         "cannanore": ("Kannur", "Cannanore"),
         "kannur": ("Kannur", "Cannanore"),
+        "kolkata": ("Kolkata", "Calcutta"),
+        "calcutta": ("Kolkata", "Calcutta"),
+        "howrah": ("Howrah", "Haora"),
+        "haora": ("Howrah", "Haora"),
+        "hooghly": ("Hooghly", "HugliChunchura", "Hugli-Chinsurah"),
+        "siliguri": ("Siliguri", "Shiliguri"),
+        "shiliguri": ("Siliguri", "Shiliguri"),
+        "darjeeling": ("Darjeeling", "Darjiling"),
+        "khurda": ("Khurda", "Khordha"),
+        "khordha": ("Khurda", "Khordha"),
+        "berhampur": ("Berhampur", "Bhermpur", "Brahmapur", "Berhampore"),
+        "bhermpur": ("Berhampur", "Bhermpur", "Brahmapur", "Berhampore"),
+        "brahmapur": ("Berhampur", "Bhermpur", "Brahmapur", "Berhampore"),
+        "bhubaneswar": ("Bhubaneswar", "Bhuneswar"),
+        "bhuneswar": ("Bhubaneswar", "Bhuneswar"),
+        "cuttack": ("Cuttack", "Cuttak", "Kataka"),
+        "cuttak": ("Cuttack", "Cuttak", "Kataka"),
+        "rourkela": ("Rourkela", "Raurkela", "Rorkela"),
+        "raurkela": ("Rourkela", "Raurkela", "Rorkela"),
+        "rorkela": ("Rourkela", "Raurkela", "Rorkela"),
     }
     variants = aliases.get(name.casefold())
     if variants:

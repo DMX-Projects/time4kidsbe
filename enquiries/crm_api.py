@@ -229,6 +229,9 @@ def lead_to_dict(lead: CrmLead, *, include_detail: bool = False) -> dict:
 
 
 def _query_params(request):
+    reminder_params = getattr(request, "_reminders_query_params", None)
+    if reminder_params is not None:
+        return reminder_params
     return getattr(request, "query_params", None) or request.GET
 
 
@@ -1320,9 +1323,25 @@ def _get_reminders(qs, to_dict_func, updated_field="updated_at", status_field="s
     }
 
 
+def _request_for_reminders(request):
+    """
+    Reminders should use the same territory/source/city/user filters as the
+    dashboard, but ignore created-at date range (upcoming follow-ups are
+    independent of when the lead was created).
+    """
+    base = getattr(request, "query_params", None) or request.GET
+    params = base.copy()
+    params.pop("startDate", None)
+    params.pop("endDate", None)
+    request._reminders_query_params = params
+    return request
+
+
 def unified_reminders(request) -> dict:
+    # Reuse the same scoped querysets as dashboard stats (zone/city/user/source).
+    request = _request_for_reminders(request)
     source_filter = _request_source_filter(request)
-    
+
     meetings = []
     follow_ups = []
 
@@ -1332,15 +1351,14 @@ def unified_reminders(request) -> dict:
         meetings.extend(res["meetings"])
         follow_ups.extend(res["followUps"])
 
-    if not source_filter or _include_admission(source_filter) or _include_contact(source_filter):
-        enq_qs = Enquiry.objects.filter(enquiry_type__in=[EnquiryType.ADMISSION, EnquiryType.CONTACT])
-        enq_qs = _filter_qs_by_city(enq_qs, request, field_name="city", franchise_city_fields=("franchise__city", "franchise__cityname"))
-        enq_qs = _filter_enquiry_qs_by_centre(enq_qs, request)
-        if source_filter:
-            if _include_admission(source_filter) and not _include_contact(source_filter):
-                enq_qs = enq_qs.filter(enquiry_type=EnquiryType.ADMISSION)
-            elif _include_contact(source_filter) and not _include_admission(source_filter):
-                enq_qs = enq_qs.filter(enquiry_type=EnquiryType.CONTACT)
+    if not source_filter or _include_admission(source_filter):
+        enq_qs = _filter_enquiry_qs(request, EnquiryType.ADMISSION)
+        res = _get_reminders(enq_qs, enquiry_to_dict, "created_at")
+        meetings.extend(res["meetings"])
+        follow_ups.extend(res["followUps"])
+
+    if not source_filter or _include_contact(source_filter):
+        enq_qs = _filter_enquiry_qs(request, EnquiryType.CONTACT)
         res = _get_reminders(enq_qs, enquiry_to_dict, "created_at")
         meetings.extend(res["meetings"])
         follow_ups.extend(res["followUps"])
@@ -1368,9 +1386,7 @@ def unified_reminders(request) -> dict:
         )
 
     if not source_filter or _include_franchise_enquiry(source_filter):
-        fe_qs = FranchiseEnquiry.objects.all()
-        fe_qs = _filter_qs_by_city(fe_qs, request, field_name="city", franchise_city_fields=("franchise__city", "franchise__cityname"))
-        fe_qs = _filter_enquiry_qs_by_centre(fe_qs, request)
+        fe_qs = _filter_franchise_enquiry_qs(request)
         res = _get_reminders(fe_qs, franchise_enquiry_to_dict, "created_at")
         meetings.extend(res["meetings"])
         follow_ups.extend(res["followUps"])
