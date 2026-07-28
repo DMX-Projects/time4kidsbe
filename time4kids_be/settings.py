@@ -234,6 +234,15 @@ CRM_DIRECT_FROM_EMAIL = (
 CRM_ZONAL_HEAD_EMAIL = (os.getenv("CRM_ZONAL_HEAD_EMAIL", "") or "").strip()
 CRM_REGIONAL_HEAD_EMAIL = (os.getenv("CRM_REGIONAL_HEAD_EMAIL", "") or "").strip()
 
+# Email delivery safety:
+# - Local/dev (DEBUG=True): do NOT send real emails by default.
+# - Live/prod (DEBUG=False): send emails by default.
+# Override explicitly with EMAIL_SENDING_ENABLED=true/false in env if needed.
+EMAIL_SENDING_ENABLED = os.getenv(
+    "EMAIL_SENDING_ENABLED",
+    "False" if DEBUG else "True",
+).lower() == "true"
+
 _default_email_backend = (
     "django.core.mail.backends.smtp.EmailBackend"
     if SENDGRID_API_KEY

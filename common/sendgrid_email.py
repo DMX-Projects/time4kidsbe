@@ -40,6 +40,13 @@ def send_sendgrid_message(
 
     Returns True when SendGrid accepts the message (HTTP 200/201/202).
     """
+    if not bool(getattr(settings, "EMAIL_SENDING_ENABLED", False)):
+        logger.info(
+            "Email sending disabled (EMAIL_SENDING_ENABLED=False); skipped subject=%r",
+            subject,
+        )
+        return False
+
     api_key = sendgrid_api_key()
     if not api_key:
         logger.warning("SENDGRID_API_KEY not set; email not sent (subject=%r)", subject)
