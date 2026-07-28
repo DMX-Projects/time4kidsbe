@@ -91,7 +91,13 @@ def _distinct_kids_enquiry_cities() -> list[str]:
 
 
 def _sync_enquiry_status_siblings(instance, status: str) -> None:
-    """One public submit can create several rows (global + per-centre). Keep status in sync."""
+    """
+    One public submit can create several rows (global + per-centre). Keep those in sync.
+
+    Do NOT sync unrelated leads that only share a phone (different form, name, or day).
+    """
+    from datetime import timedelta
+
     phone = (getattr(instance, "phone", None) or "").strip()
     if not phone:
         return
@@ -100,7 +106,26 @@ def _sync_enquiry_status_siblings(instance, status: str) -> None:
         updates["meeting_date"] = instance.meeting_date
     if hasattr(instance, "next_follow_up_date"):
         updates["next_follow_up_date"] = instance.next_follow_up_date
-    type(instance).objects.filter(phone=phone).exclude(pk=instance.pk).update(**updates)
+
+    qs = type(instance).objects.filter(phone=phone).exclude(pk=instance.pk)
+
+    # Same form type only (Admission vs Centers Enquiry must stay independent).
+    enquiry_type = getattr(instance, "enquiry_type", None)
+    if enquiry_type is not None:
+        qs = qs.filter(enquiry_type=enquiry_type)
+
+    # Same person from the same submit batch (name + near-identical created_at).
+    name = (getattr(instance, "name", None) or "").strip()
+    if name:
+        qs = qs.filter(name__iexact=name)
+    created_at = getattr(instance, "created_at", None)
+    if created_at is not None:
+        qs = qs.filter(
+            created_at__gte=created_at - timedelta(minutes=5),
+            created_at__lte=created_at + timedelta(minutes=5),
+        )
+
+    qs.update(**updates)
 
 
 class EnquiryStatusSyncMixin:
