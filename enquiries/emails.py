@@ -378,12 +378,18 @@ def send_crm_heads_new_lead_reminder(
     lead_kind: str | None = None,
 ) -> bool:
     """
-    Notify territory CRM users (by state/city mapping) that a new lead came in.
-    Also includes optional CRM_ZONAL_HEAD_EMAIL / CRM_REGIONAL_HEAD_EMAIL from settings.
+    Notify CRM users for each lead reminder.
+    Controlled by settings.CRM_NOTIFY_ALL_HANDLERS:
+    - True: send to all handlers + territory recipients + optional zonal/regional head emails.
+    - False: skip CRM lead reminder emails completely.
     """
     from django.conf import settings
 
-    from .crm_users import emails_for_geo_handlers
+    from .crm_users import all_assignable_handler_users, emails_for_geo_handlers
+
+    if not getattr(settings, "CRM_NOTIFY_ALL_HANDLERS", True):
+        logger.info("CRM lead reminder skipped — CRM_NOTIFY_ALL_HANDLERS is disabled")
+        return False
 
     recipients: list[str] = []
     seen: set[str] = set()
@@ -398,12 +404,27 @@ def send_crm_heads_new_lead_reminder(
             seen.add(key)
             recipients.append(addr)
 
+    # Include all assignable CRM handlers (RM/Manager/Dy Manager/Assistant Manager).
+    for user in all_assignable_handler_users():
+        addr = (getattr(user, "email", None) or "").strip()
+        if not addr:
+            continue
+        key = addr.casefold()
+        if key not in seen:
+            seen.add(key)
+            recipients.append(addr)
+
     zonal = (getattr(settings, "CRM_ZONAL_HEAD_EMAIL", None) or "").strip()
     regional = (getattr(settings, "CRM_REGIONAL_HEAD_EMAIL", None) or "").strip()
     for addr in (zonal, regional):
         if addr and addr.casefold() not in seen:
             seen.add(addr.casefold())
             recipients.append(addr)
+    for addr in (getattr(settings, "CRM_LEAD_ALWAYS_NOTIFY_EMAILS", None) or []):
+        email = (addr or "").strip()
+        if email and email.casefold() not in seen:
+            seen.add(email.casefold())
+            recipients.append(email)
 
     if not recipients:
         logger.info(
@@ -462,7 +483,7 @@ def send_crm_heads_new_lead_reminder(
     )
     if ok:
         logger.info(
-            "CRM territory notify ok recipients=%s state=%r city=%r source=%r kind=%r",
+            "CRM notify ok recipients=%s state=%r city=%r source=%r kind=%r",
             len(recipients),
             place_state,
             place_city,
