@@ -1319,7 +1319,8 @@ def unified_dashboard_stats(request) -> dict:
         landing_count = landing_qs.count()
         if landing_count:
             source_counts["landing"] = source_counts.get("landing", 0) + landing_count
-        for row in landing_qs.only("raw_payload").iterator():
+        # Clear select_related before only() — assigned_user can't be deferred and joined.
+        for row in landing_qs.select_related(None).only("raw_payload").iterator():
             mapped = _landing_crm_status(row)
             status_counts[mapped] = status_counts.get(mapped, 0) + 1
             if mapped in (CrmLeadStatus.FOLLOW_UP, CrmLeadStatus.VISITED_SCHOOL):
