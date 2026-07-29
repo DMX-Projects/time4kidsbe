@@ -240,7 +240,8 @@ CRM_LEAD_ALWAYS_NOTIFY_EMAILS = [
     if addr.strip()
 ]
 # CRM lead reminder master switch:
-# - True: send reminders (includes all CRM handlers).
+# - True: email territory notify-heads only (crm_notify_franchise / crm_notify_admission
+#   for users whose crm_states/crm_cities cover the lead). Not a nationwide blast.
 # - False: send no CRM lead reminder emails.
 CRM_NOTIFY_ALL_HANDLERS = (os.getenv("CRM_NOTIFY_ALL_HANDLERS", "True") or "True").strip().lower() == "true"
 
