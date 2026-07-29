@@ -92,25 +92,40 @@ def franchise_for_centre_login(user):
     if not keys:
         return None
 
-    for key in keys:
-        for prefix in (f"{key}-timekid", f"{key}-"):
-            match = Franchise.objects.filter(slug__istartswith=prefix).order_by("id").first()
-            if match:
-                return match
+    # Prefer username-derived keys over email-local keys so a shared email
+    # prefix (e.g. paravur@...) cannot hijack another centre's slug match.
+    username_key = _normalize_centre_login_key(getattr(user, "username", None) or "")
+    ordered_keys = sorted(
+        keys,
+        key=lambda k: (
+            0 if k == username_key or (username_key and k.startswith(username_key)) else 1,
+            len(k),
+            k,
+        ),
+    )
 
     seen_ids: set[int] = set()
     matches = []
-    for key in keys:
+
+    def _add(franchise) -> None:
+        if franchise.id not in seen_ids:
+            seen_ids.add(franchise.id)
+            matches.append(franchise)
+
+    for key in ordered_keys:
+        for prefix in (f"{key}-timekid", f"{key}-"):
+            for franchise in Franchise.objects.filter(slug__istartswith=prefix).order_by("id")[:10]:
+                if _slug_matches_login_key(franchise.slug, key):
+                    _add(franchise)
         candidates = list(
             Franchise.objects.filter(slug__icontains=key).only("id", "slug").order_by("id")[:40]
         )
         for franchise in candidates:
-            if franchise.id in seen_ids:
-                continue
             if _slug_matches_login_key(franchise.slug, key):
-                seen_ids.add(franchise.id)
-                matches.append(franchise)
+                _add(franchise)
 
+    # Only return when exactly one centre matches — ambiguous keys
+    # (paravur / namakkal) must not silently pick the lowest id.
     if len(matches) == 1:
         return matches[0]
     return None

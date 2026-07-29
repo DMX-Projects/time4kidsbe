@@ -64,6 +64,7 @@ REGION_LABELS: dict[str, str] = {
 
 # Zonal Manager territories (TKPL) — merged with User.crm_states when set.
 ZONAL_MANAGER_SCOPE_CODES: dict[str, tuple[str, ...]] = {
+    # Admission sheet: AP/TS/KA; franchise sheet lists AP/TS (KA handlers still under Tejbal for admission).
     "tejbal@timekidspreschools.com": ("AP", "TG", "KA"),
     "gaurav@timekidspreschools.com": ("TN", "KL", "MH"),
     "jyoti.mishra@timekidspreschools.com": ("BR", "CT", "OR", "WB"),

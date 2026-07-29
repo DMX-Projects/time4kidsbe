@@ -376,59 +376,51 @@ def send_crm_heads_new_lead_reminder(
     phone: str = "",
     lead_email: str = "",
     lead_kind: str | None = None,
+    preferred_to: str | None = None,
 ) -> bool:
     """
-    Notify CRM users for each lead reminder.
-    Controlled by settings.CRM_NOTIFY_ALL_HANDLERS:
-    - True: send to all handlers + territory recipients + optional zonal/regional head emails.
-    - False: skip CRM lead reminder emails completely.
+    New-lead email routing:
+
+    - To: particular manager for that city/state (assignee)
+    - Cc: other managers in that state + covering zonal/notify heads + Jayesh
+
+    Controlled by settings.CRM_NOTIFY_ALL_HANDLERS (False skips completely).
     """
     from django.conf import settings
 
-    from .crm_users import all_assignable_handler_users, emails_for_geo_handlers
+    from .crm_users import resolve_new_lead_mail_recipients
 
     if not getattr(settings, "CRM_NOTIFY_ALL_HANDLERS", True):
         logger.info("CRM lead reminder skipped — CRM_NOTIFY_ALL_HANDLERS is disabled")
         return False
 
-    recipients: list[str] = []
-    seen: set[str] = set()
-
-    for addr in emails_for_geo_handlers(
+    to_emails, cc_emails = resolve_new_lead_mail_recipients(
         state or None,
         city or centre_name or None,
+        preferred_to=preferred_to,
         lead_kind=lead_kind,
-    ):
-        key = addr.casefold()
-        if key not in seen:
-            seen.add(key)
-            recipients.append(addr)
+    )
 
-    # Include all assignable CRM handlers (RM/Manager/Dy Manager/Assistant Manager).
-    for user in all_assignable_handler_users():
-        addr = (getattr(user, "email", None) or "").strip()
-        if not addr:
-            continue
-        key = addr.casefold()
-        if key not in seen:
-            seen.add(key)
-            recipients.append(addr)
+    # Optional always-notify / head emails → Cc (never replace the manager To)
+    seen = {e.casefold() for e in to_emails}
+    seen.update(e.casefold() for e in cc_emails)
+
+    def _add_cc(addr: str) -> None:
+        email = (addr or "").strip()
+        if email and email.casefold() not in seen:
+            seen.add(email.casefold())
+            cc_emails.append(email)
 
     zonal = (getattr(settings, "CRM_ZONAL_HEAD_EMAIL", None) or "").strip()
     regional = (getattr(settings, "CRM_REGIONAL_HEAD_EMAIL", None) or "").strip()
     for addr in (zonal, regional):
-        if addr and addr.casefold() not in seen:
-            seen.add(addr.casefold())
-            recipients.append(addr)
+        _add_cc(addr)
     for addr in (getattr(settings, "CRM_LEAD_ALWAYS_NOTIFY_EMAILS", None) or []):
-        email = (addr or "").strip()
-        if email and email.casefold() not in seen:
-            seen.add(email.casefold())
-            recipients.append(email)
+        _add_cc(addr or "")
 
-    if not recipients:
+    if not to_emails:
         logger.info(
-            "CRM lead reminder skipped — no territory users for state=%r city=%r kind=%r and no head emails set",
+            "CRM lead reminder skipped — no recipients for state=%r city=%r kind=%r",
             state,
             city or centre_name,
             lead_kind,
@@ -475,7 +467,8 @@ def send_crm_heads_new_lead_reminder(
     </body></html>
     """
     ok = send_sendgrid_message(
-        to_emails=recipients,
+        to_emails=to_emails,
+        cc=cc_emails,
         subject=subject,
         plain_text_content=plain,
         html_content=html_content,
@@ -483,8 +476,9 @@ def send_crm_heads_new_lead_reminder(
     )
     if ok:
         logger.info(
-            "CRM notify ok recipients=%s state=%r city=%r source=%r kind=%r",
-            len(recipients),
+            "CRM notify ok to=%s cc=%s state=%r city=%r source=%r kind=%r",
+            to_emails,
+            cc_emails,
             place_state,
             place_city,
             source,
@@ -538,15 +532,6 @@ def assign_and_notify_new_lead(obj, *, lead_source: str = "") -> bool:
     )
     lead_email = getattr(obj, "email", None) or ""
 
-    if hasattr(obj, "assigned_user_id") and not getattr(obj, "assigned_user_id", None):
-        suggested = suggest_assignee_for_geo(state, city or centre)
-        if suggested:
-            obj.assigned_user = suggested
-            try:
-                obj.save(update_fields=["assigned_user"])
-            except Exception:
-                logger.exception("Failed to save assigned_user for %s id=%s", type(obj).__name__, getattr(obj, "pk", None))
-
     source = (lead_source or "").strip()
     if not source:
         if hasattr(obj, "source"):
@@ -558,6 +543,22 @@ def assign_and_notify_new_lead(obj, *, lead_source: str = "") -> bool:
 
     lead_kind = resolve_notify_lead_kind(obj, source)
 
+    if hasattr(obj, "assigned_user_id") and not getattr(obj, "assigned_user_id", None):
+        suggested = suggest_assignee_for_geo(
+            state,
+            city or centre,
+            pipeline=lead_kind,
+        )
+        if suggested:
+            obj.assigned_user = suggested
+            try:
+                obj.save(update_fields=["assigned_user"])
+            except Exception:
+                logger.exception("Failed to save assigned_user for %s id=%s", type(obj).__name__, getattr(obj, "pk", None))
+
+    assigned = getattr(obj, "assigned_user", None)
+    preferred_to = (getattr(assigned, "email", None) or "").strip() or None
+
     return send_crm_heads_new_lead_reminder(
         name=name,
         lead_source=source,
@@ -567,6 +568,7 @@ def assign_and_notify_new_lead(obj, *, lead_source: str = "") -> bool:
         phone=str(phone or ""),
         lead_email=str(lead_email or ""),
         lead_kind=lead_kind,
+        preferred_to=preferred_to,
     )
 
 

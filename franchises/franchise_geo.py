@@ -13,13 +13,16 @@ STATE_CODE_TO_NAME: dict[str, str] = dict(FranchiseLocation.STATE_CHOICES)
 STATE_NAME_TO_CODE: dict[str, str] = {
     name.strip().lower(): code for code, name in FranchiseLocation.STATE_CHOICES
 }
-# Common aliases stored in legacy franchise rows
+# Common aliases stored in legacy franchise rows / FranchiseLocation
 _STATE_ALIASES: dict[str, str] = {
     "bangalore": "KA",
     "bengaluru": "KA",
     "andhra pradesh": "AP",
     "telangana": "TG",
     "tamil nadu": "TN",
+    "tamilnadu": "TN",  # legacy Franchise.state spelling (no space)
+    "ta": "TN",  # legacy FranchiseLocation code used for Tamil Nadu
+    "ke": "KL",  # legacy FranchiseLocation code used for Kerala
     "west bengal": "WB",
     "madhya pradesh": "MP",
     "uttar pradesh": "UP",

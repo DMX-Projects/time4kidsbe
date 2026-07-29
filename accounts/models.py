@@ -56,6 +56,27 @@ class User(AbstractBaseUser, PermissionsMixin):
         default="",
         help_text="CRM only: blank = all India; otherwise only that zone's states/cities/centres.",
     )
+    # Sheet designation: Zonal Manager, Regional Manager, Manager, Dy Manager, Assistant Manager.
+    crm_designation = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        help_text="CRM only: designation from territory mapping sheet.",
+    )
+    # Sheet "Region" column as shown (e.g. AP/TS, KA, Kerala, TN/KL/MH).
+    crm_mapping_region = models.CharField(
+        max_length=120,
+        blank=True,
+        default="",
+        help_text="CRM only: region label from mapping sheet (e.g. AP/TS, Kerala, TN/KL/MH).",
+    )
+    # Contact phone for CRM team member (provided by ops; not used for login).
+    crm_phone = models.CharField(
+        max_length=20,
+        blank=True,
+        default="",
+        help_text="CRM only: team member mobile/phone from mapping sheet.",
+    )
     # Blank = full zone (or national). NORTH_R1 / SOUTH_R2 / etc. narrows to a region inside the zone.
     crm_region = models.CharField(
         max_length=20,
@@ -63,12 +84,12 @@ class User(AbstractBaseUser, PermissionsMixin):
         default="",
         help_text="CRM only: blank = full zone/national; otherwise a region code (e.g. NORTH_R1).",
     )
-    # Optional explicit state codes (comma-separated, e.g. "AP,TG"). When set, overrides zone/region for scope.
+    # Full state names preferred (e.g. "Tamil Nadu, Kerala"). Codes still accepted by parsers.
     crm_states = models.CharField(
-        max_length=120,
+        max_length=400,
         blank=True,
         default="",
-        help_text="CRM only: comma-separated state codes (e.g. AP,TG,KL). Overrides zone/region when set.",
+        help_text='CRM only: comma-separated full state names (e.g. "Tamil Nadu, Kerala"). Overrides zone/region when set.',
     )
     # Optional city/district list (comma-separated). When set, further narrows leads within crm_states.
     crm_cities = models.CharField(

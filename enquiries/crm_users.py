@@ -82,7 +82,7 @@ ZONAL_MANAGER_ADMISSION_TEAM_EMAILS: dict[str, frozenset[str]] = {
             "saikishore@timekidspreschools.com",  # Dy Manager — AP/TS
             "harshit@timekidspreschools.com",  # Assistant Manager — AP/TS
             "sujee@timekidspreschools.com",  # Regional Manager — Karnataka
-            "thimmesh.k@timekidspreschools.com",  # Manager — Karnataka
+            "thimmesh.k@timekidspreschools.com",  # Manager — Karnataka (admission sheet)
         }
     ),
     "gaurav@timekidspreschools.com": frozenset(
@@ -290,6 +290,8 @@ def label_for_crm_user(user_id: int | None) -> str | None:
 
 def resolve_lead_state_code(state: str | None = None, city: str | None = None) -> str | None:
     """Resolve a lead's state code from state text and/or city name."""
+    from collections import Counter
+
     from franchises.franchise_geo import filter_queryset_by_city, state_to_code
 
     code = state_to_code(state)
@@ -313,11 +315,17 @@ def resolve_lead_state_code(state: str | None = None, city: str | None = None) -
         if code:
             return code
 
-    franchise = filter_queryset_by_city(Franchise.objects.filter(is_active=True), city_name).first()
-    if franchise:
-        return state_to_code(
-            getattr(franchise, "statename", None) or getattr(franchise, "state", None)
-        )
+    # Prefer the majority state among active centres in this city.
+    # Avoids one bad row (e.g. Coimbatore centre tagged Kerala) hijacking assignment.
+    franchises = filter_queryset_by_city(Franchise.objects.filter(is_active=True), city_name)
+    tallies: Counter[str] = Counter()
+    for franchise in franchises.only("state", "statename")[:80]:
+        raw = getattr(franchise, "statename", None) or getattr(franchise, "state", None)
+        mapped = state_to_code(raw)
+        if mapped:
+            tallies[mapped] += 1
+    if tallies:
+        return tallies.most_common(1)[0][0]
     return None
 
 
@@ -434,10 +442,145 @@ def crm_users_matching_request_scope(request, pipeline: str | None = None) -> li
     return geo_users
 
 
-def suggest_assignee_for_geo(state: str | None = None, city: str | None = None) -> User | None:
-    """Best default assignee: prefer city-matched user, else state-level handler."""
+def _pipeline_handler_emails(pipeline: str | None) -> frozenset[str]:
+    """Assignable handlers listed on the selected Franchise/Admission sheet."""
+    pipe = normalize_crm_pipeline(pipeline)
+    if pipe == "franchise":
+        teams = ZONAL_MANAGER_FRANCHISE_TEAM_EMAILS.values()
+    elif pipe == "admission":
+        teams = ZONAL_MANAGER_ADMISSION_TEAM_EMAILS.values()
+    else:
+        return CRM_ASSIGNABLE_HANDLER_EMAILS
+    return frozenset(email for team in teams for email in team)
+
+
+def suggest_assignee_for_geo(
+    state: str | None = None,
+    city: str | None = None,
+    *,
+    pipeline: str | None = None,
+) -> User | None:
+    """Best city/state assignee from the selected Franchise/Admission sheet."""
     matches = crm_users_matching_geo(state, city)
-    return matches[0] if matches else None
+    if not matches:
+        return None
+    allowed_handlers = _pipeline_handler_emails(pipeline)
+    for user in matches:
+        email = (user.email or "").strip().lower()
+        if email in allowed_handlers:
+            return user
+    # A territory with no manager on that pipeline's sheet falls back to its ZM.
+    for user in matches:
+        email = (user.email or "").strip().lower()
+        if email in ZONAL_MANAGER_ASSIGN_EMAILS:
+            return user
+    return None
+
+
+def resolve_new_lead_mail_recipients(
+    state: str | None = None,
+    city: str | None = None,
+    *,
+    preferred_to: str | None = None,
+    lead_kind: str | None = None,
+) -> tuple[list[str], list[str]]:
+    """
+    New-lead mail routing from the mapping sheets:
+
+    - To: particular manager for that city/state (assignee)
+    - Cc: other managers covering the same state + zonal manager(s) / notify heads + Jayesh
+
+    City is used to pick the primary To; Cc peers are state-scoped so e.g. a Kollam
+    lead Ccs other Kerala managers (including North Kerala), not only South Kerala.
+
+    Returns ``(to_emails, cc_emails)``.
+    """
+    jayesh = "jayesh@time4education.com"
+    pipe = normalize_crm_pipeline(lead_kind)
+    allowed_handlers = _pipeline_handler_emails(pipe)
+    city_matches = crm_users_matching_geo(state, city)
+    # Peers / ZMs for Cc: everyone covering the state (city ignored)
+    state_matches = crm_users_matching_geo(state, None) if (state or "").strip() else city_matches
+
+    def _collect(users: list[User]) -> tuple[list[str], list[str]]:
+        managers: list[str] = []
+        zonals: list[str] = []
+        seen_m: set[str] = set()
+        seen_z: set[str] = set()
+        for user in users:
+            email = (user.email or "").strip().lower()
+            if not email:
+                continue
+            if email in allowed_handlers and email not in seen_m:
+                seen_m.add(email)
+                managers.append(email)
+            if email in ZONAL_MANAGER_ASSIGN_EMAILS and email not in seen_z:
+                seen_z.add(email)
+                zonals.append(email)
+            # Pink notify heads covering territory (e.g. Sujee for Karnataka)
+            notify_for_pipeline = (
+                getattr(user, "crm_notify_franchise", False)
+                if pipe == "franchise"
+                else getattr(user, "crm_notify_admission", False)
+                if pipe == "admission"
+                else (
+                    getattr(user, "crm_notify_franchise", False)
+                    or getattr(user, "crm_notify_admission", False)
+                )
+            )
+            if (
+                notify_for_pipeline
+                and email not in seen_z
+                and email not in seen_m
+            ):
+                seen_z.add(email)
+                zonals.append(email)
+        return managers, zonals
+
+    city_managers, city_zonals = _collect(city_matches)
+    state_managers, state_zonals = _collect(state_matches)
+
+    preferred = (preferred_to or "").strip().lower()
+    match_emails = {(u.email or "").strip().lower() for u in city_matches + state_matches}
+
+    to_email = ""
+    preferred_is_allowed = (
+        preferred in allowed_handlers or preferred in ZONAL_MANAGER_ASSIGN_EMAILS
+    )
+    if preferred and preferred in match_emails and preferred_is_allowed:
+        to_email = preferred
+    elif city_managers:
+        to_email = city_managers[0]
+    elif state_managers:
+        to_email = state_managers[0]
+    elif city_zonals:
+        to_email = city_zonals[0]
+    elif state_zonals:
+        to_email = state_zonals[0]
+    elif city_matches:
+        to_email = (city_matches[0].email or "").strip().lower()
+    elif state_matches:
+        to_email = (state_matches[0].email or "").strip().lower()
+
+    if not to_email:
+        return [jayesh], []
+
+    cc: list[str] = []
+    seen_cc = {to_email}
+
+    def _add_cc(addr: str) -> None:
+        key = (addr or "").strip().lower()
+        if key and key not in seen_cc:
+            seen_cc.add(key)
+            cc.append(key)
+
+    for addr in state_managers:
+        _add_cc(addr)
+    for addr in state_zonals:
+        _add_cc(addr)
+    _add_cc(jayesh)
+
+    return [to_email], cc
 
 
 def emails_for_geo_handlers(
@@ -508,6 +651,9 @@ def _user_api_dict(user: User) -> dict:
         "email": user.email,
         "crmZone": (getattr(user, "crm_zone", None) or "").strip().upper() or None,
         "crmRegion": (getattr(user, "crm_region", None) or "").strip().upper() or None,
+        "crmMappingRegion": (getattr(user, "crm_mapping_region", None) or "").strip() or None,
+        "crmDesignation": (getattr(user, "crm_designation", None) or "").strip() or None,
+        "crmPhone": (getattr(user, "crm_phone", None) or "").strip() or None,
         "crmStates": (getattr(user, "crm_states", None) or "").strip() or None,
         "crmCities": (getattr(user, "crm_cities", None) or "").strip() or None,
     }
