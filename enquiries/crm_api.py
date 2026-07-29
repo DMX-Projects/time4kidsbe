@@ -206,6 +206,77 @@ def _get_unified_notes(lead_kind: str, numeric_id: int) -> list:
     return [unified_note_to_dict(n) for n in notes]
 
 
+def _split_notes_and_notification_logs(notes: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Pull Email/WhatsApp nurture entries into notificationLogs for History."""
+    regular: list[dict] = []
+    notifications: list[dict] = []
+    for note in notes:
+        content = str(note.get("content") or "")
+        if content.startswith("[Email]"):
+            notifications.append(
+                {
+                    "id": note.get("id"),
+                    "type": "email",
+                    "status": "sent",
+                    "createdAt": note.get("createdAt"),
+                    "content": content,
+                }
+            )
+        elif content.startswith("[WhatsApp]"):
+            notifications.append(
+                {
+                    "id": note.get("id"),
+                    "type": "whatsapp",
+                    "status": "sent",
+                    "createdAt": note.get("createdAt"),
+                    "content": content,
+                }
+            )
+        else:
+            regular.append(note)
+    return regular, notifications
+
+
+def _attach_history_fields(data: dict, lead_kind: str, numeric_id: int, *, extra_notes: list | None = None) -> dict:
+    notes = list(extra_notes or []) + _get_unified_notes(lead_kind, numeric_id)
+    regular, notifications = _split_notes_and_notification_logs(notes)
+    data["notes"] = regular
+    data["auditLogs"] = data.get("auditLogs") or []
+    data["notificationLogs"] = notifications
+    data["callHistory"] = data.get("callHistory") or []
+    return data
+
+
+def log_crm_communication(
+    raw_lead_id: str,
+    channel: str,
+    *,
+    subject: str = "",
+    body: str = "",
+    to_value: str = "",
+    actor=None,
+) -> dict | None:
+    """
+    Persist an Email/WhatsApp nurture action into History (UnifiedLeadNote).
+    Returns the created note dict, or None if lead id is invalid.
+    """
+    from .models import UnifiedLeadNote
+
+    kind, numeric_id = parse_lead_id(raw_lead_id)
+    channel_key = (channel or "").strip().lower()
+    if channel_key not in ("email", "whatsapp"):
+        return None
+
+    content = "[Email] Email sent" if channel_key == "email" else "[WhatsApp] WhatsApp sent"
+
+    note = UnifiedLeadNote.objects.create(
+        lead_id=f"{kind}_{numeric_id}",
+        content=content,
+        status="",
+    )
+    return unified_note_to_dict(note)
+
+
 def lead_to_dict(lead: CrmLead, *, include_detail: bool = False) -> dict:
     # LP / Meta / LP-WB forms only collect state + city — never invent a centre.
     is_franchise_campaign = lead.source in FRANCHISE_CAMPAIGN_SOURCES
@@ -267,11 +338,7 @@ def lead_to_dict(lead: CrmLead, *, include_detail: bool = False) -> dict:
     }
     if include_detail:
         legacy_notes = [note_to_dict(n) for n in lead.notes.all()]
-        new_notes = _get_unified_notes("crm", lead.id)
-        data["notes"] = legacy_notes + new_notes
-        data["auditLogs"] = []
-        data["notificationLogs"] = []
-        data["callHistory"] = []
+        _attach_history_fields(data, "crm", lead.id, extra_notes=legacy_notes)
     return data
 
 
@@ -791,10 +858,7 @@ def enquiry_to_dict(enquiry: Enquiry, *, include_detail: bool = False) -> dict:
         ),
     }
     if include_detail:
-        data["notes"] = _get_unified_notes("enquiry", enquiry.id)
-        data["auditLogs"] = []
-        data["notificationLogs"] = []
-        data["callHistory"] = []
+        _attach_history_fields(data, "enquiry", enquiry.id)
     return data
 
 
@@ -838,10 +902,7 @@ def franchise_enquiry_to_dict(enquiry: FranchiseEnquiry, *, include_detail: bool
         ),
     }
     if include_detail:
-        data["notes"] = _get_unified_notes("franchiseenquiry", enquiry.id)
-        data["auditLogs"] = []
-        data["notificationLogs"] = []
-        data["callHistory"] = []
+        _attach_history_fields(data, "franchiseenquiry", enquiry.id)
     return data
 
 
@@ -889,10 +950,7 @@ def landing_to_dict(row: KidsEnquiry, *, include_detail: bool = False) -> dict:
         ),
     }
     if include_detail:
-        data["notes"] = _get_unified_notes("landing", row.id)
-        data["auditLogs"] = []
-        data["notificationLogs"] = []
-        data["callHistory"] = []
+        _attach_history_fields(data, "landing", row.id)
         data["centrePhone"] = centre_phone
         data["centreEmail"] = centre_email
     return data
