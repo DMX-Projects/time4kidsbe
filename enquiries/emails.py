@@ -653,9 +653,24 @@ def lead_source_label_for_enquiry(enquiry) -> str:
 def lead_source_label_for_crm_lead(lead) -> str:
     from .crm_api import is_google_ads_landing_url
 
+    raw = (getattr(lead, "source", None) or "").strip().lower()
+    url = (getattr(lead, "landing_page_url", None) or "").lower()
+    utm_source = (getattr(lead, "utm_source", None) or "").strip().lower()
+    utm_medium = (getattr(lead, "utm_medium", None) or "").strip().lower()
+    is_wb = raw == "lp_wb" or "timekids-lp-wb" in url
+
+    if is_wb:
+        meta_hint = (
+            utm_source == "facebook_lead_ads"
+            or any(token in utm_source for token in ("meta", "facebook", "instagram"))
+            or any(token in utm_medium for token in ("meta", "facebook", "instagram"))
+        )
+        if meta_hint:
+            return "Ants_Meta"
+        return "Ants_Google"
+
     if is_google_ads_landing_url(getattr(lead, "landing_page_url", None)):
         return "Google"
-    raw = (getattr(lead, "source", None) or "").strip().lower()
     mapping = {
         "web": "Website (CRM)",
         "website": "Website (CRM)",
@@ -665,7 +680,7 @@ def lead_source_label_for_crm_lead(lead) -> str:
         "instagram": "Instagram",
         "july_lp": "Google",
         "july_meta": "META",
-        "lp_wb": "Google",
+        "lp_wb": "Ants_Google",
         "google": "Google",
     }
     return mapping.get(raw, raw.replace("_", " ").title() or "Campaign")

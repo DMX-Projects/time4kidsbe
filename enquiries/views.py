@@ -884,9 +884,9 @@ class AdminCrmMediumsView(APIView):
 
 class AdminCrmSendReminderView(APIView):
     """
-    CRM reminder / Direct Contact email.
+    CRM reminder / Direct Contact email / WhatsApp nurture log.
     Email channel sends via SendGrid From franchise@… To the lead.
-    WhatsApp remains client-side (returns success for UI compatibility).
+    WhatsApp remains client-side; both channels are written to History.
     """
 
     permission_classes = [permissions.AllowAny]
@@ -898,22 +898,35 @@ class AdminCrmSendReminderView(APIView):
             return Response({"detail": "View-only account."}, status=status.HTTP_403_FORBIDDEN)
 
         channel = (request.data.get("channel") or "email").strip().lower()
-        if channel == "whatsapp":
-            return Response({"success": True})
-
-        if channel != "email":
-            return Response({"error": "Unsupported channel."}, status=status.HTTP_400_BAD_REQUEST)
-
         lead_id = request.data.get("leadId") or request.data.get("lead_id")
         if not lead_id:
             return Response({"error": "leadId is required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        from .crm_api import unified_lead_detail
+        from .crm_api import log_crm_communication, unified_lead_detail
         from .emails import crm_direct_from_email, send_crm_direct_contact_email
 
         lead = unified_lead_detail(str(lead_id), request=request)
         if not lead:
             return Response({"error": "Lead not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        actor = getattr(request, "user", None)
+        if actor is not None and not getattr(actor, "is_authenticated", False):
+            actor = None
+
+        if channel == "whatsapp":
+            body = (request.data.get("body") or request.data.get("message") or "").strip()
+            to_mobile = (lead.get("mobile") or "").strip()
+            note = log_crm_communication(
+                str(lead_id),
+                "whatsapp",
+                body=body,
+                to_value=to_mobile,
+                actor=actor,
+            )
+            return Response({"success": True, "history": note})
+
+        if channel != "email":
+            return Response({"error": "Unsupported channel."}, status=status.HTTP_400_BAD_REQUEST)
 
         to_email = (lead.get("email") or "").strip()
         if not to_email:
@@ -946,11 +959,21 @@ class AdminCrmSendReminderView(APIView):
                 {"error": "Failed to send email. Check SendGrid configuration."},
                 status=status.HTTP_502_BAD_GATEWAY,
             )
+
+        note = log_crm_communication(
+            str(lead_id),
+            "email",
+            subject=subject,
+            body=body,
+            to_value=to_email,
+            actor=actor,
+        )
         return Response(
             {
                 "success": True,
                 "from": crm_direct_from_email(),
                 "to": to_email,
+                "history": note,
             }
         )
 
