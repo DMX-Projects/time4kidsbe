@@ -1153,7 +1153,12 @@ class AdminCrmStatesView(APIView):
         from franchises.franchise_geo import state_to_display
         from franchises.models import Franchise
         from enquiries.models import FranchiseEnquiry
-        from accounts.crm_zones import resolve_scope_state_codes, scope_display_state_names
+        from accounts.crm_zones import (
+            ZONAL_MANAGER_SCOPE_CODES,
+            resolve_scope_state_codes,
+            scope_display_state_names,
+            scope_state_codes_for_user,
+        )
         from enquiries.crm_users import sanitize_crm_scope_user_id
 
         raw_scope = (
@@ -1163,6 +1168,17 @@ class AdminCrmStatesView(APIView):
         ).strip()
         scope_user_id = sanitize_crm_scope_user_id(raw_scope) if raw_scope else None
         codes = resolve_scope_state_codes(request, scope_user_id)
+
+        # Belt-and-suspenders: known zonal emails never fall through to the national list
+        # (live users with blank crm_zone/crm_states were still seeing Jammu and Kashmir).
+        if codes is None:
+            viewer = getattr(request, "user", None)
+            email = (getattr(viewer, "email", None) or "").strip().lower()
+            if email in ZONAL_MANAGER_SCOPE_CODES:
+                codes = list(ZONAL_MANAGER_SCOPE_CODES[email])
+            else:
+                codes = scope_state_codes_for_user(viewer)
+
         # Scoped CRM (logged-in and/or selected filter user): return that state list.
         if codes is not None:
             return Response([{"name": name} for name in scope_display_state_names(codes)])
@@ -1182,7 +1198,6 @@ class AdminCrmStatesView(APIView):
                 states.add(display)
 
         return Response([{"name": name} for name in sorted(list(states), key=str.casefold)])
-
 
 @method_decorator(csrf_exempt, name="dispatch")
 class MetaLeadWebhookView(APIView):
