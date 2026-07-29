@@ -583,16 +583,20 @@ def _request_user_filter(request) -> str | None:
 
 
 def _apply_assigned_user_filter(qs, request):
-    """
-  Only filter by ``assigned_user`` for the Unassigned option.
-  A specific CRM user is scoped by territory via ``request_effective_scope_codes``.
-    """
+    """Apply the ZM/Super Admin assignment dropdown filter."""
     user_filter = _request_user_filter(request)
     if not user_filter:
         return qs
     if user_filter in ("unassigned", "none", "null"):
         return qs.filter(assigned_user__isnull=True)
-    return qs
+    return qs.filter(assigned_user_id=int(user_filter))
+
+
+def _apply_viewer_assignment_scope(qs, request):
+    """Managers see only their assigned leads; ZMs/Super Admins keep broader scope."""
+    from .crm_users import filter_leads_for_crm_viewer
+
+    return filter_leads_for_crm_viewer(qs, request)
 
 
 def _is_franchise_assignable_object(obj) -> bool:
@@ -616,67 +620,65 @@ def _is_admission_assignable_object(obj) -> bool:
     return False
 
 
-def _maybe_assign_lead(obj, request, data: dict | None = None) -> None:
+def _maybe_assign_lead(obj, request, data: dict | None = None) -> bool:
     """
-    Assign lead when unassigned from city/state territory.
-    Explicit ``assignedUserId`` reassignment is limited to Zonal Managers / Super Admins.
+    Apply an explicit ZM/Super Admin assignment to a permitted territory manager.
+    Leads remain unassigned when ``assignedUserId`` is not supplied.
     """
     data = data or {}
-    if "assignedUserId" in data:
-        raw = data.get("assignedUserId")
-        # Do not allow clearing to Unassigned — leads always belong to a territory user.
-        if raw in (None, "", "unassigned", "null"):
-            return
-        request_user = getattr(request, "user", None) if request is not None else None
-        from .crm_users import is_valid_assignee_for_lead, user_can_assign_crm_leads
+    if "assignedUserId" not in data:
+        return False
 
-        if not user_can_assign_crm_leads(request_user):
-            return
-        try:
-            from accounts.models import User, UserRole
+    raw = data.get("assignedUserId")
+    if raw in (None, "", "unassigned", "null"):
+        return False
+    request_user = getattr(request, "user", None) if request is not None else None
+    from .crm_users import is_valid_assignee_for_lead, user_can_assign_crm_leads
 
-            uid = int(raw)
-        except (TypeError, ValueError):
-            return
-        user = User.objects.filter(pk=uid, role__iexact=UserRole.CRM.value, is_active=True).first()
-        if not user:
-            return
-        state = (getattr(obj, "state", None) or "").strip()
-        city = (getattr(obj, "city", None) or "").strip()
-        if not is_valid_assignee_for_lead(
-            user,
-            state=state,
-            city=city,
-            assigner=request_user,
-            franchise_lead=_is_franchise_assignable_object(obj),
-            admission_lead=_is_admission_assignable_object(obj),
-        ):
-            raise ValueError("Selected user is not in this lead's territory.")
-        obj.assigned_user = user
-        return
+    if not user_can_assign_crm_leads(request_user):
+        return False
+    try:
+        from accounts.models import User, UserRole
 
-    if getattr(obj, "assigned_user_id", None):
-        return
-
+        uid = int(raw)
+    except (TypeError, ValueError):
+        return False
+    user = User.objects.filter(pk=uid, role__iexact=UserRole.CRM.value, is_active=True).first()
+    if not user:
+        return False
     state = (getattr(obj, "state", None) or "").strip()
     city = (getattr(obj, "city", None) or "").strip()
-    franchise = getattr(obj, "franchise", None)
-    if franchise is not None:
-        if not state:
-            state = _franchise_state(franchise)
-        if not city:
-            try:
-                from franchises.franchise_geo import effective_city
+    if not is_valid_assignee_for_lead(
+        user,
+        state=state,
+        city=city,
+        assigner=request_user,
+        franchise_lead=_is_franchise_assignable_object(obj),
+        admission_lead=_is_admission_assignable_object(obj),
+    ):
+        raise ValueError("Selected user is not in this lead's territory.")
+    changed = getattr(obj, "assigned_user_id", None) != user.pk
+    obj.assigned_user = user
+    return changed
 
-                city = effective_city(franchise) or city
-            except Exception:
-                pass
 
-    from .crm_users import suggest_assignee_for_geo
+def _notify_explicit_assignment(obj, request) -> None:
+    """Best-effort assignee email; assignment remains saved if email delivery fails."""
+    import logging
 
-    suggested = suggest_assignee_for_geo(state, city)
-    if suggested:
-        obj.assigned_user = suggested
+    from .emails import send_crm_lead_assignment_email
+
+    try:
+        send_crm_lead_assignment_email(
+            obj,
+            assigned_by=getattr(request, "user", None) if request is not None else None,
+        )
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "Failed to send CRM assignment email for %s id=%s",
+            type(obj).__name__,
+            getattr(obj, "pk", None),
+        )
 
 
 def _include_crm(source_filter: str | None) -> bool:
@@ -879,6 +881,12 @@ def landing_to_dict(row: KidsEnquiry, *, include_detail: bool = False) -> dict:
         "nextFollowUpDate": _dt(row.next_follow_up_date),
         "createdAt": _dt(row.created_date),
         "updatedAt": _dt(row.created_date),
+        **assigned_user_payload(
+            getattr(row, "assigned_user", None),
+            state=state,
+            city=city,
+            include_suggestion=include_detail,
+        ),
     }
     if include_detail:
         data["notes"] = _get_unified_notes("landing", row.id)
@@ -978,7 +986,8 @@ def _filter_crm_qs(
     qs = _apply_assigned_user_filter(qs, request)
     from accounts.crm_zones import filter_crm_lead_qs_by_zone
 
-    return filter_crm_lead_qs_by_zone(qs, request).order_by("-created_at")
+    qs = filter_crm_lead_qs_by_zone(qs, request)
+    return _apply_viewer_assignment_scope(qs, request).order_by("-created_at")
 
 
 def unified_crm_campaign_names(request) -> list[str]:
@@ -1063,7 +1072,8 @@ def _filter_enquiry_qs(request, enquiry_type: str):
     qs = _apply_assigned_user_filter(qs, request)
     from accounts.crm_zones import filter_enquiry_qs_by_zone
 
-    return filter_enquiry_qs_by_zone(qs, request).order_by("-created_at")
+    qs = filter_enquiry_qs_by_zone(qs, request)
+    return _apply_viewer_assignment_scope(qs, request).order_by("-created_at")
 
 
 def _filter_franchise_enquiry_qs(request):
@@ -1119,7 +1129,23 @@ def _filter_franchise_enquiry_qs(request):
     qs = _apply_assigned_user_filter(qs, request)
     from accounts.crm_zones import filter_franchise_enquiry_qs_by_zone
 
-    return filter_franchise_enquiry_qs_by_zone(qs, request).order_by("-created_at")
+    qs = filter_franchise_enquiry_qs_by_zone(qs, request)
+    return _apply_viewer_assignment_scope(qs, request).order_by("-created_at")
+
+
+def _apply_landing_zone_scope(qs, request):
+    """Apply the viewer's state/city territory to landing leads."""
+    from accounts.crm_zones import request_effective_scope_codes, scope_city_names, scope_match_values
+
+    codes = request_effective_scope_codes(request)
+    if codes is None:
+        return qs
+    zone_q = Q()
+    for value in scope_match_values(codes):
+        zone_q |= Q(state__iexact=value)
+    for city_name in scope_city_names(codes):
+        zone_q |= Q(city__iexact=city_name)
+    return qs.filter(zone_q) if zone_q else qs.none()
 
 
 def _filter_landing_qs(request):
@@ -1127,11 +1153,7 @@ def _filter_landing_qs(request):
     if not _include_landing(_request_source_filter(request)):
         return KidsEnquiry.objects.none()
 
-    user_filter = _request_user_filter(request)
-    if user_filter in ("unassigned", "none", "null"):
-        return KidsEnquiry.objects.none()
-
-    qs = KidsEnquiry.objects.all()
+    qs = KidsEnquiry.objects.select_related("assigned_user")
 
     status_value = (params.get("status") or "").strip()
     if status_value:
@@ -1178,19 +1200,9 @@ def _filter_landing_qs(request):
     qs = _filter_landing_qs_by_city(qs, request)
     qs = _filter_landing_qs_by_centre(qs, request)
 
-    # Zone/region scope for logged-in CRM user (and optional filter user).
-    from accounts.crm_zones import request_effective_scope_codes, scope_city_names, scope_match_values
-
-    codes = request_effective_scope_codes(request)
-    if codes is not None:
-        zone_q = Q()
-        for value in scope_match_values(codes):
-            zone_q |= Q(state__iexact=value)
-        for city_name in scope_city_names(codes):
-            zone_q |= Q(city__iexact=city_name)
-        qs = qs.filter(zone_q) if zone_q else qs.none()
-
-    return qs.order_by("-created_date")
+    qs = _apply_landing_zone_scope(qs, request)
+    qs = _apply_assigned_user_filter(qs, request)
+    return _apply_viewer_assignment_scope(qs, request).order_by("-created_date")
 
 
 def unified_leads_total(request) -> int:
@@ -1478,11 +1490,10 @@ def unified_lead_detail(raw_id: str, *, include_detail: bool = False, request=No
             from accounts.crm_zones import filter_crm_lead_qs_by_zone
 
             qs = filter_crm_lead_qs_by_zone(qs, request)
+            qs = _apply_viewer_assignment_scope(qs, request)
         lead = qs.first()
         if not lead:
             return None
-        if include_detail:
-            _ensure_geo_assigned(lead, request)
         return _attach_viewer_flags(lead_to_dict(lead, include_detail=include_detail), request)
     if kind == "enquiry":
         qs = Enquiry.objects.select_related("franchise", "assigned_user").filter(pk=pk)
@@ -1490,11 +1501,10 @@ def unified_lead_detail(raw_id: str, *, include_detail: bool = False, request=No
             from accounts.crm_zones import filter_enquiry_qs_by_zone
 
             qs = filter_enquiry_qs_by_zone(qs, request)
+            qs = _apply_viewer_assignment_scope(qs, request)
         enquiry = qs.first()
         if not enquiry:
             return None
-        if include_detail:
-            _ensure_geo_assigned(enquiry, request)
         return _attach_viewer_flags(enquiry_to_dict(enquiry, include_detail=include_detail), request)
     if kind == "franchiseenquiry":
         qs = FranchiseEnquiry.objects.select_related("franchise", "assigned_user").filter(pk=pk)
@@ -1502,29 +1512,23 @@ def unified_lead_detail(raw_id: str, *, include_detail: bool = False, request=No
             from accounts.crm_zones import filter_franchise_enquiry_qs_by_zone
 
             qs = filter_franchise_enquiry_qs_by_zone(qs, request)
+            qs = _apply_viewer_assignment_scope(qs, request)
         franchise_enq = qs.first()
         if not franchise_enq:
             return None
-        if include_detail:
-            _ensure_geo_assigned(franchise_enq, request)
         return _attach_viewer_flags(
             franchise_enquiry_to_dict(franchise_enq, include_detail=include_detail), request
         )
     if kind == "landing":
-        row = KidsEnquiry.objects.filter(pk=pk).first()
+        qs = KidsEnquiry.objects.select_related("assigned_user").filter(pk=pk)
+        if request is not None:
+            qs = _apply_landing_zone_scope(qs, request)
+            qs = _apply_viewer_assignment_scope(qs, request)
+        row = qs.first()
         return _attach_viewer_flags(
             landing_to_dict(row, include_detail=include_detail) if row else None, request
         )
     return None
-
-
-def _ensure_geo_assigned(obj, request=None) -> None:
-    """If lead has city/state but no assignee, persist the territory CRM user immediately."""
-    if getattr(obj, "assigned_user_id", None):
-        return
-    _maybe_assign_lead(obj, request)
-    if getattr(obj, "assigned_user_id", None):
-        obj.save(update_fields=["assigned_user"])
 
 
 def update_unified_lead(raw_id: str, data: dict, *, include_detail: bool = False, request=None) -> dict | None:
@@ -1550,8 +1554,10 @@ def update_unified_lead(raw_id: str, data: dict, *, include_detail: bool = False
             lead.meeting_date = parse_datetime(data["meetingDate"]) if data["meetingDate"] else None
         if "nextFollowUpDate" in data:
             lead.next_follow_up_date = parse_datetime(data["nextFollowUpDate"]) if data["nextFollowUpDate"] else None
-        _maybe_assign_lead(lead, request, data)
+        assignment_changed = _maybe_assign_lead(lead, request, data)
         lead.save()
+        if assignment_changed:
+            _notify_explicit_assignment(lead, request)
         return _attach_viewer_flags(lead_to_dict(lead, include_detail=include_detail), request)
 
     if kind == "enquiry":
@@ -1576,8 +1582,10 @@ def update_unified_lead(raw_id: str, data: dict, *, include_detail: bool = False
             enquiry.meeting_date = parse_datetime(data["meetingDate"]) if data["meetingDate"] else None
         if "nextFollowUpDate" in data:
             enquiry.next_follow_up_date = parse_datetime(data["nextFollowUpDate"]) if data["nextFollowUpDate"] else None
-        _maybe_assign_lead(enquiry, request, data)
+        assignment_changed = _maybe_assign_lead(enquiry, request, data)
         enquiry.save()
+        if assignment_changed:
+            _notify_explicit_assignment(enquiry, request)
         from .views import _sync_enquiry_status_siblings
         _sync_enquiry_status_siblings(enquiry, enquiry.status)
         return _attach_viewer_flags(enquiry_to_dict(enquiry, include_detail=include_detail), request)
@@ -1604,14 +1612,16 @@ def update_unified_lead(raw_id: str, data: dict, *, include_detail: bool = False
             franchise_enq.meeting_date = parse_datetime(data["meetingDate"]) if data["meetingDate"] else None
         if "nextFollowUpDate" in data:
             franchise_enq.next_follow_up_date = parse_datetime(data["nextFollowUpDate"]) if data["nextFollowUpDate"] else None
-        _maybe_assign_lead(franchise_enq, request, data)
+        assignment_changed = _maybe_assign_lead(franchise_enq, request, data)
         franchise_enq.save()
+        if assignment_changed:
+            _notify_explicit_assignment(franchise_enq, request)
         return _attach_viewer_flags(
             franchise_enquiry_to_dict(franchise_enq, include_detail=include_detail), request
         )
 
     if kind == "landing":
-        row = KidsEnquiry.objects.filter(pk=numeric_id).first()
+        row = KidsEnquiry.objects.select_related("assigned_user").filter(pk=numeric_id).first()
         if not row:
             return None
         if "fullName" in data:
@@ -1632,7 +1642,10 @@ def update_unified_lead(raw_id: str, data: dict, *, include_detail: bool = False
             row.meeting_date = parse_datetime(data["meetingDate"]) if data["meetingDate"] else None
         if "nextFollowUpDate" in data:
             row.next_follow_up_date = parse_datetime(data["nextFollowUpDate"]) if data["nextFollowUpDate"] else None
+        assignment_changed = _maybe_assign_lead(row, request, data)
         row.save()
+        if assignment_changed:
+            _notify_explicit_assignment(row, request)
         return _attach_viewer_flags(landing_to_dict(row, include_detail=include_detail), request)
 
     return None

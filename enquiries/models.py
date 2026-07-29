@@ -138,6 +138,13 @@ class KidsEnquiry(models.Model):
     meeting_date = models.DateTimeField(null=True, blank=True)
     next_follow_up_date = models.DateTimeField(null=True, blank=True)
     raw_payload = models.JSONField(default=dict)
+    assigned_user = models.ForeignKey(
+        "accounts.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="assigned_landing_leads",
+    )
 
     class Meta:
         db_table = "kids_enquiry"

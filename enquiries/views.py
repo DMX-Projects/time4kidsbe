@@ -703,8 +703,11 @@ class AdminCrmLeadDetailView(APIView):
         if _is_campaign_readonly_user(request):
             return Response({"detail": "View-only account."}, status=status.HTTP_403_FORBIDDEN)
 
-        from .crm_api import parse_lead_id
+        from .crm_api import parse_lead_id, unified_lead_detail
         from .models import CrmLead, Enquiry, FranchiseEnquiry, KidsEnquiry
+
+        if unified_lead_detail(pk, include_detail=False, request=request) is None:
+            return Response({"message": "Lead not found"}, status=status.HTTP_404_NOT_FOUND)
 
         try:
             kind, numeric_id = parse_lead_id(pk)
@@ -785,7 +788,10 @@ class AdminCrmLeadNoteCreateView(APIView):
         if _is_campaign_readonly_user(request):
             return Response({"detail": "View-only account."}, status=status.HTTP_403_FORBIDDEN)
 
-        from .crm_api import note_to_dict, parse_lead_id
+        from .crm_api import note_to_dict, parse_lead_id, unified_lead_detail
+
+        if unified_lead_detail(pk, include_detail=False, request=request) is None:
+            return Response({"message": "Lead not found"}, status=status.HTTP_404_NOT_FOUND)
 
         kind, numeric_id = parse_lead_id(pk)
 
@@ -795,7 +801,7 @@ class AdminCrmLeadNoteCreateView(APIView):
             return Response({"message": "Note content is required."}, status=status.HTTP_400_BAD_REQUEST)
 
         from .models import UnifiedLeadNote, CrmLead, Enquiry, FranchiseEnquiry
-        from .crm_api import unified_note_to_dict, _maybe_assign_lead
+        from .crm_api import unified_note_to_dict
 
         status_val = (request.data.get("status") or "").strip()
         lead_obj = None
@@ -811,10 +817,6 @@ class AdminCrmLeadNoteCreateView(APIView):
             lead_obj = FranchiseEnquiry.objects.filter(pk=numeric_id).first()
             if not status_val and lead_obj:
                 status_val = lead_obj.status or ""
-
-        if lead_obj is not None:
-            _maybe_assign_lead(lead_obj, request)
-            lead_obj.save(update_fields=["assigned_user"])
 
         lead_id = f"{kind}_{numeric_id}"
         note = UnifiedLeadNote.objects.create(lead_id=lead_id, content=content, status=status_val)

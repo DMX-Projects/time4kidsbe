@@ -28,6 +28,11 @@ def _normalize_centre_login_key(raw: str | None) -> str:
     return key
 
 
+def _compact_centre_key(raw: str | None) -> str:
+    """Alphanumeric-only key so ``Kaveri Nagar`` matches username ``KaveriNagar``."""
+    return "".join(ch for ch in _normalize_centre_login_key(raw) if ch.isalnum())
+
+
 def franchise_slug_login_key(slug: str) -> str:
     """First segment of a centre slug (e.g. ``kondapur`` from ``kondapur-timekids...``)."""
     s = (slug or "").strip().lower()
@@ -40,6 +45,32 @@ def franchise_slug_login_key(slug: str) -> str:
     return _normalize_centre_login_key(s)
 
 
+def _slug_prefix_keys(slug: str) -> list[str]:
+    """All useful keys from a slug prefix (first segment, last segment, full compact)."""
+    s = (slug or "").strip().lower()
+    if "-timekid" in s:
+        s = s.split("-timekid", 1)[0]
+    if not s:
+        return []
+
+    keys: list[str] = []
+
+    def add(raw: str | None) -> None:
+        for variant in (
+            _normalize_centre_login_key(raw),
+            _compact_centre_key(raw),
+        ):
+            if variant and variant not in keys:
+                keys.append(variant)
+
+    add(s)
+    parts = [p for p in s.replace("_", "-").split("-") if p]
+    for part in parts:
+        cleaned = part[2:] if part.startswith("tk") and len(part) > 2 else part
+        add(cleaned)
+    return keys
+
+
 def _login_keys_for_franchise_user(user) -> list[str]:
     """Username and email-derived keys used to match a centre slug after login."""
     keys: list[str] = []
@@ -48,7 +79,7 @@ def _login_keys_for_franchise_user(user) -> list[str]:
         key = (raw or "").strip().lower()
         if not key:
             return
-        for variant in (key, _normalize_centre_login_key(key)):
+        for variant in (key, _normalize_centre_login_key(key), _compact_centre_key(key)):
             if variant and variant not in keys:
                 keys.append(variant)
 
@@ -66,20 +97,50 @@ def _login_keys_for_franchise_user(user) -> list[str]:
 
 
 def _slug_matches_login_key(slug: str, key: str) -> bool:
-    slug_key = franchise_slug_login_key(slug)
     key = _normalize_centre_login_key(key)
-    if not slug_key or not key:
+    compact_key = _compact_centre_key(key)
+    if not key and not compact_key:
         return False
-    if slug_key == key:
-        return True
-    # e.g. username ``padmaraonagar`` vs slug ``padmaraonagarnew-timekids...``
-    return slug_key.startswith(key) or key.startswith(slug_key)
+
+    prefix_keys = _slug_prefix_keys(slug)
+    # Exact match against any slug segment (needed for ``EBColony`` ↔
+    # ``namakkal-ebcolony-timekids...``).
+    for slug_key in prefix_keys:
+        if slug_key == key or (compact_key and slug_key == compact_key):
+            return True
+
+    # Prefix/startswith only against the primary slug key + full compact prefix,
+    # not every short hyphen segment (avoids weak collisions).
+    primary = franchise_slug_login_key(slug)
+    full_compact = _compact_centre_key(
+        (slug or "").strip().lower().split("-timekid", 1)[0]
+    )
+    for slug_key in (primary, full_compact):
+        if not slug_key:
+            continue
+        # e.g. username ``padmaraonagar`` vs slug ``padmaraonagarnew-timekids...``
+        if key and (slug_key.startswith(key) or key.startswith(slug_key)):
+            return True
+        if compact_key and (
+            slug_key.startswith(compact_key) or compact_key.startswith(slug_key)
+        ):
+            return True
+    return False
+
+
+def _franchise_name_matches_login_key(name: str, key: str) -> bool:
+    name_key = _compact_centre_key(name)
+    login_key = _compact_centre_key(key)
+    return bool(name_key and login_key and name_key == login_key)
 
 
 def franchise_for_centre_login(user):
     """
     Legacy imports often left ``franchise.user_id`` on HO/admin accounts while centre
     staff sign in with separate ``FRANCHISE`` users (username ≈ centre slug prefix).
+
+    Also matches when the slug city prefix is wrong (e.g. Kaveri Nagar slug
+    ``namakkal-timekids...``) but the franchise *name* uniquely matches the login.
     """
     if not user or not getattr(user, "is_authenticated", False):
         return None
@@ -128,6 +189,21 @@ def franchise_for_centre_login(user):
     # (paravur / namakkal) must not silently pick the lowest id.
     if len(matches) == 1:
         return matches[0]
+    if matches:
+        return None
+
+    # Fallback: exact compact name match (KaveriNagar ↔ "Kaveri Nagar").
+    # Username key only — email locals are too noisy for name matching.
+    name_key = _compact_centre_key(getattr(user, "username", None) or "")
+    if not name_key:
+        return None
+    name_matches = [
+        f
+        for f in Franchise.objects.only("id", "name", "slug").order_by("id")
+        if _franchise_name_matches_login_key(f.name, name_key)
+    ]
+    if len(name_matches) == 1:
+        return name_matches[0]
     return None
 
 
