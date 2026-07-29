@@ -252,6 +252,52 @@ def _clean_text(value: str, *, fallback: str = "") -> str:
     return text
 
 
+def _format_meta_choice_label(value: str) -> str:
+    """Turn Meta Instant Form keys like ``3_months`` into readable month labels.
+
+    Yes/No answers are not valid start periods — return empty for those.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    lower = text.lower().strip("_")
+    # Not a timeframe — Instant Form sometimes stores yes/no on this question.
+    if lower in {"yes", "no", "y", "n"}:
+        return ""
+    known = {
+        "3_months": "3 months",
+        "6_months": "6 months",
+        "1_month": "1 month",
+        "12_months": "12 months",
+        "1_year": "1 year",
+        "immediately": "Immediately",
+        "asap": "ASAP",
+        "test": "Test",
+    }
+    if text.lower() in known:
+        return known[text.lower()]
+    if lower in known:
+        return known[lower]
+    # Keep month/time-like values; drop pure yes/no leftovers.
+    pretty = re.sub(r"_+", " ", text).strip(" _-")
+    pretty = re.sub(r"\s+", " ", pretty).strip()
+    if pretty.lower() in {"yes", "y", "no", "n"}:
+        return ""
+    if re.search(r"\d+\s*(month|months|year|years|week|weeks|day|days)", pretty, re.I):
+        return pretty
+    if pretty.lower() in {"immediately", "asap", "test"}:
+        return pretty[:1].upper() + pretty[1:].lower() if pretty.lower() != "asap" else "ASAP"
+    # Unknown non-month token — hide rather than show yes/no junk
+    if re.fullmatch(r"[a-zA-Z]+", pretty) and pretty.lower() not in {"immediately", "asap", "test"}:
+        return ""
+    return pretty
+
+
+def format_meta_choice_label(value: str) -> str:
+    """Public alias for CRM API display of Instant Form choice values."""
+    return _format_meta_choice_label(value)
+
+
 def verify_meta_signature(raw_body: bytes, signature_header: str | None) -> bool:
     """Validate X-Hub-Signature-256 when App Secret is configured."""
     secret = meta_app_secret()
@@ -558,6 +604,8 @@ def create_crm_lead_from_meta(
         investment_range = "₹10–15L"
 
     expected_start = _clean_text(fields.get("start_answer") or "", fallback="Test" if is_test_lead else "")
+    if expected_start and expected_start != "Test":
+        expected_start = _format_meta_choice_label(expected_start)
 
     leadgen_id = str(
         lead_payload.get("id")

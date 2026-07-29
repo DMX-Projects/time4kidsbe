@@ -10,6 +10,7 @@ from django.utils.dateparse import parse_date, parse_datetime
 
 from .models import CrmLead, CrmLeadNote, CrmLeadSource, CrmLeadStatus, Enquiry, EnquiryType, KidsEnquiry, FranchiseEnquiry
 from .crm_users import assigned_user_payload
+from .meta_leads import format_meta_choice_label
 
 CRM_SOURCE_FROM_API = {
     "website": CrmLeadSource.WEB,
@@ -50,6 +51,48 @@ FRANCHISE_CAMPAIGN_SOURCES = (
 CAMPAIGN_ONLY_CRM_EMAILS = {
     "sachin.dhakate@time4education.com",
 }
+
+# Third-party viewers: paid campaign only, view-only, mobile/email hidden.
+# Add new emails here — do NOT put Sachin here.
+CAMPAIGN_EXTERNAL_VIEWER_EMAILS = {
+    "campaign.viewer@gmail.com",
+}
+
+
+def is_campaign_only_crm_user(request=None, user=None) -> bool:
+    viewer = user
+    if viewer is None and request is not None:
+        viewer = getattr(request, "user", None)
+    email = str(getattr(viewer, "email", "") or "").strip().lower()
+    return bool(
+        email
+        and (
+            email in CAMPAIGN_ONLY_CRM_EMAILS
+            or email in CAMPAIGN_EXTERNAL_VIEWER_EMAILS
+        )
+    )
+
+
+def is_campaign_external_viewer(request=None, user=None) -> bool:
+    """Third-party: no mobile/email, cannot edit."""
+    viewer = user
+    if viewer is None and request is not None:
+        viewer = getattr(request, "user", None)
+    email = str(getattr(viewer, "email", "") or "").strip().lower()
+    return bool(email and email in CAMPAIGN_EXTERNAL_VIEWER_EMAILS)
+
+
+def redact_lead_for_campaign_viewer(data: dict | None) -> dict | None:
+    """Hide PII and mark lead non-editable for third-party campaign viewers."""
+    if not data:
+        return data
+    out = dict(data)
+    out["mobile"] = ""
+    out["email"] = ""
+    out["editable"] = False
+    out["canAssignUsers"] = False
+    out["campaignViewer"] = True
+    return out
 
 GOOGLE_CAMPAIGN_SOURCES = (
     CrmLeadSource.JULY_LP,
@@ -193,7 +236,11 @@ def lead_to_dict(lead: CrmLead, *, include_detail: bool = False) -> dict:
         "preferredCentreLocation": centre_name,
         "franchiseType": lead.franchise_type or None,
         "investmentRange": lead.investment_range or None,
-        "expectedStartDate": lead.expected_start_date or None,
+        "expectedStartDate": (
+            format_meta_choice_label(lead.expected_start_date)
+            if (lead.expected_start_date or "").strip()
+            else None
+        ),
         "source": source_to_api(effective_crm_source(lead)),
         "landingPageUrl": lead.landing_page_url or "",
         "formName": crm_lead_form_name(lead),
@@ -245,9 +292,7 @@ def _parse_request_dates(request):
 
 
 def _request_centre_ids(request) -> list[int]:
-    user = getattr(request, "user", None)
-    email = str(getattr(user, "email", "") or "").strip().lower()
-    if email in CAMPAIGN_ONLY_CRM_EMAILS:
+    if is_campaign_only_crm_user(request=request):
         return []
     raw = (_query_params(request).get("centreId") or _query_params(request).get("centre_id") or "").strip()
     if not raw:
@@ -522,9 +567,7 @@ def unified_crm_cities(state: str | None = None, request=None) -> list[str]:
 
 
 def _request_source_filter(request) -> str | None:
-    user = getattr(request, "user", None)
-    email = str(getattr(user, "email", "") or "").strip().lower()
-    if email in CAMPAIGN_ONLY_CRM_EMAILS:
+    if is_campaign_only_crm_user(request=request):
         # Hard-lock this account to Paid Campaign view.
         return "campaign"
     return (_query_params(request).get("source") or "").strip().lower() or None
@@ -532,9 +575,7 @@ def _request_source_filter(request) -> str | None:
 
 def _request_user_filter(request) -> str | None:
     """``userId`` query: assignable handler id, ``unassigned``, or empty (all)."""
-    user = getattr(request, "user", None)
-    email = str(getattr(user, "email", "") or "").strip().lower()
-    if email in CAMPAIGN_ONLY_CRM_EMAILS:
+    if is_campaign_only_crm_user(request=request):
         return None
     from enquiries.crm_users import sanitize_crm_filter_user_id
 
@@ -1190,7 +1231,10 @@ def unified_leads_page(request, *, page: int, limit: int) -> list[dict]:
         merged.extend(landing_to_dict(row) for row in _filter_landing_qs(request)[:fetch_count])
 
     merged.sort(key=lambda row: row.get("createdAt") or "", reverse=True)
-    return merged[offset : offset + limit]
+    page_rows = merged[offset : offset + limit]
+    if is_campaign_external_viewer(request=request):
+        return [redact_lead_for_campaign_viewer(row) or row for row in page_rows]
+    return page_rows
 
 
 def unified_dashboard_stats(request) -> dict:
@@ -1416,6 +1460,8 @@ def _attach_viewer_flags(data: dict | None, request=None) -> dict | None:
     from .crm_users import user_can_assign_crm_leads
 
     viewer = getattr(request, "user", None) if request is not None else None
+    if is_campaign_external_viewer(user=viewer):
+        return redact_lead_for_campaign_viewer(data)
     data["canAssignUsers"] = user_can_assign_crm_leads(viewer)
     return data
 
@@ -1423,9 +1469,7 @@ def _attach_viewer_flags(data: dict | None, request=None) -> dict | None:
 def unified_lead_detail(raw_id: str, *, include_detail: bool = False, request=None) -> dict | None:
     kind, pk = parse_lead_id(raw_id)
     if request is not None:
-        user = getattr(request, "user", None)
-        email = str(getattr(user, "email", "") or "").strip().lower()
-        if email in CAMPAIGN_ONLY_CRM_EMAILS and kind != "crm":
+        if is_campaign_only_crm_user(request=request) and kind != "crm":
             # Campaign-only login cannot open Admission/Contact/Franchise/Landing detail pages.
             return None
     if kind == "crm":
