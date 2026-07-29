@@ -36,8 +36,10 @@ from .communication_sms import send_otp_sms
 
 
 def _is_campaign_readonly_user(request) -> bool:
-    email = str(getattr(getattr(request, "user", None), "email", "") or "").strip().lower()
-    return email == "sachin.dhakate@time4education.com"
+    """View-only write block: Sachin + third-party campaign viewers."""
+    from .crm_api import is_campaign_only_crm_user
+
+    return is_campaign_only_crm_user(request=request)
 
 
 def _normalize_otp_phone(raw: str) -> str:
