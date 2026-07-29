@@ -381,8 +381,9 @@ def send_crm_heads_new_lead_reminder(
     """
     New-lead email routing:
 
-    - To: particular manager for that city/state (assignee)
-    - Cc: other managers in that state + covering zonal/notify heads + Jayesh
+    - To: covering Zonal Manager while unassigned
+    - Managers are notified only after an explicit assignment
+    - Cc: other covering zonal/notify heads + Jayesh
 
     Controlled by settings.CRM_NOTIFY_ALL_HANDLERS (False skips completely).
     """
@@ -487,12 +488,93 @@ def send_crm_heads_new_lead_reminder(
     return ok
 
 
+def send_crm_lead_assignment_email(obj, *, assigned_by=None) -> bool:
+    """Notify a territory manager after a ZM/Super Admin explicitly assigns a lead."""
+    assigned = getattr(obj, "assigned_user", None)
+    recipient = (getattr(assigned, "email", None) or "").strip()
+    if not recipient:
+        logger.warning("CRM assignment email skipped — assignee has no email")
+        return False
+    if not sendgrid_api_key():
+        logger.warning("CRM assignment email skipped — SENDGRID_API_KEY not set")
+        return False
+
+    lead_name = (
+        getattr(obj, "full_name", None)
+        or getattr(obj, "name", None)
+        or "Lead"
+    )
+    state = (getattr(obj, "state", None) or "").strip()
+    city = (getattr(obj, "city", None) or "").strip()
+    franchise = getattr(obj, "franchise", None)
+    if franchise is not None:
+        if not state:
+            state = (
+                getattr(franchise, "statename", None)
+                or getattr(franchise, "state", None)
+                or ""
+            ).strip()
+        if not city:
+            city = (
+                getattr(franchise, "cityname", None)
+                or getattr(franchise, "city", None)
+                or ""
+            ).strip()
+
+    assigner_name = (
+        getattr(assigned_by, "full_name", None)
+        or getattr(assigned_by, "email", None)
+        or "CRM Zonal Manager"
+    )
+    login_url = _crm_admin_login_url()
+    subject = f"CRM lead assigned to you — {lead_name}"
+    plain = (
+        f"A CRM lead has been assigned to you by {assigner_name}.\n\n"
+        f"Lead: {lead_name}\n"
+        f"State: {state or '—'}\n"
+        f"City / Centre: {city or '—'}\n\n"
+        f"Login to CRM to view and follow up:\n{login_url}\n"
+    )
+    safe_login = html.escape(login_url)
+    html_content = f"""
+    <html><body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+      <p><strong>A CRM lead has been assigned to you.</strong></p>
+      <p>
+        <strong>Assigned by:</strong> {html.escape(str(assigner_name))}<br>
+        <strong>Lead:</strong> {html.escape(str(lead_name))}<br>
+        <strong>State:</strong> {html.escape(state or "—")}<br>
+        <strong>City / Centre:</strong> {html.escape(city or "—")}
+      </p>
+      <p>Login to CRM to view and follow up:<br>
+        <a href="{safe_login}">{safe_login}</a>
+      </p>
+    </body></html>
+    """
+    ok = send_sendgrid_message(
+        to_emails=[recipient],
+        subject=subject,
+        plain_text_content=plain,
+        html_content=html_content,
+        from_email=default_from_email(),
+    )
+    if ok:
+        logger.info(
+            "CRM assignment email sent to=%s lead=%s id=%s assigned_by=%s",
+            recipient,
+            type(obj).__name__,
+            getattr(obj, "pk", None),
+            getattr(assigned_by, "email", None),
+        )
+    return ok
+
+
 def assign_and_notify_new_lead(obj, *, lead_source: str = "") -> bool:
     """
-    Assign lead to best territory CRM user (if unassigned) and email matching handlers.
+    Notify CRM users about a new lead without assigning it automatically.
+    A Zonal Manager explicitly assigns it to their RM / Manager / Dy / AM team.
     Works for CrmLead, FranchiseEnquiry, Enquiry, and similar objects with state/city.
     """
-    from .crm_users import resolve_notify_lead_kind, suggest_assignee_for_geo
+    from .crm_users import resolve_notify_lead_kind
 
     state = (getattr(obj, "state", None) or "").strip()
     city = (getattr(obj, "city", None) or "").strip()
@@ -542,19 +624,6 @@ def assign_and_notify_new_lead(obj, *, lead_source: str = "") -> bool:
             source = "CRM"
 
     lead_kind = resolve_notify_lead_kind(obj, source)
-
-    if hasattr(obj, "assigned_user_id") and not getattr(obj, "assigned_user_id", None):
-        suggested = suggest_assignee_for_geo(
-            state,
-            city or centre,
-            pipeline=lead_kind,
-        )
-        if suggested:
-            obj.assigned_user = suggested
-            try:
-                obj.save(update_fields=["assigned_user"])
-            except Exception:
-                logger.exception("Failed to save assigned_user for %s id=%s", type(obj).__name__, getattr(obj, "pk", None))
 
     assigned = getattr(obj, "assigned_user", None)
     preferred_to = (getattr(assigned, "email", None) or "").strip() or None

@@ -102,7 +102,7 @@ ZONAL_MANAGER_ADMISSION_TEAM_EMAILS: dict[str, frozenset[str]] = {
 
 
 def user_can_assign_crm_leads(user) -> bool:
-    """True for Zonal Managers (TKPL list) and national CRM super admins."""
+    """True for Zonal Managers and national CRM Super Admins."""
     if user is None:
         return False
     email = str(getattr(user, "email", "") or "").strip().lower()
@@ -115,6 +115,17 @@ def is_assignable_handler_user(user) -> bool:
         return False
     email = str(getattr(user, "email", "") or "").strip().lower()
     return email in CRM_ASSIGNABLE_HANDLER_EMAILS
+
+
+def filter_leads_for_crm_viewer(qs, request):
+    """
+    Territory managers only see leads explicitly assigned to their own login.
+    Zonal Managers and Super Admins retain their normal geographic/all-lead view.
+    """
+    viewer = _viewer_from_request(request)
+    if is_assignable_handler_user(viewer):
+        return qs.filter(assigned_user_id=viewer.pk)
+    return qs
 
 
 def _filter_assignable_handlers(users: list[User]) -> list[User]:
@@ -460,7 +471,10 @@ def suggest_assignee_for_geo(
     *,
     pipeline: str | None = None,
 ) -> User | None:
-    """Best city/state assignee from the selected Franchise/Admission sheet."""
+    """
+    Best city/state handler from the Franchise/Admission sheet for routing helpers.
+    This function does not persist an assignment; only an explicit ZM action does.
+    """
     matches = crm_users_matching_geo(state, city)
     if not matches:
         return None
@@ -487,11 +501,11 @@ def resolve_new_lead_mail_recipients(
     """
     New-lead mail routing from the mapping sheets:
 
-    - To: particular manager for that city/state (assignee)
-    - Cc: other managers covering the same state + zonal manager(s) / notify heads + Jayesh
+    - Unassigned lead To: covering Zonal Manager
+    - Assigned lead To: explicit assignee
+    - Cc: covering Zonal Manager(s) + Jayesh
 
-    City is used to pick the primary To; Cc peers are state-scoped so e.g. a Kollam
-    lead Ccs other Kerala managers (including North Kerala), not only South Kerala.
+    Territory managers are deliberately excluded until explicit assignment.
 
     Returns ``(to_emails, cc_emails)``.
     """
@@ -549,18 +563,10 @@ def resolve_new_lead_mail_recipients(
     )
     if preferred and preferred in match_emails and preferred_is_allowed:
         to_email = preferred
-    elif city_managers:
-        to_email = city_managers[0]
-    elif state_managers:
-        to_email = state_managers[0]
     elif city_zonals:
         to_email = city_zonals[0]
     elif state_zonals:
         to_email = state_zonals[0]
-    elif city_matches:
-        to_email = (city_matches[0].email or "").strip().lower()
-    elif state_matches:
-        to_email = (state_matches[0].email or "").strip().lower()
 
     if not to_email:
         return [jayesh], []
@@ -574,8 +580,7 @@ def resolve_new_lead_mail_recipients(
             seen_cc.add(key)
             cc.append(key)
 
-    for addr in state_managers:
-        _add_cc(addr)
+    # Managers are not notified until a ZM/Super Admin explicitly assigns the lead.
     for addr in state_zonals:
         _add_cc(addr)
     _add_cc(jayesh)
@@ -766,10 +771,9 @@ def assigned_user_payload(
         "assignedUserId": user.id if user else None,
         "assignedUserLabel": display_name_for_user(user) if user else None,
     }
-    if include_suggestion and not user:
-        suggested = suggest_assignee_for_geo(state, city)
-        payload["suggestedAssignedUserId"] = suggested.id if suggested else None
-        payload["suggestedAssignedUserLabel"] = (
-            display_name_for_user(suggested) if suggested else None
-        )
+    # Do not expose an automatic/suggested manager. Assignment is an explicit
+    # Zonal Manager action in the CRM.
+    if include_suggestion:
+        payload["suggestedAssignedUserId"] = None
+        payload["suggestedAssignedUserLabel"] = None
     return payload
