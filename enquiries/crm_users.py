@@ -216,19 +216,11 @@ def _zonal_team_users_for_context(
     city_param: str | None = None,
     pipeline: str | None = None,
 ) -> list[User]:
-    """Zonal manager's franchise/admission team — full team or narrowed to state/city filter."""
+    """Full mapped team for a Zonal Manager, independent of user city/state setup."""
     viewer = _viewer_from_request(request)
     if not viewer:
         return []
-    team = zonal_manager_team_users(viewer, pipeline)
-    if not team:
-        return []
-    state_s = (state_param or "").strip()
-    city_s = (city_param or "").strip()
-    if not state_s and not city_s:
-        return team
-    geo_ids = {user.id for user in crm_users_matching_geo_filter(state_s or None, city_s or None)}
-    return [user for user in team if user.id in geo_ids]
+    return zonal_manager_team_users(viewer, pipeline)
 
 
 def sanitize_crm_filter_user_id(raw: str | None) -> str | None:
@@ -687,6 +679,12 @@ def list_crm_users_for_api(
         return [_user_api_dict(user) for user in all_assignable_handler_users()]
     if for_assign and pipe == "admission" and zonal_admission_uses_full_handler_list(viewer):
         return [_user_api_dict(user) for user in all_assignable_handler_users()]
+    if for_assign and pipe:
+        zonal_team = _filter_assignable_handlers(
+            zonal_manager_team_users(viewer, pipe)
+        )
+        if zonal_team:
+            return [_user_api_dict(user) for user in zonal_team]
     if state_s or city_s:
         users = crm_users_matching_geo_filter(state_s or None, city_s or None)
     elif request is not None:
@@ -718,6 +716,12 @@ def assignee_candidates_for_lead(
         return all_assignable_handler_users()
     if admission_lead and zonal_admission_uses_full_handler_list(assigner):
         return all_assignable_handler_users()
+    pipeline = "franchise" if franchise_lead else "admission" if admission_lead else None
+    zonal_team = _filter_assignable_handlers(
+        zonal_manager_team_users(assigner, pipeline)
+    )
+    if zonal_team:
+        return zonal_team
     if (state or "").strip() or (city or "").strip():
         matched = _filter_assignable_handlers(
             crm_users_matching_geo_filter(state, city)
