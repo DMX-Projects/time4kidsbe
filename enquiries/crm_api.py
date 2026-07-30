@@ -650,7 +650,7 @@ def _request_user_filter(request) -> str | None:
 
 
 def _apply_assigned_user_filter(qs, request):
-    """Apply the ZM/Super Admin assignment dropdown filter."""
+    """Apply the authorized manager assignment dropdown filter."""
     user_filter = _request_user_filter(request)
     if not user_filter:
         return qs
@@ -660,7 +660,7 @@ def _apply_assigned_user_filter(qs, request):
 
 
 def _apply_viewer_assignment_scope(qs, request):
-    """Managers see only their assigned leads; ZMs/Super Admins keep broader scope."""
+    """Handlers see assigned leads; Regional/Zonal/Super Admins keep broader scope."""
     from .crm_users import filter_leads_for_crm_viewer
 
     return filter_leads_for_crm_viewer(qs, request)
@@ -689,7 +689,7 @@ def _is_admission_assignable_object(obj) -> bool:
 
 def _maybe_assign_lead(obj, request, data: dict | None = None) -> bool:
     """
-    Apply an explicit ZM/Super Admin assignment to a permitted territory manager.
+    Apply an explicit Regional/Zonal/Super Admin assignment to a permitted handler.
     Leads remain unassigned when ``assignedUserId`` is not supplied.
     """
     data = data or {}

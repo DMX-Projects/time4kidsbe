@@ -141,9 +141,10 @@ TEAM_USERS = (
         "phone": "9074586895",
         "zone": "SOUTH",
         "states": "Kerala",
-        "cities": KERALA_SOUTH,
-        "notify_franchise": False,
-        "notify_admission": False,
+        # Regional Manager covers all Kerala and can assign to Satish/Vivek by territory.
+        "cities": "",
+        "notify_franchise": True,
+        "notify_admission": True,
     },
     {
         "email": "satishmenon@timekidspreschools.com",
@@ -175,7 +176,7 @@ TEAM_USERS = (
         "email": "vivek@timekidspreschools.com",
         "name": "Vivek RT",
         "password": "Vivek@Crm57",
-        "designation": "Regional Manager",
+        "designation": "Manager",
         "mapping_region": "Kerala",
         "phone": "7907467952",
         "zone": "SOUTH",
