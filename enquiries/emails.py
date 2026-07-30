@@ -381,9 +381,9 @@ def send_crm_heads_new_lead_reminder(
     """
     New-lead email routing:
 
-    - To: covering Zonal Manager while unassigned
+    - To: covering Zonal Manager + covering Regional Manager(s) while unassigned
     - Managers are notified only after an explicit assignment
-    - Cc: other covering zonal/notify heads + Jayesh
+    - Cc: other covering zonal/regional heads + Jayesh
 
     Controlled by settings.CRM_NOTIFY_ALL_HANDLERS (False skips completely).
     """
@@ -489,7 +489,7 @@ def send_crm_heads_new_lead_reminder(
 
 
 def send_crm_lead_assignment_email(obj, *, assigned_by=None) -> bool:
-    """Notify a territory manager after a ZM/Super Admin explicitly assigns a lead."""
+    """Notify a territory handler after an authorized manager assigns a lead."""
     assigned = getattr(obj, "assigned_user", None)
     recipient = (getattr(assigned, "email", None) or "").strip()
     if not recipient:
@@ -571,7 +571,7 @@ def send_crm_lead_assignment_email(obj, *, assigned_by=None) -> bool:
 def assign_and_notify_new_lead(obj, *, lead_source: str = "") -> bool:
     """
     Notify CRM users about a new lead without assigning it automatically.
-    A Zonal Manager explicitly assigns it to their RM / Manager / Dy / AM team.
+    A Regional or Zonal Manager explicitly assigns it to a territory handler.
     Works for CrmLead, FranchiseEnquiry, Enquiry, and similar objects with state/city.
     """
     from .crm_users import resolve_notify_lead_kind

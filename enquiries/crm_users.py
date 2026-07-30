@@ -22,7 +22,20 @@ CRM_SUPER_ADMIN_ASSIGN_EMAILS = frozenset(
     }
 )
 
-CRM_LEAD_ASSIGNER_EMAILS = ZONAL_MANAGER_ASSIGN_EMAILS | CRM_SUPER_ADMIN_ASSIGN_EMAILS
+# Regional Managers who may assign leads within their own territory.
+# Vivek RT is a Manager, so he is intentionally not included.
+REGIONAL_MANAGER_ASSIGN_EMAILS = frozenset(
+    {
+        "sujee@timekidspreschools.com",
+        "joejoseph@timekidspreschools.com",
+    }
+)
+
+CRM_LEAD_ASSIGNER_EMAILS = (
+    ZONAL_MANAGER_ASSIGN_EMAILS
+    | REGIONAL_MANAGER_ASSIGN_EMAILS
+    | CRM_SUPER_ADMIN_ASSIGN_EMAILS
+)
 
 # TKPL designations that may receive leads (not Zonal Manager / Super Admin).
 # Regional Manager, Manager, Dy Manager, Assistant Manager only.
@@ -37,8 +50,8 @@ CRM_ASSIGNABLE_HANDLER_EMAILS = frozenset(
         # Regional Manager
         "sujee@timekidspreschools.com",
         "joejoseph@timekidspreschools.com",
-        "vivek@timekidspreschools.com",
         # Manager
+        "vivek@timekidspreschools.com",
         "thimmesh.k@timekidspreschools.com",
         "jayaraj@timekidspreschools.com",
         "satishmenon@timekidspreschools.com",
@@ -67,7 +80,7 @@ ZONAL_MANAGER_FRANCHISE_TEAM_EMAILS: dict[str, frozenset[str]] = {
             "jayaraj@timekidspreschools.com",  # Manager — Tamil Nadu
             "joejoseph@timekidspreschools.com",  # Regional Manager — Kerala
             "satishmenon@timekidspreschools.com",  # Manager — Kerala
-            "vivek@timekidspreschools.com",  # Regional Manager — Kerala
+            "vivek@timekidspreschools.com",  # Manager — Kerala
             "deepaknikam@timekidspreschools.com",  # Manager — Maharashtra
         }
     ),
@@ -92,7 +105,7 @@ ZONAL_MANAGER_ADMISSION_TEAM_EMAILS: dict[str, frozenset[str]] = {
             "joejoseph@timekidspreschools.com",  # Regional Manager — Kerala
             "satishmenon@timekidspreschools.com",  # Manager — Kerala
             "anoopkunjan@timekidspreschools.com",  # Assistant Manager — Kerala
-            "vivek@timekidspreschools.com",  # Regional Manager — Kerala
+            "vivek@timekidspreschools.com",  # Manager — Kerala
             "deepaknikam@timekidspreschools.com",  # Manager — Maharashtra
         }
     ),
@@ -100,9 +113,36 @@ ZONAL_MANAGER_ADMISSION_TEAM_EMAILS: dict[str, frozenset[str]] = {
     "jyoti.mishra@timekidspreschools.com": frozenset(),
 }
 
+# Regional Manager assignment teams remain pipeline-specific.
+# An empty set means that Regional Manager has no subordinate handler for that pipeline.
+REGIONAL_MANAGER_FRANCHISE_TEAM_EMAILS: dict[str, frozenset[str]] = {
+    "sujee@timekidspreschools.com": frozenset(),
+    "joejoseph@timekidspreschools.com": frozenset(
+        {
+            "satishmenon@timekidspreschools.com",
+            "vivek@timekidspreschools.com",
+        }
+    ),
+}
+
+REGIONAL_MANAGER_ADMISSION_TEAM_EMAILS: dict[str, frozenset[str]] = {
+    "sujee@timekidspreschools.com": frozenset(
+        {
+            "thimmesh.k@timekidspreschools.com",
+        }
+    ),
+    "joejoseph@timekidspreschools.com": frozenset(
+        {
+            "satishmenon@timekidspreschools.com",
+            "anoopkunjan@timekidspreschools.com",
+            "vivek@timekidspreschools.com",
+        }
+    ),
+}
+
 
 def user_can_assign_crm_leads(user) -> bool:
-    """True for Zonal Managers and national CRM Super Admins."""
+    """True for Regional/Zonal Managers and national CRM Super Admins."""
     if user is None:
         return False
     email = str(getattr(user, "email", "") or "").strip().lower()
@@ -119,11 +159,11 @@ def is_assignable_handler_user(user) -> bool:
 
 def filter_leads_for_crm_viewer(qs, request):
     """
-    Territory managers only see leads explicitly assigned to their own login.
-    Zonal Managers and Super Admins retain their normal geographic/all-lead view.
+    Lead handlers see only leads assigned to their login. Regional/Zonal Managers
+    and Super Admins retain their geographic/all-lead view so they can assign.
     """
     viewer = _viewer_from_request(request)
-    if is_assignable_handler_user(viewer):
+    if is_assignable_handler_user(viewer) and not user_can_assign_crm_leads(viewer):
         return qs.filter(assigned_user_id=viewer.pk)
     return qs
 
@@ -193,6 +233,33 @@ def zonal_manager_team_users(viewer, pipeline: str | None = None) -> list[User]:
         return []
     if not team_emails:
         return []
+    return [
+        user
+        for user in crm_users_queryset()
+        if (user.email or "").strip().lower() in team_emails
+    ]
+
+
+def regional_manager_team_users(
+    viewer,
+    pipeline: str | None = None,
+) -> list[User] | None:
+    """
+    Pipeline-specific handlers for a Regional Manager.
+    ``None`` means the viewer is not configured as a Regional Manager; an empty
+    list means they are configured but have no handler for that pipeline.
+    """
+    email = str(getattr(viewer, "email", "") or "").strip().lower()
+    pipe = normalize_crm_pipeline(pipeline)
+    if pipe == "franchise":
+        mapping = REGIONAL_MANAGER_FRANCHISE_TEAM_EMAILS
+    elif pipe == "admission":
+        mapping = REGIONAL_MANAGER_ADMISSION_TEAM_EMAILS
+    else:
+        return None
+    if email not in mapping:
+        return None
+    team_emails = mapping[email]
     return [
         user
         for user in crm_users_queryset()
@@ -465,7 +532,7 @@ def suggest_assignee_for_geo(
 ) -> User | None:
     """
     Best city/state handler from the Franchise/Admission sheet for routing helpers.
-    This function does not persist an assignment; only an explicit ZM action does.
+    This function does not persist an assignment; only an explicit manager action does.
     """
     matches = crm_users_matching_geo(state, city)
     if not matches:
@@ -493,11 +560,9 @@ def resolve_new_lead_mail_recipients(
     """
     New-lead mail routing from the mapping sheets:
 
-    - Unassigned lead To: covering Zonal Manager
+    - Unassigned lead To: covering Zonal Manager + covering Regional Manager(s)
     - Assigned lead To: explicit assignee
-    - Cc: covering Zonal Manager(s) + Jayesh
-
-    Territory managers are deliberately excluded until explicit assignment.
+    - Cc: other covering Zonal/Regional heads + Jayesh
 
     Returns ``(to_emails, cc_emails)``.
     """
@@ -508,11 +573,13 @@ def resolve_new_lead_mail_recipients(
     # Peers / ZMs for Cc: everyone covering the state (city ignored)
     state_matches = crm_users_matching_geo(state, None) if (state or "").strip() else city_matches
 
-    def _collect(users: list[User]) -> tuple[list[str], list[str]]:
+    def _collect(users: list[User]) -> tuple[list[str], list[str], list[str]]:
         managers: list[str] = []
         zonals: list[str] = []
+        regionals: list[str] = []
         seen_m: set[str] = set()
         seen_z: set[str] = set()
+        seen_r: set[str] = set()
         for user in users:
             email = (user.email or "").strip().lower()
             if not email:
@@ -523,7 +590,10 @@ def resolve_new_lead_mail_recipients(
             if email in ZONAL_MANAGER_ASSIGN_EMAILS and email not in seen_z:
                 seen_z.add(email)
                 zonals.append(email)
-            # Pink notify heads covering territory (e.g. Sujee for Karnataka)
+            if email in REGIONAL_MANAGER_ASSIGN_EMAILS and email not in seen_r:
+                seen_r.add(email)
+                regionals.append(email)
+            # Pink notify heads covering territory (national / sheet heads)
             notify_for_pipeline = (
                 getattr(user, "crm_notify_franchise", False)
                 if pipe == "franchise"
@@ -537,34 +607,42 @@ def resolve_new_lead_mail_recipients(
             if (
                 notify_for_pipeline
                 and email not in seen_z
+                and email not in seen_r
                 and email not in seen_m
             ):
                 seen_z.add(email)
                 zonals.append(email)
-        return managers, zonals
+        return managers, zonals, regionals
 
-    city_managers, city_zonals = _collect(city_matches)
-    state_managers, state_zonals = _collect(state_matches)
+    _city_managers, city_zonals, city_regionals = _collect(city_matches)
+    _state_managers, state_zonals, state_regionals = _collect(state_matches)
 
     preferred = (preferred_to or "").strip().lower()
     match_emails = {(u.email or "").strip().lower() for u in city_matches + state_matches}
 
-    to_email = ""
+    to_emails: list[str] = []
     preferred_is_allowed = (
-        preferred in allowed_handlers or preferred in ZONAL_MANAGER_ASSIGN_EMAILS
+        preferred in allowed_handlers
+        or preferred in ZONAL_MANAGER_ASSIGN_EMAILS
+        or preferred in REGIONAL_MANAGER_ASSIGN_EMAILS
     )
     if preferred and preferred in match_emails and preferred_is_allowed:
-        to_email = preferred
-    elif city_zonals:
-        to_email = city_zonals[0]
-    elif state_zonals:
-        to_email = state_zonals[0]
+        to_emails = [preferred]
+    else:
+        if city_zonals:
+            to_emails.append(city_zonals[0])
+        elif state_zonals:
+            to_emails.append(state_zonals[0])
+        # Regional Managers covering this territory also get the new-lead mail.
+        for addr in city_regionals or state_regionals:
+            if addr not in to_emails:
+                to_emails.append(addr)
 
-    if not to_email:
+    if not to_emails:
         return [jayesh], []
 
     cc: list[str] = []
-    seen_cc = {to_email}
+    seen_cc = {e for e in to_emails}
 
     def _add_cc(addr: str) -> None:
         key = (addr or "").strip().lower()
@@ -572,12 +650,14 @@ def resolve_new_lead_mail_recipients(
             seen_cc.add(key)
             cc.append(key)
 
-    # Managers are not notified until a ZM/Super Admin explicitly assigns the lead.
+    # Other covering Zonal / Regional heads stay on Cc; managers only after Assign.
     for addr in state_zonals:
+        _add_cc(addr)
+    for addr in state_regionals:
         _add_cc(addr)
     _add_cc(jayesh)
 
-    return [to_email], cc
+    return to_emails, cc
 
 
 def emails_for_geo_handlers(
@@ -675,6 +755,10 @@ def list_crm_users_for_api(
     state_s = (state or "").strip()
     city_s = (city or "").strip()
     viewer = _viewer_from_request(request)
+    if for_assign and pipe:
+        regional_team = regional_manager_team_users(viewer, pipe)
+        if regional_team is not None:
+            return [_user_api_dict(user) for user in regional_team]
     if for_assign and pipe == "franchise" and zonal_franchise_uses_full_handler_list(viewer):
         return [_user_api_dict(user) for user in all_assignable_handler_users()]
     if for_assign and pipe == "admission" and zonal_admission_uses_full_handler_list(viewer):
@@ -712,11 +796,14 @@ def assignee_candidates_for_lead(
     Users a lead may be assigned to — RM / Manager / Dy Manager / Assistant Manager only.
     Prefer territory match; national assigners fall back to full handler list.
     """
+    pipeline = "franchise" if franchise_lead else "admission" if admission_lead else None
+    regional_team = regional_manager_team_users(assigner, pipeline)
+    if regional_team is not None:
+        return regional_team
     if franchise_lead and zonal_franchise_uses_full_handler_list(assigner):
         return all_assignable_handler_users()
     if admission_lead and zonal_admission_uses_full_handler_list(assigner):
         return all_assignable_handler_users()
-    pipeline = "franchise" if franchise_lead else "admission" if admission_lead else None
     zonal_team = _filter_assignable_handlers(
         zonal_manager_team_users(assigner, pipeline)
     )
@@ -776,7 +863,7 @@ def assigned_user_payload(
         "assignedUserLabel": display_name_for_user(user) if user else None,
     }
     # Do not expose an automatic/suggested manager. Assignment is an explicit
-    # Zonal Manager action in the CRM.
+    # Regional/Zonal Manager action in the CRM.
     if include_suggestion:
         payload["suggestedAssignedUserId"] = None
         payload["suggestedAssignedUserLabel"] = None
