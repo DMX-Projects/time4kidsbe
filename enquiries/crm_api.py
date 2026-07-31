@@ -139,16 +139,44 @@ def is_restricted_crm_viewer(request=None, user=None) -> bool:
 
 
 def redact_lead_for_campaign_viewer(data: dict | None) -> dict | None:
-    """Hide PII and mark lead non-editable for third-party campaign viewers."""
+    """
+    Strip PII and internal CRM ops fields for third-party campaign / agency viewers.
+
+    Viewers may see name, geo, source/UTM, status, and enquiry date — not contact
+    details, assignment, follow-ups, notes/history, or centre phone/email.
+    """
     if not data:
         return data
     out = dict(data)
+    # Contact / PII
     out["mobile"] = ""
     out["email"] = ""
-    out["editable"] = False
+    out["comments"] = ""
+    out["centrePhone"] = ""
+    out["centreEmail"] = ""
+    # Assignment / routing
+    out["assignedUserId"] = None
+    out["assignedUserLabel"] = None
+    out["suggestedAssignedUserId"] = None
+    out["suggestedAssignedUserLabel"] = None
     out["canAssignUsers"] = False
+    # Follow-up / meeting ops
+    out["meetingDate"] = None
+    out["nextFollowUpDate"] = None
+    # History / notes (detail payloads)
+    out["notes"] = []
+    out["auditLogs"] = []
+    out["notificationLogs"] = []
+    out["callHistory"] = []
+    out["editable"] = False
     out["campaignViewer"] = True
     return out
+
+
+def _redact_lead_list(rows: list[dict], request) -> list[dict]:
+    if not is_campaign_external_viewer(request=request):
+        return rows
+    return [redact_lead_for_campaign_viewer(row) or row for row in rows]
 
 GOOGLE_CAMPAIGN_SOURCES = (
     CrmLeadSource.JULY_LP,
@@ -1383,10 +1411,7 @@ def unified_leads_page(request, *, page: int, limit: int) -> list[dict]:
 
     merged.sort(key=lambda row: row.get("createdAt") or "", reverse=True)
     page_rows = merged[offset : offset + limit]
-    if is_campaign_external_viewer(request=request):
-        return [redact_lead_for_campaign_viewer(row) or row for row in page_rows]
-    return page_rows
-
+    return _redact_lead_list(page_rows, request)
 
 def unified_dashboard_stats(request) -> dict:
     today = timezone.localdate()
@@ -1599,9 +1624,12 @@ def unified_reminders(request) -> dict:
     meetings.sort(key=_sort_meetings)
     follow_ups.sort(key=_sort_followups)
 
+    meetings = _redact_lead_list(meetings[:50], request)
+    follow_ups = _redact_lead_list(follow_ups[:50], request)
+
     return {
-        "meetings": meetings[:50],
-        "followUps": follow_ups[:50]
+        "meetings": meetings,
+        "followUps": follow_ups
     }
 
 

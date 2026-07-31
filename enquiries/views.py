@@ -725,6 +725,8 @@ class AdminCrmReportsView(APIView):
                 {"detail": "CRM login required. Sign in with a CRM account to view CRM reports."},
                 status=status.HTTP_403_FORBIDDEN,
             )
+        if _is_campaign_readonly_user(request):
+            return Response({"detail": "View-only account."}, status=status.HTTP_403_FORBIDDEN)
 
         from .crm_api import unified_reports_data
 
@@ -807,6 +809,8 @@ class AdminCrmUsersView(APIView):
         ).strip() or None
         for_assign_raw = (request.query_params.get("forAssign") or "").strip().lower()
         for_assign = for_assign_raw not in ("0", "false", "no")
+        if for_assign and _is_campaign_readonly_user(request):
+            return Response({"users": []})
         state_only_raw = (
             request.query_params.get("stateOnly")
             or request.query_params.get("ignoreCity")
