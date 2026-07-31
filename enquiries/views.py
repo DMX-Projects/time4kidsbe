@@ -96,36 +96,38 @@ def _sync_enquiry_status_siblings(instance, status: str) -> None:
     """
     One public submit can create several rows (global + per-centre). Keep those in sync.
 
-    Do NOT sync unrelated leads that only share a phone (different form, name, or day).
+    Only rows that clearly belong to the same submit batch are updated: same phone,
+    same enquiry type, same name, and created within a few minutes. Missing name or
+    created_at means we refuse to sync (phone-only matching wrongly updates other people).
     """
     from datetime import timedelta
 
     phone = (getattr(instance, "phone", None) or "").strip()
-    if not phone:
+    name = (getattr(instance, "name", None) or "").strip()
+    created_at = getattr(instance, "created_at", None)
+    if not phone or not name or created_at is None:
         return
+
     updates = {"status": status}
     if hasattr(instance, "meeting_date"):
         updates["meeting_date"] = instance.meeting_date
     if hasattr(instance, "next_follow_up_date"):
         updates["next_follow_up_date"] = instance.next_follow_up_date
 
-    qs = type(instance).objects.filter(phone=phone).exclude(pk=instance.pk)
+    qs = (
+        type(instance)
+        .objects.filter(phone=phone, name__iexact=name)
+        .exclude(pk=instance.pk)
+        .filter(
+            created_at__gte=created_at - timedelta(minutes=5),
+            created_at__lte=created_at + timedelta(minutes=5),
+        )
+    )
 
     # Same form type only (Admission vs Centers Enquiry must stay independent).
     enquiry_type = getattr(instance, "enquiry_type", None)
     if enquiry_type is not None:
         qs = qs.filter(enquiry_type=enquiry_type)
-
-    # Same person from the same submit batch (name + near-identical created_at).
-    name = (getattr(instance, "name", None) or "").strip()
-    if name:
-        qs = qs.filter(name__iexact=name)
-    created_at = getattr(instance, "created_at", None)
-    if created_at is not None:
-        qs = qs.filter(
-            created_at__gte=created_at - timedelta(minutes=5),
-            created_at__lte=created_at + timedelta(minutes=5),
-        )
 
     qs.update(**updates)
 
