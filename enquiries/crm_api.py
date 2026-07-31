@@ -1645,8 +1645,8 @@ def update_unified_lead(raw_id: str, data: dict, *, include_detail: bool = False
         enquiry.save()
         if assignment_changed:
             _notify_explicit_assignment(enquiry, request)
-        from .views import _sync_enquiry_status_siblings
-        _sync_enquiry_status_siblings(enquiry, enquiry.status)
+        # Do NOT cascade status to other rows from CRM. Updating one lead must
+        # never change unrelated leads that happen to share a phone number.
         return _attach_viewer_flags(enquiry_to_dict(enquiry, include_detail=include_detail), request)
 
     if kind == "franchiseenquiry":
