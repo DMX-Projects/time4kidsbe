@@ -36,10 +36,10 @@ from .communication_sms import send_otp_sms
 
 
 def _is_campaign_readonly_user(request) -> bool:
-    """View-only write block: Sachin + third-party campaign viewers."""
-    from .crm_api import is_campaign_only_crm_user
+    """View-only write block: Sachin, campaign.viewer, and agency viewers."""
+    from .crm_api import is_restricted_crm_viewer
 
-    return is_campaign_only_crm_user(request=request)
+    return is_restricted_crm_viewer(request=request)
 
 
 def _normalize_otp_phone(raw: str) -> str:
@@ -90,52 +90,6 @@ def _distinct_kids_enquiry_cities() -> list[str]:
         .distinct()
     )
     return sorted({c.strip() for c in cities if c and c.strip()}, key=str.casefold)
-
-
-def _sync_enquiry_status_siblings(instance, status: str) -> None:
-    """
-    One public submit can create several rows (global + per-centre). Keep those in sync.
-
-    Only rows that clearly belong to the same submit batch are updated: same phone,
-    same enquiry type, same name, and created within a few minutes. Missing name or
-    created_at means we refuse to sync (phone-only matching wrongly updates other people).
-    """
-    from datetime import timedelta
-
-    phone = (getattr(instance, "phone", None) or "").strip()
-    name = (getattr(instance, "name", None) or "").strip()
-    created_at = getattr(instance, "created_at", None)
-    if not phone or not name or created_at is None:
-        return
-
-    updates = {"status": status}
-    if hasattr(instance, "meeting_date"):
-        updates["meeting_date"] = instance.meeting_date
-    if hasattr(instance, "next_follow_up_date"):
-        updates["next_follow_up_date"] = instance.next_follow_up_date
-
-    qs = (
-        type(instance)
-        .objects.filter(phone=phone, name__iexact=name)
-        .exclude(pk=instance.pk)
-        .filter(
-            created_at__gte=created_at - timedelta(minutes=5),
-            created_at__lte=created_at + timedelta(minutes=5),
-        )
-    )
-
-    # Same form type only (Admission vs Centers Enquiry must stay independent).
-    enquiry_type = getattr(instance, "enquiry_type", None)
-    if enquiry_type is not None:
-        qs = qs.filter(enquiry_type=enquiry_type)
-
-    qs.update(**updates)
-
-
-class EnquiryStatusSyncMixin:
-    def perform_update(self, serializer):
-        instance = serializer.save()
-        _sync_enquiry_status_siblings(instance, instance.status)
 
 
 def _admin_enquiry_scope(qs, admin_user):
@@ -459,7 +413,9 @@ class AdminAllEnquiryListView(APIView):
         return Response(_paginated_admin_enquiry_response(request, request.user))
 
 
-class EnquiryUpdateView(EnquiryStatusSyncMixin, generics.UpdateAPIView):
+class EnquiryUpdateView(generics.UpdateAPIView):
+    """Status/date updates apply only to this enquiry row — never cascade by phone/name."""
+
     serializer_class = EnquirySerializer
     permission_classes = [IsAdminUser]
     lookup_field = "pk"
@@ -471,7 +427,9 @@ class EnquiryUpdateView(EnquiryStatusSyncMixin, generics.UpdateAPIView):
         ).select_related("franchise")
 
 
-class FranchiseEnquiryUpdateView(EnquiryStatusSyncMixin, generics.UpdateAPIView):
+class FranchiseEnquiryUpdateView(generics.UpdateAPIView):
+    """Partner centre updates apply only to the selected enquiry row."""
+
     serializer_class = EnquirySerializer
     permission_classes = [IsFranchiseUser]
     lookup_field = "pk"
@@ -483,7 +441,9 @@ class FranchiseEnquiryUpdateView(EnquiryStatusSyncMixin, generics.UpdateAPIView)
         return Enquiry.objects.filter(franchise=franchise)
 
 
-class FranchiseLeadAdminUpdateView(EnquiryStatusSyncMixin, generics.UpdateAPIView):
+class FranchiseLeadAdminUpdateView(generics.UpdateAPIView):
+    """Admin franchise-lead updates apply only to the selected row."""
+
     serializer_class = FranchiseEnquiryStatusSerializer
     permission_classes = [IsAdminUser]
     lookup_field = "pk"
@@ -496,7 +456,9 @@ class FranchiseLeadAdminUpdateView(EnquiryStatusSyncMixin, generics.UpdateAPIVie
         ).select_related("franchise")
 
 
-class FranchiseLeadPartnerUpdateView(EnquiryStatusSyncMixin, generics.UpdateAPIView):
+class FranchiseLeadPartnerUpdateView(generics.UpdateAPIView):
+    """Partner franchise-lead updates apply only to the selected row."""
+
     serializer_class = FranchiseEnquiryStatusSerializer
     permission_classes = [IsFranchiseUser]
     lookup_field = "pk"
@@ -845,6 +807,23 @@ class AdminCrmUsersView(APIView):
         ).strip() or None
         for_assign_raw = (request.query_params.get("forAssign") or "").strip().lower()
         for_assign = for_assign_raw not in ("0", "false", "no")
+        state_only_raw = (
+            request.query_params.get("stateOnly")
+            or request.query_params.get("ignoreCity")
+            or ""
+        ).strip().lower()
+        source = (
+            request.query_params.get("source")
+            or request.query_params.get("leadSource")
+            or ""
+        ).strip()
+        utm_source = (request.query_params.get("utmSource") or "").strip()
+        from .crm_users import is_meta_instant_form_lead
+
+        ignore_city = state_only_raw in ("1", "true", "yes") or is_meta_instant_form_lead(
+            source=source,
+            utm_source=utm_source,
+        )
         return Response(
             {
                 "users": list_crm_users_for_api(
@@ -853,6 +832,7 @@ class AdminCrmUsersView(APIView):
                     for_assign=for_assign,
                     request=request,
                     pipeline=pipeline,
+                    ignore_city=ignore_city,
                 )
             }
         )
