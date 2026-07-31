@@ -2,10 +2,12 @@ from django.core.exceptions import ObjectDoesNotExist
 from rest_framework import serializers
 
 from accounts.serializers import UserSerializer
+from .image_compress import (
+    MAX_EVENT_GALLERY_UPLOAD_BYTES,
+    compress_event_gallery_image,
+)
 from .models import Event, EventMedia
 from common.fields import RelativeFileField
-
-MAX_EVENT_GALLERY_IMAGE_BYTES = 1 * 1024 * 1024
 
 
 class EventMediaSerializer(serializers.ModelSerializer):
@@ -20,15 +22,27 @@ class EventMediaSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         uploaded = attrs.get("file")
         media_type = attrs.get("media_type") or getattr(self.instance, "media_type", None)
-        if (
-            uploaded
-            and media_type == EventMedia.MediaType.IMAGE
-            and uploaded.size > MAX_EVENT_GALLERY_IMAGE_BYTES
-        ):
+        if not uploaded or media_type != EventMedia.MediaType.IMAGE:
+            return attrs
+
+        if uploaded.size > MAX_EVENT_GALLERY_UPLOAD_BYTES:
             mb = uploaded.size / (1024 * 1024)
             raise serializers.ValidationError(
-                {"file": f"Each image must be 1 MB or smaller (this file is {mb:.2f} MB)."}
+                {
+                    "file": (
+                        f"Image is too large to upload ({mb:.2f} MB). "
+                        "Maximum upload size is 10 MB; we compress photos to 1 MB after upload."
+                    )
+                }
             )
+
+        try:
+            attrs["file"] = compress_event_gallery_image(
+                uploaded,
+                original_name=getattr(uploaded, "name", None),
+            )
+        except ValueError as exc:
+            raise serializers.ValidationError({"file": str(exc)}) from exc
         return attrs
 
 

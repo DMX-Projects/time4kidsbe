@@ -264,6 +264,29 @@ class DriverProfile(models.Model):
         return f"Driver {name} - {self.franchise.name}"
 
 
+class TeacherProfile(models.Model):
+    """Class teacher account created by a franchise centre (login via TEACHER role)."""
+
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="teacher_profile")
+    franchise = models.ForeignKey(Franchise, on_delete=models.CASCADE, related_name="teachers")
+    class_name = models.CharField(
+        max_length=120,
+        help_text="Assigned class, e.g. Play Group, Nursery, PP1, PP2.",
+    )
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Teacher"
+        verbose_name_plural = "Teachers"
+        ordering = ["class_name", "user__full_name", "user__email"]
+
+    def __str__(self) -> str:
+        name = self.user.full_name or self.user.email
+        return f"Teacher {name} ({self.class_name}) - {self.franchise.name}"
+
+
 class FranchiseHeroSlide(models.Model):
     franchise = models.ForeignKey(Franchise, on_delete=models.CASCADE, related_name="hero_slides")
     image = models.ImageField(upload_to="franchises/hero_slides/")

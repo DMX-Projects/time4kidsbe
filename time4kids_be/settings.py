@@ -180,6 +180,11 @@ STATICFILES_DIRS = [
 MEDIA_URL = os.getenv("MEDIA_URL", "/media/")
 MEDIA_ROOT = Path(os.getenv("MEDIA_ROOT", str(BASE_DIR / "media")))
 
+# Allow large phone photos (Event Gallery compresses to ≤1 MB after upload).
+# Default Django limit is 2.5 MB and rejects bigger multipart bodies.
+DATA_UPLOAD_MAX_MEMORY_SIZE = int(os.getenv("DATA_UPLOAD_MAX_MEMORY_SIZE", str(15 * 1024 * 1024)))
+FILE_UPLOAD_MAX_MEMORY_SIZE = int(os.getenv("FILE_UPLOAD_MAX_MEMORY_SIZE", str(5 * 1024 * 1024)))
+
 # Legacy centre resource files (old server: /uploads/pc/...).
 # Default: <repo-root>/pc/ — copy your Desktop `pc` folder there (see pc/README.md).
 _pc_env = os.getenv("PC_DOCUMENTS_ROOT", "").strip()

@@ -1,7 +1,12 @@
 from accounts.permissions import IsDriverUser
 from accounts.profile_access import driver_profile_for_user
-from franchises.models import DriverProfile
-from franchises.serializers import DriverProfileSerializer, DriverCreateSerializer
+from franchises.models import DriverProfile, TeacherProfile
+from franchises.serializers import (
+    DriverProfileSerializer,
+    DriverCreateSerializer,
+    TeacherProfileSerializer,
+    TeacherCreateSerializer,
+)
 """Parent portal: homework, announcements, attendance, fees, transport, support tickets."""
 
 import re
@@ -3143,6 +3148,63 @@ class FranchiseDriverDetailView(generics.RetrieveUpdateDestroyAPIView):
         if not f:
             return DriverProfile.objects.none()
         return DriverProfile.objects.filter(franchise=f).select_related("user")
+
+
+class FranchiseTeacherListCreateView(generics.ListCreateAPIView):
+    permission_classes = [IsFranchiseUser]
+    serializer_class = TeacherProfileSerializer
+    pagination_class = None
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def get_queryset(self):
+        f = franchise_profile_for_user(self.request.user)
+        if not f:
+            return TeacherProfile.objects.none()
+        return (
+            TeacherProfile.objects.filter(franchise=f)
+            .select_related("user")
+            .order_by("class_name", "user__full_name")
+        )
+
+    def get_serializer_class(self):
+        if self.request.method == "POST":
+            return TeacherCreateSerializer
+        return TeacherProfileSerializer
+
+    def get_serializer_context(self):
+        c = super().get_serializer_context()
+        c["franchise"] = franchise_profile_for_user(self.request.user)
+        return c
+
+    def perform_create(self, serializer):
+        f = franchise_profile_for_user(self.request.user)
+        if not f:
+            raise PermissionDenied("Franchise profile not found")
+        serializer.save(franchise=f)
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        output = TeacherProfileSerializer(serializer.instance, context=self.get_serializer_context())
+        return Response(output.data, status=status.HTTP_201_CREATED)
+
+
+class FranchiseTeacherDetailView(generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [IsFranchiseUser]
+    serializer_class = TeacherProfileSerializer
+
+    def get_queryset(self):
+        f = franchise_profile_for_user(self.request.user)
+        if not f:
+            return TeacherProfile.objects.none()
+        return TeacherProfile.objects.filter(franchise=f).select_related("user")
+
+    def perform_destroy(self, instance):
+        user = instance.user
+        instance.delete()
+        if user is not None:
+            user.delete()
 
 
 # ----- Authenticated Driver Trip Endpoints -----

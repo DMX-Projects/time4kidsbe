@@ -59,3 +59,12 @@ class IsDriverUser(BasePermission):
             and request.user.is_authenticated
             and _norm_role(request.user) == UserRole.DRIVER.value
         )
+
+
+class IsTeacherUser(BasePermission):
+    def has_permission(self, request, view):
+        return bool(
+            request.user
+            and request.user.is_authenticated
+            and _norm_role(request.user) == UserRole.TEACHER.value
+        )

@@ -7,7 +7,7 @@ from rest_framework import serializers
 from accounts.models import User, UserRole
 from accounts.serializers import UserSerializer
 from events.serializers import EventSerializer
-from .models import DriverProfile, Franchise, ParentProfile, FranchiseLocation, FranchiseHeroSlide, FranchiseGalleryItem
+from .models import DriverProfile, TeacherProfile, Franchise, ParentProfile, FranchiseLocation, FranchiseHeroSlide, FranchiseGalleryItem
 from common.fields import RelativeFileField, RelativeImageField
 
 
@@ -518,6 +518,116 @@ class DriverCreateSerializer(serializers.ModelSerializer):
                 return driver
         except IntegrityError:
             raise serializers.ValidationError({"email": "User with this email or username already exists."})
+        except serializers.ValidationError:
+            raise
+        except Exception as e:
+            raise serializers.ValidationError({"detail": f"An unexpected error occurred: {str(e)}"})
+
+
+class TeacherProfileSerializer(serializers.ModelSerializer):
+    user = UserSerializer(read_only=True)
+
+    class Meta:
+        model = TeacherProfile
+        fields = [
+            "id",
+            "user",
+            "class_name",
+            "is_active",
+            "created_at",
+        ]
+        read_only_fields = ["id", "user", "created_at"]
+
+
+class TeacherCreateSerializer(serializers.ModelSerializer):
+    """Franchise creates a teacher login: name, class, username/email, password."""
+
+    email = serializers.CharField(write_only=True)
+    password = serializers.CharField(write_only=True, min_length=8)
+    full_name = serializers.CharField(write_only=True)
+    class_name = serializers.CharField()
+
+    class Meta:
+        model = TeacherProfile
+        fields = ["id", "email", "password", "full_name", "class_name"]
+
+    def validate_class_name(self, value):
+        from students.portal_views import normalize_portal_class_name
+
+        raw = (value or "").strip()
+        if not raw or raw.lower() in ("all classes", "all"):
+            raise serializers.ValidationError("Select a specific class for this teacher.")
+        return normalize_portal_class_name(raw) or raw
+
+    def validate_email(self, value):
+        raw = (value or "").strip()
+        if not raw:
+            raise serializers.ValidationError("Username or email is required.")
+        return raw
+
+    def _resolve_login_identity(self, raw: str, franchise) -> tuple[str, str]:
+        """
+        Return (email, username).
+        Email-looking values are used as both; plain usernames get a centre-scoped email.
+        """
+        if "@" in raw:
+            email = User.objects.normalize_email(raw)
+            return email, email
+        username = raw
+        # Unique per centre so two centres can reuse the same short username.
+        email = f"{username}.{franchise.id}@teachers.local"
+        return email, username
+
+    def create(self, validated_data):
+        val_franchise = validated_data.pop("franchise", None)
+        franchise = self.context.get("franchise") or val_franchise
+        if not franchise:
+            raise serializers.ValidationError({"detail": "Franchise context is required."})
+
+        login_raw = validated_data.pop("email")
+        password = validated_data.pop("password")
+        full_name = validated_data.pop("full_name")
+        class_name = validated_data.pop("class_name")
+        email, username = self._resolve_login_identity(login_raw, franchise)
+
+        try:
+            with transaction.atomic():
+                existing = User.objects.filter(email__iexact=email).first()
+                if not existing and username:
+                    existing = User.objects.filter(username__iexact=username).first()
+                if existing:
+                    if existing.normalized_role() != UserRole.TEACHER.value:
+                        raise serializers.ValidationError(
+                            {"email": "An account with this username/email already exists with a different role."}
+                        )
+                    if TeacherProfile.objects.filter(user_id=existing.pk).exists():
+                        raise serializers.ValidationError(
+                            {"email": "A teacher account with this username/email already exists."}
+                        )
+                    existing.full_name = full_name
+                    existing.set_password(password)
+                    existing.role = UserRole.TEACHER
+                    existing.username = existing.username or username
+                    existing.email = existing.email or email
+                    existing.save(update_fields=["full_name", "password", "role", "username", "email"])
+                    user = existing
+                else:
+                    user = User.objects.create_user(
+                        email=email,
+                        username=username,
+                        password=password,
+                        full_name=full_name,
+                        role=UserRole.TEACHER,
+                    )
+                return TeacherProfile.objects.create(
+                    user=user,
+                    franchise=franchise,
+                    class_name=class_name,
+                )
+        except IntegrityError:
+            raise serializers.ValidationError(
+                {"email": "User with this username or email already exists."}
+            )
         except serializers.ValidationError:
             raise
         except Exception as e:

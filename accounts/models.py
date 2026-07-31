@@ -12,6 +12,7 @@ class UserRole(models.TextChoices):
     FRANCHISE = "FRANCHISE", "Franchise"
     PARENT = "PARENT", "Parent"
     DRIVER = "DRIVER", "Driver"
+    TEACHER = "TEACHER", "Teacher"
 
 
 class CrmZone(models.TextChoices):
@@ -204,6 +205,10 @@ class User(AbstractBaseUser, PermissionsMixin):
     @property
     def is_driver(self) -> bool:
         return self.normalized_role() == UserRole.DRIVER.value
+
+    @property
+    def is_teacher(self) -> bool:
+        return self.normalized_role() == UserRole.TEACHER.value
 
 
 class ParentRegistration(models.Model):

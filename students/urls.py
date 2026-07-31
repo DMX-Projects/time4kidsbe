@@ -52,6 +52,8 @@ from .portal_views import (
 
     FranchiseDriverListCreateView,
     FranchiseDriverDetailView,
+    FranchiseTeacherListCreateView,
+    FranchiseTeacherDetailView,
     auth_driver_trip_detail,
     auth_driver_start_trip,
     auth_driver_post_location,
@@ -152,5 +154,7 @@ urlpatterns = [
     # Franchise-side Driver Management
     path("franchise/drivers/", FranchiseDriverListCreateView.as_view(), name="franchise-drivers"),
     path("franchise/drivers/<int:pk>/", FranchiseDriverDetailView.as_view(), name="franchise-driver-detail"),
+    path("franchise/teachers/", FranchiseTeacherListCreateView.as_view(), name="franchise-teachers"),
+    path("franchise/teachers/<int:pk>/", FranchiseTeacherDetailView.as_view(), name="franchise-teacher-detail"),
 ]
 

@@ -305,6 +305,19 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         }
         if user.normalized_role() == UserRole.PARENT.value:
             data["user"].update(parent_login_context(user))
+        if user.normalized_role() == UserRole.TEACHER.value:
+            from accounts.profile_access import teacher_profile_for_user
+            from franchises.serializers import TeacherProfileSerializer
+
+            tp = teacher_profile_for_user(user)
+            if not tp:
+                raise AuthenticationFailed(
+                    "Teacher profile not found or linked to a disabled franchise."
+                )
+            data["teacher_profile"] = TeacherProfileSerializer(
+                tp,
+                context={"request": self.context.get("request")},
+            ).data
         return data
 
 
