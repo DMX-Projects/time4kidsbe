@@ -377,6 +377,7 @@ def send_crm_heads_new_lead_reminder(
     lead_email: str = "",
     lead_kind: str | None = None,
     preferred_to: str | None = None,
+    ignore_city: bool = False,
 ) -> bool:
     """
     New-lead email routing:
@@ -400,6 +401,7 @@ def send_crm_heads_new_lead_reminder(
         city or centre_name or None,
         preferred_to=preferred_to,
         lead_kind=lead_kind,
+        ignore_city=ignore_city,
     )
 
     # Optional always-notify / head emails → Cc (never replace the manager To)
@@ -574,7 +576,7 @@ def assign_and_notify_new_lead(obj, *, lead_source: str = "") -> bool:
     A Regional or Zonal Manager explicitly assigns it to a territory handler.
     Works for CrmLead, FranchiseEnquiry, Enquiry, and similar objects with state/city.
     """
-    from .crm_users import resolve_notify_lead_kind
+    from .crm_users import is_meta_instant_form_lead, resolve_notify_lead_kind
 
     state = (getattr(obj, "state", None) or "").strip()
     city = (getattr(obj, "city", None) or "").strip()
@@ -628,6 +630,9 @@ def assign_and_notify_new_lead(obj, *, lead_source: str = "") -> bool:
     assigned = getattr(obj, "assigned_user", None)
     preferred_to = (getattr(assigned, "email", None) or "").strip() or None
 
+    # Meta Instant Forms have no city dropdown — notify / map RMs by state only.
+    ignore_city = is_meta_instant_form_lead(obj)
+
     return send_crm_heads_new_lead_reminder(
         name=name,
         lead_source=source,
@@ -638,6 +643,7 @@ def assign_and_notify_new_lead(obj, *, lead_source: str = "") -> bool:
         lead_email=str(lead_email or ""),
         lead_kind=lead_kind,
         preferred_to=preferred_to,
+        ignore_city=ignore_city,
     )
 
 

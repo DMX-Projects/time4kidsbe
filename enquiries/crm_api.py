@@ -58,12 +58,61 @@ CAMPAIGN_EXTERNAL_VIEWER_EMAILS = {
     "campaign.viewer@gmail.com",
 }
 
+# Agency viewers: state-scoped, view-only, PII hidden.
+# Bcwebwise = BCWW 6 Instant-Form states (landing + Facebook/Meta).
+# Ants = West Bengal city landing pages only.
+BCWEBWISE_AGENCY_EMAILS = {
+    "bcwebwise.agency@gmail.com",
+}
+ANTS_AGENCY_EMAILS = {
+    "ants.agency@gmail.com",
+}
+AGENCY_VIEWER_EMAILS = BCWEBWISE_AGENCY_EMAILS | ANTS_AGENCY_EMAILS
 
-def is_campaign_only_crm_user(request=None, user=None) -> bool:
+# Full state names stored on User.crm_states for zone scoping.
+AGENCY_VIEWER_STATES: dict[str, tuple[str, ...]] = {
+    "bcwebwise.agency@gmail.com": (
+        "Tamil Nadu",
+        "Karnataka",
+        "Andhra Pradesh",
+        "Kerala",
+        "Telangana",
+        "Maharashtra",
+    ),
+    "ants.agency@gmail.com": ("West Bengal",),
+}
+
+AGENCY_VIEWER_LABELS: dict[str, str] = {
+    "bcwebwise.agency@gmail.com": "Bcwebwise Agency",
+    "ants.agency@gmail.com": "Ants Agency",
+}
+
+
+def _viewer_email(request=None, user=None) -> str:
     viewer = user
     if viewer is None and request is not None:
         viewer = getattr(request, "user", None)
-    email = str(getattr(viewer, "email", "") or "").strip().lower()
+    return str(getattr(viewer, "email", "") or "").strip().lower()
+
+
+def is_agency_crm_user(request=None, user=None) -> bool:
+    email = _viewer_email(request=request, user=user)
+    return bool(email and email in AGENCY_VIEWER_EMAILS)
+
+
+def is_bcwebwise_agency_user(request=None, user=None) -> bool:
+    email = _viewer_email(request=request, user=user)
+    return bool(email and email in BCWEBWISE_AGENCY_EMAILS)
+
+
+def is_ants_agency_user(request=None, user=None) -> bool:
+    email = _viewer_email(request=request, user=user)
+    return bool(email and email in ANTS_AGENCY_EMAILS)
+
+
+def is_campaign_only_crm_user(request=None, user=None) -> bool:
+    """Paid-campaign-only logins (Sachin + generic campaign.viewer). Not agency viewers."""
+    email = _viewer_email(request=request, user=user)
     return bool(
         email
         and (
@@ -74,12 +123,19 @@ def is_campaign_only_crm_user(request=None, user=None) -> bool:
 
 
 def is_campaign_external_viewer(request=None, user=None) -> bool:
-    """Third-party: no mobile/email, cannot edit."""
-    viewer = user
-    if viewer is None and request is not None:
-        viewer = getattr(request, "user", None)
-    email = str(getattr(viewer, "email", "") or "").strip().lower()
-    return bool(email and email in CAMPAIGN_EXTERNAL_VIEWER_EMAILS)
+    """Third-party: no mobile/email, cannot edit (campaign.viewer + agency logins)."""
+    email = _viewer_email(request=request, user=user)
+    return bool(
+        email
+        and (email in CAMPAIGN_EXTERNAL_VIEWER_EMAILS or email in AGENCY_VIEWER_EMAILS)
+    )
+
+
+def is_restricted_crm_viewer(request=None, user=None) -> bool:
+    """Any locked third-party / campaign-only CRM login (readonly + limited sources)."""
+    return is_campaign_only_crm_user(request=request, user=user) or is_agency_crm_user(
+        request=request, user=user
+    )
 
 
 def redact_lead_for_campaign_viewer(data: dict | None) -> dict | None:
@@ -155,12 +211,14 @@ def crm_lead_form_name(lead: CrmLead) -> str:
 
 
 def campaign_channel_api_key(source: str | None, landing_page_url: str | None = None) -> str:
-    """Map stored form source to CRM channel key (Google merges LP + WB + Google Ads on Meta LP)."""
+    """Map stored form source to CRM channel key (BCWW Google vs Ants WB vs META)."""
     if is_google_ads_landing_url(landing_page_url):
         return "google"
     api = source_to_api(source) if source else ""
-    if api in ("july_lp", "lp_wb"):
+    if api == "july_lp":
         return "google"
+    if api == "lp_wb":
+        return "lp_wb"  # Ants — West Bengal Google LP
     return api or ""
 
 
@@ -634,6 +692,9 @@ def unified_crm_cities(state: str | None = None, request=None) -> list[str]:
 
 
 def _request_source_filter(request) -> str | None:
+    if is_agency_crm_user(request=request):
+        # Landing pages + Facebook/Meta (and WB LP for Ants) — never Admission/Franchise website.
+        return "agency"
     if is_campaign_only_crm_user(request=request):
         # Hard-lock this account to Paid Campaign view.
         return "campaign"
@@ -642,7 +703,7 @@ def _request_source_filter(request) -> str | None:
 
 def _request_user_filter(request) -> str | None:
     """``userId`` query: assignable handler id, ``unassigned``, or empty (all)."""
-    if is_campaign_only_crm_user(request=request):
+    if is_restricted_crm_viewer(request=request):
         return None
     from enquiries.crm_users import sanitize_crm_filter_user_id
 
@@ -700,7 +761,9 @@ def _maybe_assign_lead(obj, request, data: dict | None = None) -> bool:
     if raw in (None, "", "unassigned", "null"):
         return False
     request_user = getattr(request, "user", None) if request is not None else None
-    from .crm_users import is_valid_assignee_for_lead, user_can_assign_crm_leads
+    state = (getattr(obj, "state", None) or "").strip()
+    city = (getattr(obj, "city", None) or "").strip()
+    from .crm_users import is_meta_instant_form_lead, is_valid_assignee_for_lead, user_can_assign_crm_leads
 
     if not user_can_assign_crm_leads(request_user):
         return False
@@ -713,8 +776,8 @@ def _maybe_assign_lead(obj, request, data: dict | None = None) -> bool:
     user = User.objects.filter(pk=uid, role__iexact=UserRole.CRM.value, is_active=True).first()
     if not user:
         return False
-    state = (getattr(obj, "state", None) or "").strip()
-    city = (getattr(obj, "city", None) or "").strip()
+    # Meta Instant Forms: validate assignee against state only (city is free-text).
+    ignore_city = is_meta_instant_form_lead(obj)
     if not is_valid_assignee_for_lead(
         user,
         state=state,
@@ -722,6 +785,7 @@ def _maybe_assign_lead(obj, request, data: dict | None = None) -> bool:
         assigner=request_user,
         franchise_lead=_is_franchise_assignable_object(obj),
         admission_lead=_is_admission_assignable_object(obj),
+        ignore_city=ignore_city,
     ):
         raise ValueError("Selected user is not in this lead's territory.")
     changed = getattr(obj, "assigned_user_id", None) != user.pk
@@ -751,6 +815,10 @@ def _notify_explicit_assignment(obj, request) -> None:
 def _include_crm(source_filter: str | None) -> bool:
     if not source_filter:
         return True
+    if source_filter == "agency":
+        # Ants: landing only. Bcwebwise: Facebook/Meta + landing (crm included).
+        # Caller still scopes by request; Ants is excluded inside _filter_crm_qs.
+        return True
     if source_filter in ("campaign", "franchise_all"):
         return True
     return source_filter in {
@@ -762,6 +830,8 @@ def _include_crm(source_filter: str | None) -> bool:
 def _include_franchise_enquiry(source_filter: str | None) -> bool:
     if not source_filter:
         return True
+    if source_filter == "agency":
+        return False
     return source_filter in {"franchise", "franchise_all"}
 
 
@@ -769,6 +839,8 @@ def _include_admission(source_filter: str | None) -> bool:
     """Website admission form (EnquiryType.ADMISSION)."""
     if not source_filter:
         return True
+    if source_filter == "agency":
+        return False
     return source_filter in {"admission", "admission_all"}
 
 
@@ -776,6 +848,8 @@ def _include_contact(source_filter: str | None) -> bool:
     """Centerpage contact enquiries."""
     if not source_filter:
         return True
+    if source_filter == "agency":
+        return False
     return source_filter in {"contact", "admission_all"}
 
 
@@ -783,7 +857,7 @@ def _include_landing(source_filter: str | None) -> bool:
     """City landing-page leads (``kids_enquiry``)."""
     if not source_filter:
         return True
-    return source_filter in {"landing", "admission_all"}
+    return source_filter in {"landing", "admission_all", "agency"}
 
 
 def _enquiry_status_to_crm(status: str) -> str:
@@ -976,7 +1050,14 @@ def _filter_crm_qs(
     qs = qs.filter(source__in=FRANCHISE_CAMPAIGN_SOURCES)
     source_filter = _request_source_filter(request)
     if source_filter and _include_crm(source_filter):
-        if source_filter not in ("campaign", "franchise_all"):
+        if source_filter == "agency":
+            # Bcwebwise: Facebook Instant Forms + Meta LP only.
+            # Ants: West Bengal city landing pages only (no campaign CrmLead rows).
+            if is_ants_agency_user(request=request):
+                return CrmLead.objects.none()
+            if is_bcwebwise_agency_user(request=request):
+                qs = qs.filter(source=CrmLeadSource.JULY_META)
+        elif source_filter not in ("campaign", "franchise_all"):
             google_ads_landing_q = (
                 Q(landing_page_url__icontains="gclid=")
                 | Q(landing_page_url__icontains="gad_source=")
@@ -1540,6 +1621,14 @@ def _attach_viewer_flags(data: dict | None, request=None) -> dict | None:
 def unified_lead_detail(raw_id: str, *, include_detail: bool = False, request=None) -> dict | None:
     kind, pk = parse_lead_id(raw_id)
     if request is not None:
+        if is_agency_crm_user(request=request):
+            if is_ants_agency_user(request=request):
+                # Ants: West Bengal city landing pages only.
+                if kind != "landing":
+                    return None
+            elif kind not in ("crm", "landing"):
+                # Bcwebwise: Facebook/Meta campaign + city landing only.
+                return None
         if is_campaign_only_crm_user(request=request) and kind != "crm":
             # Campaign-only login cannot open Admission/Contact/Franchise/Landing detail pages.
             return None
