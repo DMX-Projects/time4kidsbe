@@ -182,7 +182,8 @@ def is_meta_assignable_head_user(user) -> bool:
 def filter_leads_for_crm_viewer(qs, request):
     """
     Lead handlers see only leads assigned to their login. Regional/Zonal Managers
-    and Super Admins retain their geographic/all-lead view so they can assign.
+    and Super Admins retain their geographic/all-lead view so they can assign
+    (zone filters also OR in leads assigned to them, including out-of-territory).
     """
     viewer = _viewer_from_request(request)
     if is_assignable_handler_user(viewer) and not user_can_assign_crm_leads(viewer):

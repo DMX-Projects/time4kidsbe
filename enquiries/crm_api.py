@@ -1316,7 +1316,12 @@ def _filter_franchise_enquiry_qs(request):
 
 def _apply_landing_zone_scope(qs, request):
     """Apply the viewer's state/city territory to landing leads."""
-    from accounts.crm_zones import request_effective_scope_codes, scope_city_names, scope_match_values
+    from accounts.crm_zones import (
+        filter_qs_by_zone_or_assigned,
+        request_effective_scope_codes,
+        scope_city_names,
+        scope_match_values,
+    )
 
     codes = request_effective_scope_codes(request)
     if codes is None:
@@ -1326,7 +1331,9 @@ def _apply_landing_zone_scope(qs, request):
         zone_q |= Q(state__iexact=value)
     for city_name in scope_city_names(codes):
         zone_q |= Q(city__iexact=city_name)
-    return qs.filter(zone_q) if zone_q else qs.none()
+    if not zone_q:
+        return qs.none()
+    return filter_qs_by_zone_or_assigned(qs, zone_q, request)
 
 
 def _filter_landing_qs(request):
