@@ -480,6 +480,21 @@ def _city_field_q(field: str, cities: list[str]) -> Q:
     return q
 
 
+def filter_qs_by_zone_or_assigned(qs, zone_q: Q, request):
+    """
+    Territory filter, plus any lead explicitly assigned to the logged-in user.
+
+    Assignment often crosses city/state (ZM→ZM, Meta free-text city → handler).
+    Without this OR, those leads save as assigned but never appear in the
+    assignee's login.
+    """
+    viewer = _authenticated_user(request)
+    viewer_id = getattr(viewer, "pk", None) if viewer is not None else None
+    if viewer_id:
+        return qs.filter(zone_q | Q(assigned_user_id=viewer_id))
+    return qs.filter(zone_q)
+
+
 def filter_enquiry_qs_by_zone(qs, request):
     codes = request_effective_scope_codes(request)
     cities = request_effective_scope_cities(request)
@@ -518,7 +533,7 @@ def filter_enquiry_qs_by_zone(qs, request):
             zone_q = city_q
     elif codes is not None:
         zone_q |= Q(pk__in=[])
-    return qs.filter(zone_q)
+    return filter_qs_by_zone_or_assigned(qs, zone_q, request)
 
 
 def filter_franchise_enquiry_qs_by_zone(qs, request):
@@ -536,7 +551,7 @@ def filter_franchise_enquiry_qs_by_zone(qs, request):
     if cities is not None:
         city_q = _city_field_q("city", cities)
         zone_q = zone_q & city_q if codes is not None else city_q
-    return qs.filter(zone_q)
+    return filter_qs_by_zone_or_assigned(qs, zone_q, request)
 
 
 def filter_crm_lead_qs_by_zone(qs, request):
@@ -582,7 +597,7 @@ def filter_crm_lead_qs_by_zone(qs, request):
         for name in centre_names:
             zc |= Q(preferred_centre_location__iexact=name)
         zone_q = zone_q | zc
-    return qs.filter(zone_q)
+    return filter_qs_by_zone_or_assigned(qs, zone_q, request)
 
 
 def filter_franchise_qs_by_zone(qs, request):
