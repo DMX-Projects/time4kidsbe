@@ -157,6 +157,28 @@ def is_assignable_handler_user(user) -> bool:
     return email in CRM_ASSIGNABLE_HANDLER_EMAILS
 
 
+def is_zonal_manager_user(user) -> bool:
+    if user is None or not getattr(user, "is_active", False):
+        return False
+    email = str(getattr(user, "email", "") or "").strip().lower()
+    return email in ZONAL_MANAGER_ASSIGN_EMAILS
+
+
+def is_regional_manager_user(user) -> bool:
+    if user is None or not getattr(user, "is_active", False):
+        return False
+    email = str(getattr(user, "email", "") or "").strip().lower()
+    return email in REGIONAL_MANAGER_ASSIGN_EMAILS
+
+
+def is_meta_assignable_head_user(user) -> bool:
+    """
+    Meta Instant Form first-hop assignees: Zonal or Regional Manager for the state.
+    City is free-text on those forms, so heads route the lead, then assign to managers.
+    """
+    return is_zonal_manager_user(user) or is_regional_manager_user(user)
+
+
 def filter_leads_for_crm_viewer(qs, request):
     """
     Lead handlers see only leads assigned to their login. Regional/Zonal Managers
@@ -781,6 +803,67 @@ def _restrict_users_to_lead_state(
     return [u for u in users if u.id in allowed_ids]
 
 
+def state_heads_for_meta_assign(state: str | None) -> list[User]:
+    """
+    Zonal + Regional Managers covering a lead state (Meta Instant Forms).
+
+    Free-text city on Facebook Instant Forms is ignored — assigners pick the
+    correct head for the state; that head then assigns to their managers.
+    """
+    if not (state or "").strip():
+        return []
+    heads: list[User] = []
+    seen: set[int] = set()
+    for user in crm_users_matching_geo(state, None, ignore_city=True):
+        if not is_meta_assignable_head_user(user):
+            continue
+        if user.id in seen:
+            continue
+        seen.add(user.id)
+        heads.append(user)
+    # ZMs first, then RMs, then stable by id.
+    heads.sort(
+        key=lambda u: (
+            0 if is_zonal_manager_user(u) else 1,
+            u.id,
+        )
+    )
+    return heads
+
+
+def all_zonal_and_regional_managers() -> list[User]:
+    """
+    Every active Zonal + Regional Manager for the Assign dropdown.
+
+    Shown on all lead types so ZMs/RMs can forward to another head without
+    city/state confusion.
+    """
+    wanted = ZONAL_MANAGER_ASSIGN_EMAILS | REGIONAL_MANAGER_ASSIGN_EMAILS
+    heads = [
+        user
+        for user in crm_users_queryset()
+        if (user.email or "").strip().lower() in wanted
+    ]
+    heads.sort(
+        key=lambda u: (
+            0 if is_zonal_manager_user(u) else 1,
+            display_name_for_user(u).casefold(),
+            u.id,
+        )
+    )
+    return heads
+
+
+def assign_dropdown_heads(state: str | None = None) -> list[User]:
+    """All ZMs + RMs available in Assign (any lead form)."""
+    return all_zonal_and_regional_managers()
+
+
+# Back-compat alias used by Meta Instant Form paths.
+def meta_assign_heads(state: str | None = None) -> list[User]:
+    return assign_dropdown_heads(state)
+
+
 def list_crm_users_for_api(
     state: str | None = None,
     city: str | None = None,
@@ -794,18 +877,27 @@ def list_crm_users_for_api(
     List CRM users for filters / assignment.
     When state or city is provided, only return users covering that territory.
     With no geo filter, scope to the viewer's region (national viewers see all).
-    ``for_assign=True`` limits to RM / Manager / Dy Manager / Assistant Manager.
+    ``for_assign=True`` limits to RM / Manager / Dy Manager / Assistant Manager,
+    and also includes all Zonal + Regional Managers so leads can be forwarded.
     ``pipeline=franchise`` applies TKPL franchise zonal team sheets; ``admission`` for admission sheet.
-    ``ignore_city=True`` maps Meta Instant Form leads by state only.
+    ``ignore_city=True`` (Meta Instant Forms): match handlers by state only.
     """
     pipe = normalize_crm_pipeline(pipeline)
     state_s = (state or "").strip()
     city_s = "" if ignore_city else (city or "").strip()
     viewer = _viewer_from_request(request)
 
+    def _with_heads(users: list[User]) -> list[User]:
+        if not for_assign:
+            return users
+        merged = _merge_user_lists(assign_dropdown_heads(state_s or None), users)
+        if viewer is not None:
+            merged = [u for u in merged if u.id != getattr(viewer, "id", None)]
+        return merged
+
     def _as_api(users: list[User]) -> list[dict]:
         scoped = _restrict_users_to_lead_state(users, state_s or None, ignore_city=ignore_city)
-        return [_user_api_dict(user) for user in scoped]
+        return [_user_api_dict(user) for user in _with_heads(scoped)]
 
     if for_assign and pipe:
         regional_team = regional_manager_team_users(viewer, pipe)
@@ -837,6 +929,7 @@ def list_crm_users_for_api(
             team = _zonal_team_users_for_context(request, state_s or None, city_s or None, pipe)
             users = _merge_user_lists(users, _filter_assignable_handlers(team))
         users = _restrict_users_to_lead_state(users, state_s or None, ignore_city=ignore_city)
+        users = _with_heads(users)
     return [_user_api_dict(user) for user in users]
 
 
@@ -851,45 +944,52 @@ def assignee_candidates_for_lead(
     ignore_city: bool = False,
 ) -> list[User]:
     """
-    Users a lead may be assigned to — RM / Manager / Dy Manager / Assistant Manager only.
+    Users a lead may be assigned to — handlers for the territory, plus all
+    Zonal / Regional Managers (so any form can be forwarded to a head).
     Prefer territory match; national assigners fall back to full handler list.
-    Meta Instant Forms (``ignore_city``) are mapped by state only.
     """
     pipeline = "franchise" if franchise_lead else "admission" if admission_lead else None
     regional_team = regional_manager_team_users(assigner, pipeline)
     if regional_team is not None:
-        return _restrict_users_to_lead_state(regional_team, state, ignore_city=ignore_city)
-    if franchise_lead and zonal_franchise_uses_full_handler_list(assigner):
-        return _restrict_users_to_lead_state(
+        users = _restrict_users_to_lead_state(regional_team, state, ignore_city=ignore_city)
+    elif franchise_lead and zonal_franchise_uses_full_handler_list(assigner):
+        users = _restrict_users_to_lead_state(
             all_assignable_handler_users(), state, ignore_city=ignore_city
         )
-    if admission_lead and zonal_admission_uses_full_handler_list(assigner):
-        return _restrict_users_to_lead_state(
+    elif admission_lead and zonal_admission_uses_full_handler_list(assigner):
+        users = _restrict_users_to_lead_state(
             all_assignable_handler_users(), state, ignore_city=ignore_city
         )
-    zonal_team = _filter_assignable_handlers(
-        zonal_manager_team_users(assigner, pipeline)
-    )
-    if zonal_team:
-        return _restrict_users_to_lead_state(zonal_team, state, ignore_city=ignore_city)
-    effective_city = None if ignore_city else city
-    if (state or "").strip() or (effective_city or "").strip():
-        matched = _filter_assignable_handlers(
-            crm_users_matching_geo_filter(
-                state,
-                effective_city,
-                ignore_city=ignore_city,
-            )
+    else:
+        zonal_team = _filter_assignable_handlers(
+            zonal_manager_team_users(assigner, pipeline)
         )
-        if matched:
-            return matched
-    if national:
-        return _restrict_users_to_lead_state(
-            _filter_assignable_handlers(list(crm_users_queryset())),
-            state,
-            ignore_city=ignore_city,
-        )
-    return []
+        if zonal_team:
+            users = _restrict_users_to_lead_state(zonal_team, state, ignore_city=ignore_city)
+        else:
+            users = []
+            effective_city = None if ignore_city else city
+            if (state or "").strip() or (effective_city or "").strip():
+                matched = _filter_assignable_handlers(
+                    crm_users_matching_geo_filter(
+                        state,
+                        effective_city,
+                        ignore_city=ignore_city,
+                    )
+                )
+                if matched:
+                    users = matched
+            if not users and national:
+                users = _restrict_users_to_lead_state(
+                    _filter_assignable_handlers(list(crm_users_queryset())),
+                    state,
+                    ignore_city=ignore_city,
+                )
+
+    users = _merge_user_lists(assign_dropdown_heads(state), users)
+    if assigner is not None:
+        users = [u for u in users if u.id != getattr(assigner, "id", None)]
+    return users
 
 
 def is_valid_assignee_for_lead(
@@ -902,23 +1002,12 @@ def is_valid_assignee_for_lead(
     admission_lead: bool = False,
     ignore_city: bool = False,
 ) -> bool:
-    """Validate target is an assignable handler (RM/Manager/Dy/AM) in territory."""
+    """Validate target is an allowed assignee (handlers in territory, or any ZM/RM)."""
+    # Any lead form: allow forwarding to any Zonal / Regional Manager.
+    if is_meta_assignable_head_user(assignee):
+        return True
     if not is_assignable_handler_user(assignee):
         return False
-    # Meta state-only: even full-list ZMs must pick a handler in the lead's state.
-    if ignore_city and (state or "").strip():
-        assigner_email = str(getattr(assigner, "email", "") or "").strip().lower()
-        national = assigner_email in CRM_SUPER_ADMIN_ASSIGN_EMAILS
-        candidates = assignee_candidates_for_lead(
-            state=state,
-            city=city,
-            national=national,
-            assigner=assigner,
-            franchise_lead=franchise_lead,
-            admission_lead=admission_lead,
-            ignore_city=True,
-        )
-        return any(u.id == assignee.id for u in candidates)
     if franchise_lead and zonal_franchise_uses_full_handler_list(assigner):
         return True
     if admission_lead and zonal_admission_uses_full_handler_list(assigner):
