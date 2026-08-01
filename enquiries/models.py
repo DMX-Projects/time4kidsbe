@@ -38,6 +38,8 @@ class Enquiry(models.Model):
     )
     meeting_date = models.DateTimeField(null=True, blank=True)
     next_follow_up_date = models.DateTimeField(null=True, blank=True)
+    meeting_fixed = models.BooleanField(default=False)
+    meeting_done = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     assigned_user = models.ForeignKey(
         "accounts.User",
@@ -95,6 +97,8 @@ class FranchiseEnquiry(models.Model):
     )
     meeting_date = models.DateTimeField(null=True, blank=True)
     next_follow_up_date = models.DateTimeField(null=True, blank=True)
+    meeting_fixed = models.BooleanField(default=False)
+    meeting_done = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     assigned_user = models.ForeignKey(
         "accounts.User",
@@ -137,6 +141,8 @@ class KidsEnquiry(models.Model):
     whatsapp_status = models.TextField(blank=True, null=True)
     meeting_date = models.DateTimeField(null=True, blank=True)
     next_follow_up_date = models.DateTimeField(null=True, blank=True)
+    meeting_fixed = models.BooleanField(default=False)
+    meeting_done = models.BooleanField(default=False)
     raw_payload = models.JSONField(default=dict)
     assigned_user = models.ForeignKey(
         "accounts.User",
@@ -217,6 +223,8 @@ class CrmLead(models.Model):
     status = models.CharField(max_length=30, choices=CrmLeadStatus.choices, default=CrmLeadStatus.UNTOUCHED)
     meeting_date = models.DateTimeField(null=True, blank=True)
     next_follow_up_date = models.DateTimeField(null=True, blank=True)
+    meeting_fixed = models.BooleanField(default=False)
+    meeting_done = models.BooleanField(default=False)
     raw_payload = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

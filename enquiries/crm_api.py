@@ -59,8 +59,9 @@ CAMPAIGN_EXTERNAL_VIEWER_EMAILS = {
 }
 
 # Agency viewers: state-scoped, view-only, PII hidden.
-# Bcwebwise = BCWW 6 Instant-Form states (landing + Facebook/Meta).
-# Ants = West Bengal city landing pages only.
+# Bcwebwise = BCWW 6 Instant-Form states (Facebook/Meta + city landing if needed).
+# Ants = West Bengal Ants Google franchise LP only (CrmLead source lp_wb).
+# Note: KidsEnquiry ``landing`` = admission paid-campaign city pages — not Ants.
 BCWEBWISE_AGENCY_EMAILS = {
     "bcwebwise.agency@gmail.com",
 }
@@ -163,6 +164,8 @@ def redact_lead_for_campaign_viewer(data: dict | None) -> dict | None:
     # Follow-up / meeting ops
     out["meetingDate"] = None
     out["nextFollowUpDate"] = None
+    out["meetingFixed"] = False
+    out["meetingDone"] = False
     # History / notes (detail payloads)
     out["notes"] = []
     out["auditLogs"] = []
@@ -413,6 +416,8 @@ def lead_to_dict(lead: CrmLead, *, include_detail: bool = False) -> dict:
         "status": lead.status,
         "meetingDate": _dt(lead.meeting_date),
         "nextFollowUpDate": _dt(lead.next_follow_up_date),
+        "meetingFixed": bool(getattr(lead, "meeting_fixed", False)),
+        "meetingDone": bool(getattr(lead, "meeting_done", False)),
         "createdAt": _dt(lead.created_at),
         "updatedAt": _dt(lead.updated_at),
         **assigned_user_payload(
@@ -844,8 +849,7 @@ def _include_crm(source_filter: str | None) -> bool:
     if not source_filter:
         return True
     if source_filter == "agency":
-        # Ants: landing only. Bcwebwise: Facebook/Meta + landing (crm included).
-        # Caller still scopes by request; Ants is excluded inside _filter_crm_qs.
+        # Bcwebwise may include Meta CrmLeads; Ants uses lp_wb CrmLeads.
         return True
     if source_filter in ("campaign", "franchise_all"):
         return True
@@ -882,10 +886,11 @@ def _include_contact(source_filter: str | None) -> bool:
 
 
 def _include_landing(source_filter: str | None) -> bool:
-    """City landing-page leads (``kids_enquiry``)."""
+    """City landing-page leads (``kids_enquiry``) — admission paid campaign pages."""
     if not source_filter:
         return True
-    return source_filter in {"landing", "admission_all", "agency"}
+    # Not included for agency viewers (franchise partners: Meta / Ants lp_wb).
+    return source_filter in {"landing", "admission_all"}
 
 
 def _enquiry_status_to_crm(status: str) -> str:
@@ -950,6 +955,8 @@ def enquiry_to_dict(enquiry: Enquiry, *, include_detail: bool = False) -> dict:
         "status": _enquiry_status_to_crm(enquiry.status),
         "meetingDate": _dt(enquiry.meeting_date),
         "nextFollowUpDate": _dt(enquiry.next_follow_up_date),
+        "meetingFixed": bool(getattr(enquiry, "meeting_fixed", False)),
+        "meetingDone": bool(getattr(enquiry, "meeting_done", False)),
         "createdAt": _dt(enquiry.created_at),
         "updatedAt": _dt(updated_at),
         **assigned_user_payload(
@@ -994,6 +1001,8 @@ def franchise_enquiry_to_dict(enquiry: FranchiseEnquiry, *, include_detail: bool
         "status": enquiry.status,
         "meetingDate": _dt(enquiry.meeting_date),
         "nextFollowUpDate": _dt(enquiry.next_follow_up_date),
+        "meetingFixed": bool(getattr(enquiry, "meeting_fixed", False)),
+        "meetingDone": bool(getattr(enquiry, "meeting_done", False)),
         "createdAt": _dt(enquiry.created_at),
         "updatedAt": _dt(updated_at),
         **assigned_user_payload(
@@ -1042,6 +1051,8 @@ def landing_to_dict(row: KidsEnquiry, *, include_detail: bool = False) -> dict:
         "status": _landing_crm_status(row),
         "meetingDate": _dt(row.meeting_date),
         "nextFollowUpDate": _dt(row.next_follow_up_date),
+        "meetingFixed": bool(getattr(row, "meeting_fixed", False)),
+        "meetingDone": bool(getattr(row, "meeting_done", False)),
         "createdAt": _dt(row.created_date),
         "updatedAt": _dt(row.created_date),
         **assigned_user_payload(
@@ -1079,12 +1090,15 @@ def _filter_crm_qs(
     source_filter = _request_source_filter(request)
     if source_filter and _include_crm(source_filter):
         if source_filter == "agency":
-            # Bcwebwise: Facebook Instant Forms + Meta LP only.
-            # Ants: West Bengal city landing pages only (no campaign CrmLead rows).
+            # Bcwebwise: Facebook Instant Forms / Meta LP.
+            # Ants: West Bengal Ants Google franchise LP only (CrmLead lp_wb).
+            # KidsEnquiry city landing = admission paid campaign — not shown to agencies.
             if is_ants_agency_user(request=request):
-                return CrmLead.objects.none()
-            if is_bcwebwise_agency_user(request=request):
+                qs = qs.filter(source=CrmLeadSource.LP_WB)
+            elif is_bcwebwise_agency_user(request=request):
                 qs = qs.filter(source=CrmLeadSource.JULY_META)
+            else:
+                return CrmLead.objects.none()
         elif source_filter not in ("campaign", "franchise_all"):
             google_ads_landing_q = (
                 Q(landing_page_url__icontains="gclid=")
@@ -1420,6 +1434,8 @@ def unified_dashboard_stats(request) -> dict:
     today_count = 0
     follow_ups = 0
     converted = 0
+    meeting_fixed = 0
+    meeting_done = 0
 
     if _include_crm(_request_source_filter(request)):
         crm_qs = _filter_crm_qs(request)
@@ -1438,6 +1454,8 @@ def unified_dashboard_stats(request) -> dict:
             status__in=[CrmLeadStatus.FOLLOW_UP, CrmLeadStatus.VISITED_SCHOOL]
         ).count()
         converted += crm_qs.filter(status=CrmLeadStatus.CONVERTED_ADMISSION).count()
+        meeting_fixed += crm_qs.filter(meeting_fixed=True).count()
+        meeting_done += crm_qs.filter(meeting_done=True).count()
 
     if _include_admission(_request_source_filter(request)):
         admission_qs = _filter_enquiry_qs(request, EnquiryType.ADMISSION)
@@ -1452,6 +1470,8 @@ def unified_dashboard_stats(request) -> dict:
             status__in=[CrmLeadStatus.FOLLOW_UP, CrmLeadStatus.VISITED_SCHOOL, "in-progress"]
         ).count()
         converted += admission_qs.filter(status__in=[CrmLeadStatus.CONVERTED_ADMISSION, "closed"]).count()
+        meeting_fixed += admission_qs.filter(meeting_fixed=True).count()
+        meeting_done += admission_qs.filter(meeting_done=True).count()
 
     if _include_contact(_request_source_filter(request)):
         contact_qs = _filter_enquiry_qs(request, EnquiryType.CONTACT)
@@ -1466,6 +1486,8 @@ def unified_dashboard_stats(request) -> dict:
             status__in=[CrmLeadStatus.FOLLOW_UP, CrmLeadStatus.VISITED_SCHOOL, "in-progress"]
         ).count()
         converted += contact_qs.filter(status__in=[CrmLeadStatus.CONVERTED_ADMISSION, "closed"]).count()
+        meeting_fixed += contact_qs.filter(meeting_fixed=True).count()
+        meeting_done += contact_qs.filter(meeting_done=True).count()
 
     if _include_franchise_enquiry(_request_source_filter(request)):
         franchise_qs = _filter_franchise_enquiry_qs(request)
@@ -1477,6 +1499,8 @@ def unified_dashboard_stats(request) -> dict:
         today_count += franchise_qs.filter(created_at__date=today).count()
         follow_ups += franchise_qs.filter(status__in=[CrmLeadStatus.FOLLOW_UP, CrmLeadStatus.HOT, CrmLeadStatus.WARM, CrmLeadStatus.COLD]).count()
         converted += franchise_qs.filter(status__in=[CrmLeadStatus.CONVERTED_MOU, CrmLeadStatus.CONVERTED_AGREEMENT]).count()
+        meeting_fixed += franchise_qs.filter(meeting_fixed=True).count()
+        meeting_done += franchise_qs.filter(meeting_done=True).count()
 
     if _include_landing(_request_source_filter(request)):
         landing_qs = _filter_landing_qs(request)
@@ -1484,13 +1508,17 @@ def unified_dashboard_stats(request) -> dict:
         if landing_count:
             source_counts["landing"] = source_counts.get("landing", 0) + landing_count
         # Clear select_related before only() — assigned_user can't be deferred and joined.
-        for row in landing_qs.select_related(None).only("raw_payload").iterator():
+        for row in landing_qs.select_related(None).only("raw_payload", "meeting_fixed", "meeting_done").iterator():
             mapped = _landing_crm_status(row)
             status_counts[mapped] = status_counts.get(mapped, 0) + 1
             if mapped in (CrmLeadStatus.FOLLOW_UP, CrmLeadStatus.VISITED_SCHOOL):
                 follow_ups += 1
             if mapped == CrmLeadStatus.CONVERTED_ADMISSION:
                 converted += 1
+            if getattr(row, "meeting_fixed", False):
+                meeting_fixed += 1
+            if getattr(row, "meeting_done", False):
+                meeting_done += 1
         today_count += landing_qs.filter(created_date__date=today).count()
 
     return {
@@ -1498,6 +1526,8 @@ def unified_dashboard_stats(request) -> dict:
         "todayLeads": today_count,
         "followUps": follow_ups,
         "converted": converted,
+        "meetingFixed": meeting_fixed,
+        "meetingDone": meeting_done,
         "sourceBreakdown": [
             {"source": source, "count": count}
             for source, count in sorted(source_counts.items(), key=lambda item: item[1], reverse=True)
@@ -1651,11 +1681,11 @@ def unified_lead_detail(raw_id: str, *, include_detail: bool = False, request=No
     if request is not None:
         if is_agency_crm_user(request=request):
             if is_ants_agency_user(request=request):
-                # Ants: West Bengal city landing pages only.
-                if kind != "landing":
+                # Ants: franchise Ants Google LP (lp_wb) only — not admission KidsEnquiry.
+                if kind != "crm":
                     return None
-            elif kind not in ("crm", "landing"):
-                # Bcwebwise: Facebook/Meta campaign + city landing only.
+            elif kind != "crm":
+                # Bcwebwise: Facebook/Meta campaign CrmLeads only (not admission landing).
                 return None
         if is_campaign_only_crm_user(request=request) and kind != "crm":
             # Campaign-only login cannot open Admission/Contact/Franchise/Landing detail pages.
@@ -1663,6 +1693,8 @@ def unified_lead_detail(raw_id: str, *, include_detail: bool = False, request=No
     if kind == "crm":
         qs = CrmLead.objects.filter(pk=pk).select_related("assigned_user").prefetch_related("notes")
         if request is not None:
+            if is_ants_agency_user(request=request):
+                qs = qs.filter(source=CrmLeadSource.LP_WB)
             from accounts.crm_zones import filter_crm_lead_qs_by_zone
 
             qs = filter_crm_lead_qs_by_zone(qs, request)
@@ -1730,6 +1762,7 @@ def update_unified_lead(raw_id: str, data: dict, *, include_detail: bool = False
             lead.meeting_date = parse_datetime(data["meetingDate"]) if data["meetingDate"] else None
         if "nextFollowUpDate" in data:
             lead.next_follow_up_date = parse_datetime(data["nextFollowUpDate"]) if data["nextFollowUpDate"] else None
+        _apply_meeting_flags(lead, data)
         assignment_changed = _maybe_assign_lead(lead, request, data)
         lead.save()
         if assignment_changed:
@@ -1758,6 +1791,7 @@ def update_unified_lead(raw_id: str, data: dict, *, include_detail: bool = False
             enquiry.meeting_date = parse_datetime(data["meetingDate"]) if data["meetingDate"] else None
         if "nextFollowUpDate" in data:
             enquiry.next_follow_up_date = parse_datetime(data["nextFollowUpDate"]) if data["nextFollowUpDate"] else None
+        _apply_meeting_flags(enquiry, data)
         assignment_changed = _maybe_assign_lead(enquiry, request, data)
         enquiry.save()
         if assignment_changed:
@@ -1788,6 +1822,7 @@ def update_unified_lead(raw_id: str, data: dict, *, include_detail: bool = False
             franchise_enq.meeting_date = parse_datetime(data["meetingDate"]) if data["meetingDate"] else None
         if "nextFollowUpDate" in data:
             franchise_enq.next_follow_up_date = parse_datetime(data["nextFollowUpDate"]) if data["nextFollowUpDate"] else None
+        _apply_meeting_flags(franchise_enq, data)
         assignment_changed = _maybe_assign_lead(franchise_enq, request, data)
         franchise_enq.save()
         if assignment_changed:
@@ -1818,6 +1853,7 @@ def update_unified_lead(raw_id: str, data: dict, *, include_detail: bool = False
             row.meeting_date = parse_datetime(data["meetingDate"]) if data["meetingDate"] else None
         if "nextFollowUpDate" in data:
             row.next_follow_up_date = parse_datetime(data["nextFollowUpDate"]) if data["nextFollowUpDate"] else None
+        _apply_meeting_flags(row, data)
         assignment_changed = _maybe_assign_lead(row, request, data)
         row.save()
         if assignment_changed:
@@ -1858,6 +1894,25 @@ def apply_lead_filters(qs, request):
     return qs
 
 
+def _parse_bool_flag(raw) -> bool:
+    if isinstance(raw, bool):
+        return raw
+    return str(raw or "").strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def _apply_meeting_flags(obj, data: dict) -> None:
+    """Apply Meeting fixed / Meeting done from CRM lead patch payload."""
+    if "meetingFixed" in data or "meeting_fixed" in data:
+        raw = data["meetingFixed"] if "meetingFixed" in data else data.get("meeting_fixed")
+        obj.meeting_fixed = _parse_bool_flag(raw)
+    if "meetingDone" in data or "meeting_done" in data:
+        raw = data["meetingDone"] if "meetingDone" in data else data.get("meeting_done")
+        obj.meeting_done = _parse_bool_flag(raw)
+    # Done implies fixed.
+    if getattr(obj, "meeting_done", False):
+        obj.meeting_fixed = True
+
+
 def parse_update_payload(data: dict) -> dict:
     field_map = {
         "fullName": "full_name",
@@ -1888,6 +1943,14 @@ def parse_update_payload(data: dict) -> dict:
     if "nextFollowUpDate" in data:
         raw = data.get("nextFollowUpDate")
         out["next_follow_up_date"] = parse_datetime(raw) if raw else None
+    if "meetingFixed" in data or "meeting_fixed" in data:
+        raw = data["meetingFixed"] if "meetingFixed" in data else data.get("meeting_fixed")
+        out["meeting_fixed"] = _parse_bool_flag(raw)
+    if "meetingDone" in data or "meeting_done" in data:
+        raw = data["meetingDone"] if "meetingDone" in data else data.get("meeting_done")
+        out["meeting_done"] = _parse_bool_flag(raw)
+        if out["meeting_done"]:
+            out["meeting_fixed"] = True
 
     return out
 
