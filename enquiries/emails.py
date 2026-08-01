@@ -13,7 +13,12 @@ from common.form_emails import (
     send_form_email_pair,
     send_team_notification,
 )
-from common.sendgrid_email import default_from_email, send_sendgrid_message, sendgrid_api_key
+from common.sendgrid_email import (
+    default_from_email,
+    load_franchise_brochure_attachment,
+    send_sendgrid_message,
+    sendgrid_api_key,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -256,8 +261,8 @@ def _crm_lead_team_html(lead) -> str:
 def send_crm_lead_enquiry_emails(lead) -> bool:
     """
     July LP / Meta / WB (and other CrmLead) form submit:
-    - **Personal:** franchise thank-you → ``lead.email``
-    - **Team:** alert → franchise inbox (MAIL_FRANCHISE_TO_ADDRESS)
+    - **Personal:** franchise thank-you → ``lead.email`` (+ franchise brochure PDF)
+    - **Team:** alert → franchise inbox (MAIL_FRANCHISE_TO_ADDRESS) — no brochure
     Same templates for all three campaign forms; source/campaign fields differ per page.
     """
     if not sendgrid_api_key():
@@ -267,12 +272,24 @@ def send_crm_lead_enquiry_emails(lead) -> bool:
     personal = normalize_personal_email(lead.email)
     parent_ok = False
     if personal:
+        brochure = load_franchise_brochure_attachment()
         parent_ok = send_sendgrid_message(
             to_emails=personal,
             subject="Thank You for Your Interest in T.I.M.E. Kids Franchise",
             html_content=_crm_lead_personal_ack_html(lead),
             from_email=default_from_email(),
+            attachments=[brochure] if brochure else None,
         )
+        if brochure:
+            logger.info(
+                "CrmLead personal thank-you attached brochure for id=%s",
+                getattr(lead, "pk", None),
+            )
+        else:
+            logger.warning(
+                "CrmLead personal thank-you sent without brochure (PDF missing) id=%s",
+                getattr(lead, "pk", None),
+            )
     else:
         logger.warning("CrmLead personal thank-you skipped — no email on lead id=%s", getattr(lead, "pk", None))
 
