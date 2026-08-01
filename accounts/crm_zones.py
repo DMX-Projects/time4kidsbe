@@ -482,17 +482,57 @@ def _city_field_q(field: str, cities: list[str]) -> Q:
 
 def filter_qs_by_zone_or_assigned(qs, zone_q: Q, request):
     """
-    Territory filter, plus any lead explicitly assigned to the logged-in user.
+    Territory filter, plus leads the viewer must keep seeing after handoff:
+    - assigned to the viewer or their ZM/RM team managers
+    - last assigned *by* the viewer (crm_last_assigner_id on raw_payload)
 
-    Assignment often crosses city/state (ZM→ZM, Meta free-text city → handler).
-    Without this OR, those leads save as assigned but never appear in the
-    assignee's login.
+    Cross-region: MH → Hyd RM → Hyd manager must not vanish from the Hyd RM login.
     """
     viewer = _authenticated_user(request)
-    viewer_id = getattr(viewer, "pk", None) if viewer is not None else None
-    if viewer_id:
-        return qs.filter(zone_q | Q(assigned_user_id=viewer_id))
+    if viewer is None or not getattr(viewer, "pk", None):
+        return qs.filter(zone_q)
+
+    from enquiries.crm_users import assigner_visible_assignee_ids
+
+    extra = Q()
+    assignee_ids = assigner_visible_assignee_ids(viewer)
+    if assignee_ids:
+        extra |= Q(assigned_user_id__in=assignee_ids)
+
+    viewer_id = int(viewer.pk)
+    # CrmLead / KidsEnquiry store last assigner on raw_payload (no migration).
+    if hasattr(qs.model, "raw_payload"):
+        extra |= Q(raw_payload__crm_last_assigner_id=viewer_id)
+        extra |= Q(raw_payload__crm_last_assigner_id=str(viewer_id))
+
+    if extra:
+        return qs.filter(zone_q | extra)
     return qs.filter(zone_q)
+
+
+def assigner_visibility_q(request, *, model=None) -> Q | None:
+    """
+    Q() matching leads a ZM/RM should still see outside hard state/city filters.
+    None when the viewer has no bypass visibility.
+    """
+    viewer = _authenticated_user(request)
+    if viewer is None or not getattr(viewer, "pk", None):
+        return None
+
+    from enquiries.crm_users import assigner_visible_assignee_ids
+
+    extra = Q()
+    assignee_ids = assigner_visible_assignee_ids(viewer)
+    if assignee_ids:
+        extra |= Q(assigned_user_id__in=assignee_ids)
+
+    viewer_id = int(viewer.pk)
+    use_payload = model is None or hasattr(model, "raw_payload")
+    if use_payload:
+        extra |= Q(raw_payload__crm_last_assigner_id=viewer_id)
+        extra |= Q(raw_payload__crm_last_assigner_id=str(viewer_id))
+
+    return extra if extra else None
 
 
 def filter_enquiry_qs_by_zone(qs, request):

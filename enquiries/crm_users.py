@@ -183,12 +183,44 @@ def filter_leads_for_crm_viewer(qs, request):
     """
     Lead handlers see only leads assigned to their login. Regional/Zonal Managers
     and Super Admins retain their geographic/all-lead view so they can assign
-    (zone filters also OR in leads assigned to them, including out-of-territory).
+    (zone filters also OR in leads assigned to them or their team managers).
     """
     viewer = _viewer_from_request(request)
     if is_assignable_handler_user(viewer) and not user_can_assign_crm_leads(viewer):
         return qs.filter(assigned_user_id=viewer.pk)
     return qs
+
+
+def assigner_visible_assignee_ids(viewer) -> set[int]:
+    """
+    User ids whose assigned leads a ZM/RM should keep seeing.
+
+    Includes the viewer plus their franchise/admission sheet managers so that
+    after they hand an out-of-region lead to a team manager, it does not
+    disappear from their login.
+    """
+    if viewer is None or not getattr(viewer, "pk", None):
+        return set()
+    ids: set[int] = {int(viewer.pk)}
+    if not user_can_assign_crm_leads(viewer):
+        return ids
+
+    if (
+        zonal_franchise_uses_full_handler_list(viewer)
+        or zonal_admission_uses_full_handler_list(viewer)
+    ):
+        for user in all_assignable_handler_users():
+            ids.add(int(user.pk))
+        return ids
+
+    for pipe in ("franchise", "admission"):
+        for user in zonal_manager_team_users(viewer, pipe):
+            ids.add(int(user.pk))
+        regional = regional_manager_team_users(viewer, pipe)
+        if regional is not None:
+            for user in regional:
+                ids.add(int(user.pk))
+    return ids
 
 
 def _filter_assignable_handlers(users: list[User]) -> list[User]:
