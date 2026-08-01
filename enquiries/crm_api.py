@@ -516,6 +516,7 @@ def _filter_crm_qs_by_centre(qs, request):
     if not franchises:
         return qs
     from django.db.models import Q
+    from accounts.crm_zones import assigner_visibility_q
 
     q = Q()
     for franchise in franchises:
@@ -524,6 +525,9 @@ def _filter_crm_qs_by_centre(qs, request):
             q |= Q(preferred_centre_location__iexact=name)
     if not q:
         return qs.none()
+    bypass = assigner_visibility_q(request, model=qs.model)
+    if bypass is not None:
+        return qs.filter(q | bypass)
     return qs.filter(q)
 
 
@@ -621,6 +625,7 @@ def _filter_crm_qs_by_city(qs, request):
     if not city:
         return qs
     from franchises.franchise_geo import city_query_variants
+    from accounts.crm_zones import assigner_visibility_q
 
     city_q = Q()
     for c in [x.strip() for x in city.split(",") if x.strip()]:
@@ -629,6 +634,9 @@ def _filter_crm_qs_by_city(qs, request):
         centre_names = _centre_names_in_city(c)
         if centre_names:
             city_q |= Q(preferred_centre_location__in=centre_names)
+    bypass = assigner_visibility_q(request, model=qs.model)
+    if bypass is not None:
+        return qs.filter(city_q | bypass)
     return qs.filter(city_q)
 
 
@@ -823,6 +831,13 @@ def _maybe_assign_lead(obj, request, data: dict | None = None) -> bool:
         raise ValueError("Selected user is not in this lead's territory.")
     changed = getattr(obj, "assigned_user_id", None) != user.pk
     obj.assigned_user = user
+    # Remember who handed this lead off so that ZM/RM keeps it in their login
+    # after assigning an out-of-region lead to a team manager.
+    if request_user is not None and getattr(request_user, "pk", None):
+        if hasattr(obj, "raw_payload"):
+            payload = dict(obj.raw_payload) if isinstance(obj.raw_payload, dict) else {}
+            payload["crm_last_assigner_id"] = int(request_user.pk)
+            obj.raw_payload = payload
     return changed
 
 
@@ -1154,13 +1169,15 @@ def _filter_crm_qs(
 
     state_value = (params.get("state") or "").strip()
     if state_value:
-        from accounts.crm_zones import clamp_requested_states
+        from accounts.crm_zones import assigner_visibility_q, clamp_requested_states
 
         state_value = clamp_requested_states(request, state_value) or ""
         state_queries = Q()
         for s in [x.strip() for x in state_value.split(",") if x.strip()]:
             state_queries |= Q(state__iexact=s)
-        qs = qs.filter(state_queries)
+        if state_queries:
+            bypass = assigner_visibility_q(request, model=qs.model)
+            qs = qs.filter(state_queries | bypass) if bypass is not None else qs.filter(state_queries)
 
     qs = _filter_crm_qs_by_city(qs, request)
     qs = _filter_crm_qs_by_centre(qs, request)
