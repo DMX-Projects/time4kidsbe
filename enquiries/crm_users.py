@@ -896,8 +896,15 @@ def list_crm_users_for_api(
             merged = [u for u in merged if u.id != getattr(viewer, "id", None)]
         return merged
 
-    def _as_api(users: list[User]) -> list[dict]:
-        scoped = _restrict_users_to_lead_state(users, state_s or None, ignore_city=ignore_city)
+    def _as_api(users: list[User], *, restrict_by_lead_state: bool = False) -> list[dict]:
+        # Configured ZM/RM team sheets must always show their managers — even when
+        # Meta free-text state/city doesn't match that handler's territory (common
+        # after a lead is forwarded to another head).
+        scoped = (
+            _restrict_users_to_lead_state(users, state_s or None, ignore_city=ignore_city)
+            if restrict_by_lead_state
+            else users
+        )
         return [_user_api_dict(user) for user in _with_heads(scoped)]
 
     if for_assign and pipe:
@@ -905,9 +912,9 @@ def list_crm_users_for_api(
         if regional_team is not None:
             return _as_api(regional_team)
     if for_assign and pipe == "franchise" and zonal_franchise_uses_full_handler_list(viewer):
-        return _as_api(all_assignable_handler_users())
+        return _as_api(all_assignable_handler_users(), restrict_by_lead_state=True)
     if for_assign and pipe == "admission" and zonal_admission_uses_full_handler_list(viewer):
-        return _as_api(all_assignable_handler_users())
+        return _as_api(all_assignable_handler_users(), restrict_by_lead_state=True)
     if for_assign and pipe:
         zonal_team = _filter_assignable_handlers(
             zonal_manager_team_users(viewer, pipe)
@@ -952,7 +959,8 @@ def assignee_candidates_for_lead(
     pipeline = "franchise" if franchise_lead else "admission" if admission_lead else None
     regional_team = regional_manager_team_users(assigner, pipeline)
     if regional_team is not None:
-        users = _restrict_users_to_lead_state(regional_team, state, ignore_city=ignore_city)
+        # Keep full mapped team — do not geo-filter (forwarded / Meta free-text leads).
+        users = list(regional_team)
     elif franchise_lead and zonal_franchise_uses_full_handler_list(assigner):
         users = _restrict_users_to_lead_state(
             all_assignable_handler_users(), state, ignore_city=ignore_city
@@ -966,7 +974,7 @@ def assignee_candidates_for_lead(
             zonal_manager_team_users(assigner, pipeline)
         )
         if zonal_team:
-            users = _restrict_users_to_lead_state(zonal_team, state, ignore_city=ignore_city)
+            users = list(zonal_team)
         else:
             users = []
             effective_city = None if ignore_city else city
