@@ -556,28 +556,48 @@ class CrmLeadCreateView(generics.CreateAPIView):
     def perform_create(self, serializer):
         lead = serializer.save()
         # Demo / preview LPs can pass skipEmails=true so no acknowledgement or team mail goes out.
+        # Auto-assign still runs so CRM shows "Assigned to …" even on demo submits.
         raw_skip = self.request.data.get("skipEmails")
         if raw_skip is None:
             raw_skip = self.request.data.get("skip_emails")
         skip_emails = str(raw_skip or "").strip().lower() in ("1", "true", "yes", "y")
-        if skip_emails:
-            return
+
+        from .emails import (
+            lead_source_label_for_crm_lead,
+            assign_and_notify_new_lead,
+            send_crm_lead_enquiry_emails,
+        )
+
+        import logging
+
+        log = logging.getLogger(__name__)
         try:
-            from .emails import (
-                lead_source_label_for_crm_lead,
-                assign_and_notify_new_lead,
-                send_crm_lead_enquiry_emails,
-            )
-
-            send_crm_lead_enquiry_emails(lead)
-            assign_and_notify_new_lead(
-                lead,
-                lead_source=lead_source_label_for_crm_lead(lead),
-            )
+            if skip_emails:
+                # Assign only — no parent/team mail.
+                assign_and_notify_new_lead(
+                    lead,
+                    lead_source=lead_source_label_for_crm_lead(lead),
+                )
+            else:
+                try:
+                    send_crm_lead_enquiry_emails(lead)
+                except Exception:
+                    log.exception(
+                        "CRM parent/team emails failed for CrmLead id=%s",
+                        getattr(lead, "pk", None),
+                    )
+                try:
+                    assign_and_notify_new_lead(
+                        lead,
+                        lead_source=lead_source_label_for_crm_lead(lead),
+                    )
+                except Exception:
+                    log.exception(
+                        "CRM auto-assign/notify failed for CrmLead id=%s",
+                        getattr(lead, "pk", None),
+                    )
         except Exception:
-            import logging
-
-            logging.getLogger(__name__).exception("CRM lead emails failed for CrmLead id=%s", getattr(lead, "pk", None))
+            log.exception("CRM post-create hooks failed for CrmLead id=%s", getattr(lead, "pk", None))
 
 
 @method_decorator(csrf_exempt, name="dispatch")
