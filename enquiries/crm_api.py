@@ -139,12 +139,17 @@ def is_restricted_crm_viewer(request=None, user=None) -> bool:
     )
 
 
-def redact_lead_for_campaign_viewer(data: dict | None) -> dict | None:
+def redact_lead_for_campaign_viewer(
+    data: dict | None, *, keep_history: bool = False
+) -> dict | None:
     """
     Strip PII and internal CRM ops fields for third-party campaign / agency viewers.
 
     Viewers may see name, geo, source/UTM, status, and enquiry date — not contact
-    details, assignment, follow-ups, notes/history, or centre phone/email.
+    details, assignment, follow-ups, or centre phone/email.
+
+    Agency viewers (keep_history=True) also get History timeline + comment-only writes;
+    campaign.viewer still has notes/history stripped.
     """
     if not data:
         return data
@@ -166,11 +171,15 @@ def redact_lead_for_campaign_viewer(data: dict | None) -> dict | None:
     out["nextFollowUpDate"] = None
     out["meetingFixed"] = False
     out["meetingDone"] = False
-    # History / notes (detail payloads)
-    out["notes"] = []
-    out["auditLogs"] = []
-    out["notificationLogs"] = []
-    out["callHistory"] = []
+    if keep_history:
+        # Preserve notes / audit / notifications / call history for agency comment UI.
+        out["agencyCommentOnly"] = True
+    else:
+        out["notes"] = []
+        out["auditLogs"] = []
+        out["notificationLogs"] = []
+        out["callHistory"] = []
+        out["agencyCommentOnly"] = False
     out["editable"] = False
     out["campaignViewer"] = True
     return out
@@ -179,7 +188,11 @@ def redact_lead_for_campaign_viewer(data: dict | None) -> dict | None:
 def _redact_lead_list(rows: list[dict], request) -> list[dict]:
     if not is_campaign_external_viewer(request=request):
         return rows
-    return [redact_lead_for_campaign_viewer(row) or row for row in rows]
+    keep_history = is_agency_crm_user(request=request)
+    return [
+        redact_lead_for_campaign_viewer(row, keep_history=keep_history) or row
+        for row in rows
+    ]
 
 GOOGLE_CAMPAIGN_SOURCES = (
     CrmLeadSource.JULY_LP,
@@ -241,15 +254,35 @@ def crm_lead_form_name(lead: CrmLead) -> str:
     return LP_FORM_NAME.get(lead.source, "")
 
 
-def campaign_channel_api_key(source: str | None, landing_page_url: str | None = None) -> str:
+def campaign_channel_api_key(
+    source: str | None,
+    landing_page_url: str | None = None,
+    state: str | None = None,
+) -> str:
     """Map stored form source to CRM channel key (BCWW Google vs Ants WB vs META)."""
+    state_l = (state or "").strip().lower()
+    is_wb = state_l == "west bengal" or state_l == "wb" or "bengal" in state_l
+
+    api = source_to_api(source) if source else ""
+    if api == "lp_wb" or (
+        landing_page_url and "timekids-lp-wb" in (landing_page_url or "").lower()
+    ):
+        return "lp_wb"  # Ants — West Bengal Google LP
+
+    # West Bengal Instant Form / Meta / Google traffic is Ants — never BCWW.
+    if is_wb:
+        if api in ("july_meta", "facebook_lead_ads") or (
+            (source or "").strip().lower() == "facebook_lead_ads"
+        ):
+            return "ants_meta"
+        if is_google_ads_landing_url(landing_page_url) or api in ("july_lp", "google"):
+            return "lp_wb"
+        return "lp_wb"
+
     if is_google_ads_landing_url(landing_page_url):
         return "google"
-    api = source_to_api(source) if source else ""
     if api == "july_lp":
         return "google"
-    if api == "lp_wb":
-        return "lp_wb"  # Ants — West Bengal Google LP
     return api or ""
 
 
@@ -516,7 +549,6 @@ def _filter_crm_qs_by_centre(qs, request):
     if not franchises:
         return qs
     from django.db.models import Q
-    from accounts.crm_zones import assigner_visibility_q
 
     q = Q()
     for franchise in franchises:
@@ -525,9 +557,6 @@ def _filter_crm_qs_by_centre(qs, request):
             q |= Q(preferred_centre_location__iexact=name)
     if not q:
         return qs.none()
-    bypass = assigner_visibility_q(request, model=qs.model)
-    if bypass is not None:
-        return qs.filter(q | bypass)
     return qs.filter(q)
 
 
@@ -625,7 +654,6 @@ def _filter_crm_qs_by_city(qs, request):
     if not city:
         return qs
     from franchises.franchise_geo import city_query_variants
-    from accounts.crm_zones import assigner_visibility_q
 
     city_q = Q()
     for c in [x.strip() for x in city.split(",") if x.strip()]:
@@ -634,9 +662,6 @@ def _filter_crm_qs_by_city(qs, request):
         centre_names = _centre_names_in_city(c)
         if centre_names:
             city_q |= Q(preferred_centre_location__in=centre_names)
-    bypass = assigner_visibility_q(request, model=qs.model)
-    if bypass is not None:
-        return qs.filter(city_q | bypass)
     return qs.filter(city_q)
 
 
@@ -1169,15 +1194,14 @@ def _filter_crm_qs(
 
     state_value = (params.get("state") or "").strip()
     if state_value:
-        from accounts.crm_zones import assigner_visibility_q, clamp_requested_states
+        from accounts.crm_zones import clamp_requested_states
 
         state_value = clamp_requested_states(request, state_value) or ""
         state_queries = Q()
         for s in [x.strip() for x in state_value.split(",") if x.strip()]:
             state_queries |= Q(state__iexact=s)
         if state_queries:
-            bypass = assigner_visibility_q(request, model=qs.model)
-            qs = qs.filter(state_queries | bypass) if bypass is not None else qs.filter(state_queries)
+            qs = qs.filter(state_queries)
 
     qs = _filter_crm_qs_by_city(qs, request)
     qs = _filter_crm_qs_by_centre(qs, request)
@@ -1465,9 +1489,11 @@ def unified_dashboard_stats(request) -> dict:
         crm_qs = _filter_crm_qs(request)
         # Always break out campaign channels (website / fb / insta / LP / META)
         # so reports & charts can show each source separately.
-        for row in crm_qs.values("source", "landing_page_url").annotate(count=Count("id")):
+        for row in crm_qs.values("source", "landing_page_url", "state").annotate(count=Count("id")):
             api_source = (
-                campaign_channel_api_key(row["source"], row.get("landing_page_url"))
+                campaign_channel_api_key(
+                    row["source"], row.get("landing_page_url"), row.get("state")
+                )
                 or source_to_api(row["source"])
             )
             source_counts[api_source] = source_counts.get(api_source, 0) + row["count"]
@@ -1695,7 +1721,9 @@ def _attach_viewer_flags(data: dict | None, request=None) -> dict | None:
 
     viewer = getattr(request, "user", None) if request is not None else None
     if is_campaign_external_viewer(user=viewer):
-        return redact_lead_for_campaign_viewer(data)
+        return redact_lead_for_campaign_viewer(
+            data, keep_history=is_agency_crm_user(user=viewer)
+        )
     data["canAssignUsers"] = user_can_assign_crm_leads(viewer)
     return data
 
@@ -2091,9 +2119,13 @@ def unified_reports_data(request) -> dict:
     # 3. Campaign (CrmLead / campaign_leads)
     if not source_filter or _include_crm(source_filter):
         crm_qs = _filter_crm_qs(request).order_by()
-        for row in crm_qs.values("city", "status", "source", "landing_page_url").annotate(count=Count("id")):
+        for row in crm_qs.values("city", "status", "source", "landing_page_url", "state").annotate(
+            count=Count("id")
+        ):
             api_src = (
-                campaign_channel_api_key(row["source"], row.get("landing_page_url"))
+                campaign_channel_api_key(
+                    row["source"], row.get("landing_page_url"), row.get("state")
+                )
                 or source_to_api(row["source"])
                 or "google"
             )

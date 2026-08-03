@@ -399,8 +399,7 @@ def send_crm_heads_new_lead_reminder(
     """
     New-lead email routing:
 
-    - To: covering Zonal Manager + covering Regional Manager(s) while unassigned
-    - Managers are notified only after an explicit assignment
+    - To: auto-assignee when set; else covering Zonal + Regional Manager(s)
     - Cc: other covering zonal/regional heads + Jayesh
 
     Controlled by settings.CRM_NOTIFY_ALL_HANDLERS (False skips completely).
@@ -589,11 +588,22 @@ def send_crm_lead_assignment_email(obj, *, assigned_by=None) -> bool:
 
 def assign_and_notify_new_lead(obj, *, lead_source: str = "") -> bool:
     """
-    Notify CRM users about a new lead without assigning it automatically.
-    A Regional or Zonal Manager explicitly assigns it to a territory handler.
-    Works for CrmLead, FranchiseEnquiry, Enquiry, and similar objects with state/city.
+    Auto-assign a new lead to the best validated territory user (if still open),
+    then email CRM heads / the assignee.
+
+    Validations kept:
+    - Meta / Facebook: if state **and** city match a sheet manager → that manager;
+      else state-only → covering RM, then ZM.
+    - Other leads: match by **state + city** to a pipeline sheet handler (else ZM).
+    - Suggested user must still appear in ``crm_users_matching_geo`` under those rules.
+    - Already-assigned leads are never overwritten.
     """
-    from .crm_users import is_meta_instant_form_lead, resolve_notify_lead_kind
+    from .crm_users import (
+        crm_users_matching_geo,
+        is_meta_instant_form_lead,
+        resolve_notify_lead_kind,
+        suggest_assignee_for_geo,
+    )
 
     state = (getattr(obj, "state", None) or "").strip()
     city = (getattr(obj, "city", None) or "").strip()
@@ -644,11 +654,43 @@ def assign_and_notify_new_lead(obj, *, lead_source: str = "") -> bool:
 
     lead_kind = resolve_notify_lead_kind(obj, source)
 
+    # Meta: notify peers by state only; auto-assign still tries city when present.
+    ignore_city = is_meta_instant_form_lead(obj)
+    city_for_assign = (city or str(centre or "") or "").strip() or None
+
+    if hasattr(obj, "assigned_user_id") and not getattr(obj, "assigned_user_id", None):
+        suggested = suggest_assignee_for_geo(
+            state or None,
+            city_for_assign,
+            pipeline=lead_kind,
+            ignore_city=ignore_city,
+        )
+        if suggested:
+            # Validate: city-matched manager OR state-only head for Meta.
+            validated = crm_users_matching_geo(
+                state or None,
+                city_for_assign,
+                ignore_city=False,
+            )
+            if ignore_city and not any(u.id == suggested.id for u in validated):
+                validated = crm_users_matching_geo(
+                    state or None,
+                    None,
+                    ignore_city=True,
+                )
+            if any(u.id == suggested.id for u in validated):
+                obj.assigned_user = suggested
+                try:
+                    obj.save(update_fields=["assigned_user"])
+                except Exception:
+                    logger.exception(
+                        "Failed to save assigned_user for %s id=%s",
+                        type(obj).__name__,
+                        getattr(obj, "pk", None),
+                    )
+
     assigned = getattr(obj, "assigned_user", None)
     preferred_to = (getattr(assigned, "email", None) or "").strip() or None
-
-    # Meta Instant Forms have no city dropdown — notify / map RMs by state only.
-    ignore_city = is_meta_instant_form_lead(obj)
 
     return send_crm_heads_new_lead_reminder(
         name=name,

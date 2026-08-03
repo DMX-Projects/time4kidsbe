@@ -622,7 +622,7 @@ class AdminCrmLeadListView(APIView):
         except ValueError:
             page = 1
         try:
-            limit = min(100, max(1, int(request.query_params.get("limit") or 10)))
+            limit = min(10000, max(1, int(request.query_params.get("limit") or 10)))
         except ValueError:
             limit = 10
 
@@ -751,10 +751,13 @@ class AdminCrmLeadNoteCreateView(APIView):
     def post(self, request, pk):
         if not can_view_crm_leads(request):
             return Response({"detail": "CRM login required."}, status=status.HTTP_403_FORBIDDEN)
-        if _is_campaign_readonly_user(request):
-            return Response({"detail": "View-only account."}, status=status.HTTP_403_FORBIDDEN)
 
-        from .crm_api import note_to_dict, parse_lead_id, unified_lead_detail
+        from .crm_api import is_agency_crm_user, parse_lead_id, unified_lead_detail
+
+        agency_comment_only = is_agency_crm_user(request=request)
+        # Agency viewers may post comments only; other restricted logins stay view-only.
+        if _is_campaign_readonly_user(request) and not agency_comment_only:
+            return Response({"detail": "View-only account."}, status=status.HTTP_403_FORBIDDEN)
 
         if unified_lead_detail(pk, include_detail=False, request=request) is None:
             return Response({"message": "Lead not found"}, status=status.HTTP_404_NOT_FOUND)
@@ -769,7 +772,8 @@ class AdminCrmLeadNoteCreateView(APIView):
         from .models import UnifiedLeadNote, CrmLead, Enquiry, FranchiseEnquiry
         from .crm_api import unified_note_to_dict
 
-        status_val = (request.data.get("status") or "").strip()
+        # Agency comment-only: never accept a status override from the client.
+        status_val = "" if agency_comment_only else (request.data.get("status") or "").strip()
         lead_obj = None
         if kind == "crm":
             lead_obj = CrmLead.objects.filter(pk=numeric_id).first()
