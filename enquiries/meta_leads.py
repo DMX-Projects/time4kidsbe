@@ -746,13 +746,27 @@ def process_leadgen_event(
             send_crm_lead_enquiry_emails,
         )
 
-        send_crm_lead_enquiry_emails(lead)
-        assign_and_notify_new_lead(
-            lead,
-            lead_source=lead_source_label_for_crm_lead(lead),
-        )
+        try:
+            send_crm_lead_enquiry_emails(lead)
+        except Exception:
+            logger.exception(
+                "CRM parent/team emails failed for Meta lead id=%s crm_id=%s",
+                leadgen_id,
+                lead.pk,
+            )
+        try:
+            assign_and_notify_new_lead(
+                lead,
+                lead_source=lead_source_label_for_crm_lead(lead),
+            )
+        except Exception:
+            logger.exception(
+                "CRM auto-assign/notify failed for Meta lead id=%s crm_id=%s",
+                leadgen_id,
+                lead.pk,
+            )
     except Exception:
-        logger.exception("CRM emails failed for Meta lead id=%s crm_id=%s", leadgen_id, lead.pk)
+        logger.exception("CRM post-create hooks failed for Meta lead id=%s crm_id=%s", leadgen_id, lead.pk)
 
     return {"ok": True, "crm_lead_id": lead.pk, "leadgen_id": leadgen_id}
 
