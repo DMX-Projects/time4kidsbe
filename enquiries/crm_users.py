@@ -198,6 +198,9 @@ def assigner_visible_assignee_ids(viewer) -> set[int]:
     Includes the viewer plus their franchise/admission sheet managers so that
     after they hand an out-of-region lead to a team manager, it does not
     disappear from their login.
+
+    Empty team sheets (full assign dropdown) must NOT mean “see every manager’s
+    leads nationwide” — that wrongly pulled TN/KA into Jyoti’s East login.
     """
     if viewer is None or not getattr(viewer, "pk", None):
         return set()
@@ -205,15 +208,13 @@ def assigner_visible_assignee_ids(viewer) -> set[int]:
     if not user_can_assign_crm_leads(viewer):
         return ids
 
-    if (
-        zonal_franchise_uses_full_handler_list(viewer)
-        or zonal_admission_uses_full_handler_list(viewer)
-    ):
-        for user in all_assignable_handler_users():
-            ids.add(int(user.pk))
-        return ids
-
     for pipe in ("franchise", "admission"):
+        # Empty ZM sheet → assign UI shows all handlers; visibility stays territory-only
+        # (+ last-assigner / self via zone filter), not every assigned lead in India.
+        if pipe == "franchise" and zonal_franchise_uses_full_handler_list(viewer):
+            continue
+        if pipe == "admission" and zonal_admission_uses_full_handler_list(viewer):
+            continue
         for user in zonal_manager_team_users(viewer, pipe):
             ids.add(int(user.pk))
         regional = regional_manager_team_users(viewer, pipe)
