@@ -615,18 +615,46 @@ def suggest_assignee_for_geo(
     ignore_city: bool = False,
 ) -> User | None:
     """
-    Best city/state handler from the Franchise/Admission sheet for routing helpers.
-    This function does not persist an assignment; only an explicit manager action does.
+    Best territory assignee for auto-assign / routing helpers.
+
+    Meta / Facebook (``ignore_city=True``):
+    1. If city is present and matches a pipeline handler → that manager
+       (e.g. AP/TS + city → Sai Kishore / Harshit on franchise sheet).
+    2. Else state-only → covering Regional Manager, then Zonal Manager.
     """
-    matches = crm_users_matching_geo(state, city, ignore_city=ignore_city)
+    allowed_handlers = _pipeline_handler_emails(pipeline)
+    city_name = (city or "").strip()
+
+    # Prefer a city-matched sheet manager when city is usable (Meta LP dropdowns,
+    # or Instant Form city that happens to match territory).
+    if city_name:
+        city_matches = crm_users_matching_geo(state, city_name, ignore_city=False)
+        for user in city_matches:
+            email = (user.email or "").strip().lower()
+            if email in allowed_handlers:
+                return user
+
+    if ignore_city:
+        state_matches = crm_users_matching_geo(state, None, ignore_city=True)
+        if not state_matches:
+            return None
+        for user in state_matches:
+            email = (user.email or "").strip().lower()
+            if email in REGIONAL_MANAGER_ASSIGN_EMAILS:
+                return user
+        for user in state_matches:
+            email = (user.email or "").strip().lower()
+            if email in ZONAL_MANAGER_ASSIGN_EMAILS:
+                return user
+        return None
+
+    matches = crm_users_matching_geo(state, city_name or None, ignore_city=False)
     if not matches:
         return None
-    allowed_handlers = _pipeline_handler_emails(pipeline)
     for user in matches:
         email = (user.email or "").strip().lower()
         if email in allowed_handlers:
             return user
-    # A territory with no manager on that pipeline's sheet falls back to its ZM.
     for user in matches:
         email = (user.email or "").strip().lower()
         if email in ZONAL_MANAGER_ASSIGN_EMAILS:
@@ -940,6 +968,21 @@ def list_crm_users_for_api(
         )
         return [_user_api_dict(user) for user in _with_heads(scoped)]
 
+    # Meta Instant Forms (free-text city): first hop = ZM/RM only.
+    # ZM/RM with a mapped team still get their managers for the second hop.
+    if for_assign and ignore_city:
+        regional_team = regional_manager_team_users(viewer, pipe) if pipe else None
+        if regional_team is not None:
+            return _as_api(regional_team)
+        if is_zonal_manager_user(viewer) and pipe:
+            zonal_team = _filter_assignable_handlers(
+                zonal_manager_team_users(viewer, pipe)
+            )
+            if zonal_team:
+                return _as_api(zonal_team)
+        # Super admin / empty-sheet ZM / others: heads only (no territory managers).
+        return _as_api([])
+
     if for_assign and pipe:
         regional_team = regional_manager_team_users(viewer, pipe)
         if regional_team is not None:
@@ -990,6 +1033,23 @@ def assignee_candidates_for_lead(
     Prefer territory match; national assigners fall back to full handler list.
     """
     pipeline = "franchise" if franchise_lead else "admission" if admission_lead else None
+    # Meta Instant Form: managers only when a ZM/RM with a mapped team is assigning.
+    if ignore_city:
+        regional_team = regional_manager_team_users(assigner, pipeline)
+        if regional_team is not None:
+            users = list(regional_team)
+        elif is_zonal_manager_user(assigner) and pipeline:
+            zonal_team = _filter_assignable_handlers(
+                zonal_manager_team_users(assigner, pipeline)
+            )
+            users = list(zonal_team) if zonal_team else []
+        else:
+            users = []
+        users = _merge_user_lists(assign_dropdown_heads(state), users)
+        if assigner is not None:
+            users = [u for u in users if u.id != getattr(assigner, "id", None)]
+        return users
+
     regional_team = regional_manager_team_users(assigner, pipeline)
     if regional_team is not None:
         # Keep full mapped team — do not geo-filter (forwarded / Meta free-text leads).
@@ -1050,6 +1110,20 @@ def is_valid_assignee_for_lead(
         return True
     if not is_assignable_handler_user(assignee):
         return False
+    # Meta Instant Form: managers only via mapped ZM/RM team (not empty-sheet full list).
+    if ignore_city:
+        assigner_email = str(getattr(assigner, "email", "") or "").strip().lower()
+        national = assigner_email in CRM_SUPER_ADMIN_ASSIGN_EMAILS
+        candidates = assignee_candidates_for_lead(
+            state=state,
+            city=city,
+            national=national,
+            assigner=assigner,
+            franchise_lead=franchise_lead,
+            admission_lead=admission_lead,
+            ignore_city=True,
+        )
+        return any(u.id == assignee.id for u in candidates)
     if franchise_lead and zonal_franchise_uses_full_handler_list(assigner):
         return True
     if admission_lead and zonal_admission_uses_full_handler_list(assigner):

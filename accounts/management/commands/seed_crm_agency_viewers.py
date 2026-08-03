@@ -1,5 +1,5 @@
 """
-Seed agency CRM viewers (view-only, no mobile/email, Dashboard only).
+Seed agency CRM viewers (comment + History only; no mobile/email).
 
   Bcwebwise Agency — 6-state Facebook/Meta Instant Forms
   Ants Agency — West Bengal Ants Google franchise LP (lp_wb)
@@ -89,6 +89,6 @@ class Command(BaseCommand):
             self.style.NOTICE(
                 "Access: Bcwebwise = Facebook/Meta Instant Forms (6 states); "
                 "Ants = West Bengal Ants Google franchise LP (lp_wb) · "
-                "no mobile/email · view-only · login /crm-admin/login"
+                "no mobile/email · comment + History only · login /crm-admin/login"
             )
         )

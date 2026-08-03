@@ -22,6 +22,8 @@ User = get_user_model()
 
 KERALA_NORTH = "Kasaragod,Kannur,Malappuram,Kozhikode,Wayanad,Thrissur,Palakkad"
 KERALA_SOUTH = "Ernakulam,Kottayam,Alappuzha,Kollam,Trivandrum,Pathanamthitta,Idukki"
+# Franchise sheet lists all Kerala cities on Vivek's row.
+KERALA_ALL = f"{KERALA_NORTH},{KERALA_SOUTH}"
 
 # One account per person — union of franchise + admission sheets.
 # ``mapping_region`` = Region column on the sheet.
@@ -181,7 +183,7 @@ TEAM_USERS = (
         "phone": "7907467952",
         "zone": "SOUTH",
         "states": "Kerala",
-        "cities": KERALA_NORTH,
+        "cities": KERALA_ALL,
         "notify_franchise": False,
         "notify_admission": False,
     },
