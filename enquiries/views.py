@@ -772,11 +772,10 @@ class AdminCrmLeadNoteCreateView(APIView):
         if not can_view_crm_leads(request):
             return Response({"detail": "CRM login required."}, status=status.HTTP_403_FORBIDDEN)
 
-        from .crm_api import is_agency_crm_user, parse_lead_id, unified_lead_detail
+        from .crm_api import parse_lead_id, unified_lead_detail
 
-        agency_comment_only = is_agency_crm_user(request=request)
-        # Agency viewers may post comments only; other restricted logins stay view-only.
-        if _is_campaign_readonly_user(request) and not agency_comment_only:
+        # Restricted viewers (campaign + agency) are view-only — History visible, no notes.
+        if _is_campaign_readonly_user(request):
             return Response({"detail": "View-only account."}, status=status.HTTP_403_FORBIDDEN)
 
         if unified_lead_detail(pk, include_detail=False, request=request) is None:
@@ -792,8 +791,7 @@ class AdminCrmLeadNoteCreateView(APIView):
         from .models import UnifiedLeadNote, CrmLead, Enquiry, FranchiseEnquiry
         from .crm_api import unified_note_to_dict
 
-        # Agency comment-only: never accept a status override from the client.
-        status_val = "" if agency_comment_only else (request.data.get("status") or "").strip()
+        status_val = (request.data.get("status") or "").strip()
         lead_obj = None
         if kind == "crm":
             lead_obj = CrmLead.objects.filter(pk=numeric_id).first()
