@@ -25,6 +25,10 @@ CRM_SOURCE_FROM_API = {
     "july-meta": CrmLeadSource.JULY_META,
     "lp_wb": CrmLeadSource.LP_WB,
     "lp-wb": CrmLeadSource.LP_WB,
+    "franchise_referral": CrmLeadSource.FRANCHISE_REFERRAL,
+    "franchise_friends_family": CrmLeadSource.FRANCHISE_FRIENDS_FAMILY,
+    "referral_parents": CrmLeadSource.REFERRAL_PARENTS,
+    "referral_family_friends": CrmLeadSource.REFERRAL_FAMILY_FRIENDS,
     "google": "google",
     "admission": "admission",
     "contact": "contact",
@@ -39,6 +43,10 @@ CRM_SOURCE_TO_API = {
     CrmLeadSource.JULY_LP: "july_lp",
     CrmLeadSource.JULY_META: "july_meta",
     CrmLeadSource.LP_WB: "lp_wb",
+    CrmLeadSource.FRANCHISE_REFERRAL: "franchise_referral",
+    CrmLeadSource.FRANCHISE_FRIENDS_FAMILY: "franchise_friends_family",
+    CrmLeadSource.REFERRAL_PARENTS: "referral_parents",
+    CrmLeadSource.REFERRAL_FAMILY_FRIENDS: "referral_family_friends",
 }
 
 FRANCHISE_CAMPAIGN_SOURCES = (
@@ -46,6 +54,15 @@ FRANCHISE_CAMPAIGN_SOURCES = (
     CrmLeadSource.JULY_META,
     CrmLeadSource.LP_WB,
 )
+
+REFERRAL_CRM_SOURCES = (
+    CrmLeadSource.FRANCHISE_REFERRAL,
+    CrmLeadSource.FRANCHISE_FRIENDS_FAMILY,
+    CrmLeadSource.REFERRAL_PARENTS,
+    CrmLeadSource.REFERRAL_FAMILY_FRIENDS,
+)
+
+CRM_VISIBLE_SOURCES = FRANCHISE_CAMPAIGN_SOURCES + REFERRAL_CRM_SOURCES
 
 # Dedicated CRM logins restricted to Paid Campaign (franchise campaign channels only).
 CAMPAIGN_ONLY_CRM_EMAILS = {
@@ -896,6 +913,7 @@ def _include_crm(source_filter: str | None) -> bool:
     return source_filter in {
         "google",
         "july_lp", "july-lp", "july_meta", "july-meta", "lp_wb", "lp-wb",
+        "franchise_referral", "franchise_friends_family", "referral_parents", "referral_family_friends",
     }
 
 
@@ -1125,8 +1143,8 @@ def _filter_crm_qs(
 ):
     params = _query_params(request)
     qs = CrmLead.objects.all()
-    # Unused /crm/web|fb|insta forms — never surface those leads in CRM admin.
-    qs = qs.filter(source__in=FRANCHISE_CAMPAIGN_SOURCES)
+    # CRM admin shows paid campaign leads + referral-channel leads.
+    qs = qs.filter(source__in=CRM_VISIBLE_SOURCES)
     source_filter = _request_source_filter(request)
     if source_filter and _include_crm(source_filter):
         if source_filter == "agency":
@@ -1152,7 +1170,7 @@ def _filter_crm_qs(
                 qs = qs.filter(Q(source__in=GOOGLE_CAMPAIGN_SOURCES) | google_ads_landing_q)
             else:
                 mapped = normalize_source_from_api(source_filter)
-                if mapped in FRANCHISE_CAMPAIGN_SOURCES:
+                if mapped in CRM_VISIBLE_SOURCES:
                     qs = qs.filter(source=mapped)
                     # Meta Instant Form / Meta LP organic only — not Google Ads clicks on Meta LP.
                     if mapped == CrmLeadSource.JULY_META:
