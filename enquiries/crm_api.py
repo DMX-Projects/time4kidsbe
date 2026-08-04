@@ -148,7 +148,7 @@ def redact_lead_for_campaign_viewer(
     Viewers may see name, geo, source/UTM, status, and enquiry date — not contact
     details, assignment, follow-ups, or centre phone/email.
 
-    Agency viewers (keep_history=True) also get History timeline + comment-only writes;
+    Agency viewers (keep_history=True) get History timeline (read-only, no comment writes);
     campaign.viewer still has notes/history stripped.
     """
     if not data:
@@ -172,7 +172,7 @@ def redact_lead_for_campaign_viewer(
     out["meetingFixed"] = False
     out["meetingDone"] = False
     if keep_history:
-        # Preserve notes / audit / notifications / call history for agency comment UI.
+        # Preserve notes / audit / notifications / call history for agency History panel.
         out["agencyCommentOnly"] = True
     else:
         out["notes"] = []
