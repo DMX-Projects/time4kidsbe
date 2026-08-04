@@ -174,6 +174,10 @@ class CrmLeadSource(models.TextChoices):
     JULY_LP = "july_lp", "Google"
     JULY_META = "july_meta", "META"
     LP_WB = "lp_wb", "Google"
+    FRANCHISE_REFERRAL = "franchise_referral", "Referral-Franchise"
+    FRANCHISE_FRIENDS_FAMILY = "franchise_friends_family", "Referral - Friends & Family"
+    REFERRAL_PARENTS = "referral_parents", "Referral - Parents"
+    REFERRAL_FAMILY_FRIENDS = "referral_family_friends", "Referral - Family & Friends"
 
 
 class CrmLeadStatus(models.TextChoices):
@@ -213,7 +217,7 @@ class CrmLead(models.Model):
     investment_range = models.CharField(max_length=100, blank=True, default="")
     expected_start_date = models.CharField(max_length=100, blank=True, default="")
     comments = models.TextField(blank=True, default="")
-    source = models.CharField(max_length=20, choices=CrmLeadSource.choices, default=CrmLeadSource.WEB)
+    source = models.CharField(max_length=40, choices=CrmLeadSource.choices, default=CrmLeadSource.WEB)
     landing_page_url = models.URLField(max_length=500, blank=True, default="")
     utm_source = models.CharField(max_length=150, blank=True, default="")
     utm_medium = models.CharField(max_length=150, blank=True, default="")
