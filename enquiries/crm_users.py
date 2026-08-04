@@ -184,6 +184,9 @@ def filter_leads_for_crm_viewer(qs, request):
     Lead handlers see only leads assigned to their login. Regional/Zonal Managers
     and Super Admins retain their geographic/all-lead view so they can assign
     (zone filters also OR in leads assigned to them or their team managers).
+
+    Self-assign ("Assign to me") is an add-on for users who can already open a
+    lead; it does not change auto-assign or this visibility rule.
     """
     viewer = _viewer_from_request(request)
     if is_assignable_handler_user(viewer) and not user_can_assign_crm_leads(viewer):
@@ -952,10 +955,8 @@ def list_crm_users_for_api(
     def _with_heads(users: list[User]) -> list[User]:
         if not for_assign:
             return users
-        merged = _merge_user_lists(assign_dropdown_heads(state_s or None), users)
-        if viewer is not None:
-            merged = [u for u in merged if u.id != getattr(viewer, "id", None)]
-        return merged
+        # Keep current viewer in the list so ZM/RM can self-assign for follow-up.
+        return _merge_user_lists(assign_dropdown_heads(state_s or None), users)
 
     def _as_api(users: list[User], *, restrict_by_lead_state: bool = False) -> list[dict]:
         # Configured ZM/RM team sheets must always show their managers — even when
@@ -1045,10 +1046,8 @@ def assignee_candidates_for_lead(
             users = list(zonal_team) if zonal_team else []
         else:
             users = []
-        users = _merge_user_lists(assign_dropdown_heads(state), users)
-        if assigner is not None:
-            users = [u for u in users if u.id != getattr(assigner, "id", None)]
-        return users
+        # Keep assigner in the list so ZM/RM can self-assign for follow-up.
+        return _merge_user_lists(assign_dropdown_heads(state), users)
 
     regional_team = regional_manager_team_users(assigner, pipeline)
     if regional_team is not None:
@@ -1089,8 +1088,7 @@ def assignee_candidates_for_lead(
                 )
 
     users = _merge_user_lists(assign_dropdown_heads(state), users)
-    if assigner is not None:
-        users = [u for u in users if u.id != getattr(assigner, "id", None)]
+    # Keep assigner in the list so ZM/RM can self-assign for follow-up.
     return users
 
 

@@ -833,7 +833,10 @@ def _is_admission_assignable_object(obj) -> bool:
 
 def _maybe_assign_lead(obj, request, data: dict | None = None) -> bool:
     """
-    Apply an explicit Regional/Zonal/Super Admin assignment to a permitted handler.
+    Apply an explicit assignment.
+
+    - ZM / RM / Super Admin may assign to any permitted territory handler (or self).
+    - Any active CRM user may self-assign a lead they can open (claim for themselves).
     Leads remain unassigned when ``assignedUserId`` is not supplied.
     """
     data = data or {}
@@ -848,17 +851,37 @@ def _maybe_assign_lead(obj, request, data: dict | None = None) -> bool:
     city = (getattr(obj, "city", None) or "").strip()
     from .crm_users import is_meta_instant_form_lead, is_valid_assignee_for_lead, user_can_assign_crm_leads
 
-    if not user_can_assign_crm_leads(request_user):
-        return False
     try:
         from accounts.models import User, UserRole
 
         uid = int(raw)
     except (TypeError, ValueError):
         return False
+
+    is_self_assign = (
+        request_user is not None
+        and getattr(request_user, "pk", None) is not None
+        and int(request_user.pk) == uid
+    )
+    # Assign-to-others stays ZM/RM/admin only. Self-assign is allowed for any CRM login.
+    if not is_self_assign and not user_can_assign_crm_leads(request_user):
+        return False
+
     user = User.objects.filter(pk=uid, role__iexact=UserRole.CRM.value, is_active=True).first()
     if not user:
         return False
+
+    if is_self_assign:
+        # Claiming for yourself — no need to be on the assigner list.
+        changed = getattr(obj, "assigned_user_id", None) != user.pk
+        obj.assigned_user = user
+        if request_user is not None and getattr(request_user, "pk", None):
+            if hasattr(obj, "raw_payload"):
+                payload = dict(obj.raw_payload) if isinstance(obj.raw_payload, dict) else {}
+                payload["crm_last_assigner_id"] = int(request_user.pk)
+                obj.raw_payload = payload
+        return changed
+
     # Meta Instant Forms: validate assignee against state only (city is free-text).
     ignore_city = is_meta_instant_form_lead(obj)
     if not is_valid_assignee_for_lead(
