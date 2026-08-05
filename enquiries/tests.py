@@ -5,6 +5,7 @@ from django.test import RequestFactory, SimpleTestCase, TestCase
 from accounts.crm_zones import filter_qs_by_zone_or_assigned
 from accounts.models import User
 from enquiries.crm_api import campaign_channel_api_key, effective_source_bucket_key, should_include_in_google_bucket
+from enquiries.emails import lead_source_label_for_crm_lead
 from enquiries.models import CrmLead, CrmLeadSource
 
 
@@ -49,6 +50,17 @@ class CrmGoogleBucketTests(SimpleTestCase):
             "july_meta",
         )
 
+    def test_wb_meta_label_is_generic_meta_for_non_ants_viewers(self):
+        lead = SimpleNamespace(
+            source="lp_wb",
+            state="West Bengal",
+            utm_source="facebook_lead_ads",
+            utm_medium="cpc",
+            landing_page_url="https://www.timekidspreschools.in/timekids-lp-wb/?utm_source=facebook_lead_ads",
+            gclid="",
+        )
+        self.assertEqual(lead_source_label_for_crm_lead(lead), "META")
+
     def test_ants_agency_viewer_keeps_ants_meta_bucket(self):
         user = SimpleNamespace(email="ants.agency@gmail.com")
         self.assertEqual(
@@ -60,6 +72,17 @@ class CrmGoogleBucketTests(SimpleTestCase):
             ),
             "ants_meta",
         )
+
+    def test_ants_agency_viewer_keeps_ants_meta_label(self):
+        lead = SimpleNamespace(
+            source="lp_wb",
+            state="West Bengal",
+            utm_source="facebook_lead_ads",
+            utm_medium="cpc",
+            landing_page_url="https://www.timekidspreschools.in/timekids-lp-wb/?utm_source=facebook_lead_ads",
+            gclid="",
+        )
+        self.assertEqual(lead_source_label_for_crm_lead(lead, user=SimpleNamespace(email="ants.agency@gmail.com")), "Ants_Meta")
 
 
 class RestrictedAgencyViewerTests(TestCase):
