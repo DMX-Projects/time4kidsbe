@@ -262,6 +262,27 @@ def is_google_ads_lead(lead) -> bool:
     return is_google_ads_landing_url(getattr(lead, "landing_page_url", None))
 
 
+def should_include_in_google_bucket(lead) -> bool:
+    """Return True for genuinely Google-sourced leads only.
+
+    West Bengal Meta-attributed leads (Meta LP / Facebook Lead Ads) must not be
+    shown under the Google bucket even if the page is an Ants WB LP or carries a
+    Google tag.
+    """
+    source = str(getattr(lead, "source", "") or "").strip().lower()
+    utm_source = str(getattr(lead, "utm_source", "") or "").strip().lower()
+    utm_medium = str(getattr(lead, "utm_medium", "") or "").strip().lower()
+
+    if source in {"july_meta", "meta", "facebook_lead_ads"}:
+        return False
+    if any(token in utm_source for token in ("meta", "facebook", "instagram")):
+        return False
+    if any(token in utm_medium for token in ("meta", "facebook", "instagram")):
+        return False
+
+    return source in GOOGLE_CAMPAIGN_SOURCES or is_google_ads_lead(lead)
+
+
 def effective_crm_source(lead: CrmLead) -> str:
     """
     Channel source for CRM.
@@ -1320,9 +1341,18 @@ def _filter_crm_qs(
                 | Q(landing_page_url__icontains="gbraid=")
                 | Q(landing_page_url__icontains="wbraid=")
             )
+            meta_like_q = (
+                Q(utm_source__icontains="facebook_lead_ads")
+                | Q(utm_source__icontains="meta")
+                | Q(utm_source__icontains="instagram")
+                | Q(utm_medium__icontains="facebook")
+                | Q(utm_medium__icontains="meta")
+                | Q(utm_medium__icontains="instagram")
+                | Q(source=CrmLeadSource.JULY_META)
+            )
             if source_filter == "google":
-                # Google LP/WB sources + any Meta LP submit that arrived via Google Ads.
-                qs = qs.filter(Q(source__in=GOOGLE_CAMPAIGN_SOURCES) | google_ads_landing_q)
+                # Genuine Google LP/WB sources only. Meta-attributed WB leads belong in the Meta bucket.
+                qs = qs.filter((Q(source__in=GOOGLE_CAMPAIGN_SOURCES) | google_ads_landing_q) & ~meta_like_q)
             else:
                 mapped = normalize_source_from_api(source_filter)
                 if mapped in CRM_VISIBLE_SOURCES:

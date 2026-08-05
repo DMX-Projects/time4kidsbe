@@ -1,0 +1,29 @@
+from types import SimpleNamespace
+
+from django.test import SimpleTestCase
+
+from enquiries.crm_api import should_include_in_google_bucket
+
+
+class CrmGoogleBucketTests(SimpleTestCase):
+    def test_wb_meta_lead_is_not_counted_as_google(self):
+        lead = SimpleNamespace(
+            source="lp_wb",
+            utm_source="facebook_lead_ads",
+            utm_medium="cpc",
+            landing_page_url="https://www.timekidspreschools.in/timekids-lp-wb/?utm_source=facebook_lead_ads",
+            gclid="",
+        )
+
+        self.assertFalse(should_include_in_google_bucket(lead))
+
+    def test_google_lp_lead_still_counts_as_google(self):
+        lead = SimpleNamespace(
+            source="july_lp",
+            utm_source="google",
+            utm_medium="cpc",
+            landing_page_url="https://www.timekidspreschools.in/?gclid=ABCD123",
+            gclid="ABCD123",
+        )
+
+        self.assertTrue(should_include_in_google_bucket(lead))
