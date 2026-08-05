@@ -431,6 +431,13 @@ def resolve_lead_state_code(state: str | None = None, city: str | None = None) -
     if not city_name:
         return None
 
+    # Common free-text abbreviations that cannot be resolved from centre names.
+    city_alias_code = {
+        "hyd": "TG",
+    }.get(city_name.casefold().rstrip("."))
+    if city_alias_code:
+        return city_alias_code
+
     from franchises.models import Franchise, FranchiseLocation
 
     loc = (

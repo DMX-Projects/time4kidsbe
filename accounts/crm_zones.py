@@ -498,6 +498,28 @@ def _city_field_q(field: str, cities: list[str]) -> Q:
     return q
 
 
+CRM_HANDOFF_HIDDEN_KEY = "crm_handoff_hidden_from"
+
+
+def exclude_leads_handed_to_other_region(qs, viewer, assignee_ids: set[int] | None = None):
+    """
+    Drop leads the viewer transferred out of their own territory.
+
+    A lead can use a Tamil Nadu form while its prospect city is Hyderabad. The TN
+    head forwards it to the city manager, after which it is no longer theirs and
+    leaves their login. Same-region team handoffs are untouched, and the lead
+    returns if it is ever reassigned back to the viewer or their team.
+    """
+    if viewer is None or not getattr(viewer, "pk", None):
+        return qs
+    if not hasattr(qs.model, "raw_payload"):
+        return qs
+    hidden_q = Q(**{f"raw_payload__{CRM_HANDOFF_HIDDEN_KEY}__has_key": str(int(viewer.pk))})
+    if assignee_ids:
+        hidden_q &= ~Q(assigned_user_id__in=assignee_ids)
+    return qs.exclude(hidden_q)
+
+
 def filter_qs_by_zone_or_assigned(qs, zone_q: Q, request):
     """
     Territory filter, plus leads the viewer must keep seeing after handoff:
@@ -505,6 +527,7 @@ def filter_qs_by_zone_or_assigned(qs, zone_q: Q, request):
     - last assigned *by* the viewer (crm_last_assigner_id on raw_payload)
 
     Cross-region: MH → Hyd RM → Hyd manager must not vanish from the Hyd RM login.
+    Leads the viewer forwarded to a different region are dropped instead.
     """
     viewer = _authenticated_user(request)
     if viewer is None or not getattr(viewer, "pk", None):
@@ -523,9 +546,8 @@ def filter_qs_by_zone_or_assigned(qs, zone_q: Q, request):
         extra |= Q(raw_payload__crm_last_assigner_id=viewer_id)
         extra |= Q(raw_payload__crm_last_assigner_id=str(viewer_id))
 
-    if extra:
-        return qs.filter(zone_q | extra)
-    return qs.filter(zone_q)
+    scoped = qs.filter(zone_q | extra) if extra else qs.filter(zone_q)
+    return exclude_leads_handed_to_other_region(scoped, viewer, assignee_ids)
 
 
 def assigner_visibility_q(request, *, model=None) -> Q | None:

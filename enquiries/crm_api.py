@@ -128,6 +128,23 @@ def is_ants_agency_user(request=None, user=None) -> bool:
     return bool(email and email in ANTS_AGENCY_EMAILS)
 
 
+def is_crm_super_admin_user(request=None, user=None) -> bool:
+    """
+    National CRM Super Admin (all-India): no zone/region/state scope.
+    Agency and campaign-only viewers are never treated as super admins.
+    """
+    viewer = user
+    if viewer is None and request is not None:
+        viewer = getattr(request, "user", None)
+    if not viewer or not getattr(viewer, "is_authenticated", False):
+        return False
+    if is_restricted_crm_viewer(request=request, user=viewer):
+        return False
+    from accounts.crm_zones import scope_state_codes_for_user
+
+    return scope_state_codes_for_user(viewer) is None
+
+
 def is_campaign_only_crm_user(request=None, user=None) -> bool:
     """Paid-campaign-only logins (Sachin + generic campaign.viewer). Not agency viewers."""
     email = _viewer_email(request=request, user=user)
@@ -791,6 +808,52 @@ def _request_source_filter(request) -> str | None:
     return (_query_params(request).get("source") or "").strip().lower() or None
 
 
+def _request_agency_filter(request) -> str | None:
+    """
+    Super-admin-only agency scope: ``bcww`` | ``ants``.
+    Ignored for non-super-admin logins (cannot spoof via query string).
+    """
+    if not is_crm_super_admin_user(request=request):
+        return None
+    raw = (_query_params(request).get("agency") or "").strip().lower()
+    if raw in ("bcww", "bcwebwise", "bc_web_wise"):
+        return "bcww"
+    if raw in ("ants", "ants_agency"):
+        return "ants"
+    return None
+
+
+def _west_bengal_state_q(field: str = "state") -> Q:
+    """Match Ants territory (West Bengal) on a state CharField."""
+    return (
+        Q(**{f"{field}__iexact": "West Bengal"})
+        | Q(**{f"{field}__iexact": "WB"})
+        | Q(**{f"{field}__icontains": "bengal"})
+    )
+
+
+def _apply_agency_filter_to_crm_qs(qs, request):
+    """
+    BCWW = all campaign states except West Bengal.
+    Ants = West Bengal only (Meta Instant Forms + Ants Google LP).
+    """
+    agency = _request_agency_filter(request)
+    if not agency:
+        return qs
+    wb_q = _west_bengal_state_q("state") | Q(source=CrmLeadSource.LP_WB)
+    if agency == "ants":
+        return qs.filter(wb_q)
+    # bcww
+    return qs.exclude(wb_q)
+
+
+def _request_status_filters(request) -> list[str]:
+    """Statuses picked in the Status checkbox filter (comma separated, "all" = no filter)."""
+    raw = (_query_params(request).get("status") or "").strip()
+    values = [part.strip() for part in raw.split(",") if part.strip()]
+    return [value for value in values if value.casefold() != "all"]
+
+
 def _request_user_filter(request) -> str | None:
     """``userId`` query: assignable handler id, ``unassigned``, or empty (all)."""
     if is_restricted_crm_viewer(request=request):
@@ -836,6 +899,58 @@ def _is_admission_assignable_object(obj) -> bool:
         et = (getattr(obj, "enquiry_type", None) or "").strip().upper()
         return et in ("ADMISSION", "CONTACT")
     return False
+
+
+def _is_cross_region_handoff(assigner, assignee) -> bool:
+    """
+    True when a lead moves into a region the assigner does not cover.
+
+    This occurs when the form state belongs to one team but the prospect's city
+    belongs to another (e.g. Tamil Nadu form + Hyderabad city). Handing a lead
+    to the assigner's own team, or assignment by a national login, is not a
+    region change.
+    """
+    from accounts.crm_zones import scope_state_codes_for_user
+
+    assigner_codes = scope_state_codes_for_user(assigner)
+    assignee_codes = scope_state_codes_for_user(assignee)
+    if not assigner_codes or not assignee_codes:
+        return False
+    return not (set(assigner_codes) & set(assignee_codes))
+
+
+def _move_lead_state_for_cross_region_handoff(obj, assignee, payload: dict) -> None:
+    """Move state-wise reporting to the prospect city's destination territory."""
+    if not hasattr(obj, "state"):
+        return
+
+    from accounts.crm_zones import scope_state_codes_for_user
+    from franchises.franchise_geo import STATE_CODE_TO_NAME
+
+    from .crm_users import resolve_lead_state_code
+
+    assignee_codes = scope_state_codes_for_user(assignee) or []
+    city = (
+        getattr(obj, "city", None)
+        or getattr(obj, "preferred_centre_location", None)
+        or ""
+    )
+    destination_code = resolve_lead_state_code(None, city)
+    if destination_code not in assignee_codes:
+        # A single-state manager is unambiguous even when the city was misspelled.
+        destination_code = assignee_codes[0] if len(assignee_codes) == 1 else None
+    if not destination_code:
+        return
+
+    current_state = str(getattr(obj, "state", None) or "").strip()
+    destination_state = STATE_CODE_TO_NAME.get(destination_code, destination_code)
+    if current_state.casefold() == destination_state.casefold():
+        return
+
+    payload.setdefault("crm_original_form_state", current_state)
+    payload["crm_previous_state"] = current_state
+    payload["crm_reporting_state_moved_by_assignment"] = True
+    obj.state = destination_state
 
 
 def _maybe_assign_lead(obj, request, data: dict | None = None) -> bool:
@@ -908,8 +1023,16 @@ def _maybe_assign_lead(obj, request, data: dict | None = None) -> bool:
     # after assigning an out-of-region lead to a team manager.
     if request_user is not None and getattr(request_user, "pk", None):
         if hasattr(obj, "raw_payload"):
+            from accounts.crm_zones import CRM_HANDOFF_HIDDEN_KEY
+
             payload = dict(obj.raw_payload) if isinstance(obj.raw_payload, dict) else {}
             payload["crm_last_assigner_id"] = int(request_user.pk)
+            if _is_cross_region_handoff(request_user, user):
+                _move_lead_state_for_cross_region_handoff(obj, user, payload)
+                hidden = payload.get(CRM_HANDOFF_HIDDEN_KEY)
+                hidden = dict(hidden) if isinstance(hidden, dict) else {}
+                hidden[str(int(request_user.pk))] = True
+                payload[CRM_HANDOFF_HIDDEN_KEY] = hidden
             obj.raw_payload = payload
     return changed
 
@@ -1210,6 +1333,8 @@ def _filter_crm_qs(
     elif source_filter and not _include_crm(source_filter):
         return CrmLead.objects.none()
 
+    qs = _apply_agency_filter_to_crm_qs(qs, request)
+
     if apply_campaign_filter:
         campaign_value = (params.get("campaign") or params.get("utmCampaign") or "").strip()
         if campaign_value:
@@ -1220,9 +1345,9 @@ def _filter_crm_qs(
         if medium_value:
             qs = qs.filter(utm_medium__iexact=medium_value)
 
-    status_value = (params.get("status") or "").strip()
-    if status_value:
-        qs = qs.filter(status=status_value)
+    status_values = _request_status_filters(request)
+    if status_values:
+        qs = qs.filter(status__in=status_values)
 
     search = (params.get("search") or "").strip()
     if search:
@@ -1294,12 +1419,12 @@ def _filter_enquiry_qs(request, enquiry_type: str):
 
     qs = Enquiry.objects.filter(enquiry_type=enquiry_type).select_related("franchise")
 
-    status_value = (params.get("status") or "").strip()
-    if status_value:
+    status_values = _request_status_filters(request)
+    if status_values:
         matching = [
             row["status"]
             for row in Enquiry.objects.filter(enquiry_type=enquiry_type).values("status").distinct()
-            if _crm_status_matches_enquiry(status_value, row["status"])
+            if any(_crm_status_matches_enquiry(value, row["status"]) for value in status_values)
         ]
         if matching:
             qs = qs.filter(status__in=matching)
@@ -1360,9 +1485,9 @@ def _filter_franchise_enquiry_qs(request):
     else:
         qs = FranchiseEnquiry.objects.filter(franchise__isnull=True)
 
-    status_value = (params.get("status") or "").strip()
-    if status_value:
-        qs = qs.filter(status=status_value)
+    status_values = _request_status_filters(request)
+    if status_values:
+        qs = qs.filter(status__in=status_values)
 
     search = (params.get("search") or "").strip()
     if search:
@@ -1434,17 +1559,20 @@ def _filter_landing_qs(request):
 
     qs = KidsEnquiry.objects.select_related("assigned_user")
 
-    status_value = (params.get("status") or "").strip()
-    if status_value:
-        if status_value in ("new", "untouched"):
-            qs = qs.filter(
-                Q(raw_payload__crm_status__isnull=True)
-                | Q(raw_payload__crm_status="")
-                | Q(raw_payload__crm_status="new")
-                | Q(raw_payload__crm_status="untouched")
-            )
-        else:
-            qs = qs.filter(raw_payload__crm_status=status_value)
+    status_values = _request_status_filters(request)
+    if status_values:
+        status_q = Q()
+        for value in status_values:
+            if value in ("new", "untouched"):
+                status_q |= (
+                    Q(raw_payload__crm_status__isnull=True)
+                    | Q(raw_payload__crm_status="")
+                    | Q(raw_payload__crm_status="new")
+                    | Q(raw_payload__crm_status="untouched")
+                )
+            else:
+                status_q |= Q(raw_payload__crm_status=value)
+        qs = qs.filter(status_q)
 
     search = (params.get("search") or "").strip()
     if search:
@@ -1652,8 +1780,11 @@ def _get_reminders(qs, to_dict_func, updated_field="updated_at", status_field="s
         "closed"
     ]
 
+    # Upcoming meetings list only leads actually marked "Meeting fixed" — a
+    # meeting date alone (e.g. set while calling) is not a confirmed meeting.
     meetings_qs = qs.filter(
         **{
+            "meeting_fixed": True,
             "meeting_date__isnull": False,
             "meeting_date__date__gte": today,
             "meeting_date__date__lte": next_week,
@@ -1722,6 +1853,7 @@ def unified_reminders(request) -> dict:
         meetings.extend(
             landing_to_dict(row)
             for row in landing_qs.filter(
+                meeting_fixed=True,
                 meeting_date__isnull=False,
                 meeting_date__date__gte=today,
                 meeting_date__date__lte=next_week,
@@ -1970,9 +2102,9 @@ def apply_lead_filters(qs, request):
     if source:
         qs = qs.filter(source=source)
 
-    status_value = (request.query_params.get("status") or "").strip()
-    if status_value:
-        qs = qs.filter(status=status_value)
+    status_values = _request_status_filters(request)
+    if status_values:
+        qs = qs.filter(status__in=status_values)
 
     search = (request.query_params.get("search") or "").strip()
     if search:
