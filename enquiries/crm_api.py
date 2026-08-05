@@ -262,11 +262,12 @@ def is_google_ads_lead(lead) -> bool:
     return is_google_ads_landing_url(getattr(lead, "landing_page_url", None))
 
 
-def effective_source_bucket_key(lead_or_row) -> str:
+def effective_source_bucket_key(lead_or_row, *, request=None, user=None) -> str:
     """Canonical CRM bucket key used in filters and breakdowns.
 
-    This keeps WB Meta traffic out of the Google bucket even when the stored source
-    is ``lp_wb`` or the landing path is a WB LP page.
+    West Bengal Meta leads should stay in the generic Meta bucket for normal CRM
+    viewers and super-admins. The Ants-specific Ants_Meta bucket is preserved only
+    for the Ants agency viewer.
     """
     if lead_or_row is None:
         return "website"
@@ -276,6 +277,8 @@ def effective_source_bucket_key(lead_or_row) -> str:
     utm_source = str((lead_or_row.get("utm_source") if isinstance(lead_or_row, dict) else getattr(lead_or_row, "utm_source", "")) or "").strip().lower()
     utm_medium = str((lead_or_row.get("utm_medium") if isinstance(lead_or_row, dict) else getattr(lead_or_row, "utm_medium", "")) or "").strip().lower()
     landing_url = str((lead_or_row.get("landing_page_url") if isinstance(lead_or_row, dict) else getattr(lead_or_row, "landing_page_url", "")) or "").lower()
+    viewer = user if user is not None else getattr(request, "user", None) if request is not None else None
+    ants_viewer = is_ants_agency_user(request=request, user=viewer)
 
     is_wb = (
         source == "lp_wb"
@@ -291,7 +294,7 @@ def effective_source_bucket_key(lead_or_row) -> str:
     )
 
     if is_wb:
-        return "ants_meta" if meta_hint else "lp_wb"
+        return "ants_meta" if meta_hint and ants_viewer else "july_meta" if meta_hint else "lp_wb"
     if source in {"july_meta", "facebook_lead_ads", "meta"} or "facebook_lead_ads" in utm_source:
         return "july_meta"
     if is_google_ads_landing_url(landing_url) or source in {"july_lp", "google"}:
@@ -357,15 +360,23 @@ def campaign_channel_api_key(
     source: str | None,
     landing_page_url: str | None = None,
     state: str | None = None,
+    *,
+    request=None,
+    user=None,
 ) -> str:
-    """Map stored form source to CRM channel key (BCWW Google vs Ants WB vs META)."""
+    """Map stored form source to CRM channel key.
+
+    Generic Meta is the default for normal CRM users and super-admins. Ants_Meta is
+    reserved for the Ants agency viewer only.
+    """
     state_l = (state or "").strip().lower()
     is_wb = state_l == "west bengal" or state_l == "wb" or "bengal" in state_l
     api = source_to_api(source) if source else ""
     lower_url = (landing_page_url or "").lower()
     lower_source = (source or "").strip().lower()
+    viewer = user if user is not None else getattr(request, "user", None) if request is not None else None
+    ants_viewer = is_ants_agency_user(request=request, user=viewer)
 
-    # West Bengal traffic is always Ants-scoped, and Meta traffic must stay as Ants_Meta.
     if is_wb:
         meta_hint = (
             api in ("july_meta", "facebook_lead_ads")
@@ -374,7 +385,7 @@ def campaign_channel_api_key(
             or any(token in lower_url for token in ("meta", "facebook", "instagram"))
         )
         if meta_hint:
-            return "ants_meta"
+            return "ants_meta" if ants_viewer else "july_meta"
         if api == "lp_wb" or "timekids-lp-wb" in lower_url:
             return "lp_wb"
         if is_google_ads_landing_url(landing_page_url) or api in ("july_lp", "google"):
@@ -1743,7 +1754,7 @@ def unified_dashboard_stats(request) -> dict:
         for row in crm_qs.values("source", "landing_page_url", "state").annotate(count=Count("id")):
             api_source = (
                 campaign_channel_api_key(
-                    row["source"], row.get("landing_page_url"), row.get("state")
+                    row["source"], row.get("landing_page_url"), row.get("state"), request=request
                 )
                 or source_to_api(row["source"])
             )
@@ -2384,7 +2395,7 @@ def unified_reports_data(request) -> dict:
         ):
             api_src = (
                 campaign_channel_api_key(
-                    row["source"], row.get("landing_page_url"), row.get("state")
+                    row["source"], row.get("landing_page_url"), row.get("state"), request=request
                 )
                 or source_to_api(row["source"])
                 or "google"

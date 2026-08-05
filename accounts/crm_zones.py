@@ -528,9 +528,18 @@ def filter_qs_by_zone_or_assigned(qs, zone_q: Q, request):
 
     Cross-region: MH → Hyd RM → Hyd manager must not vanish from the Hyd RM login.
     Leads the viewer forwarded to a different region are dropped instead.
+
+    Restricted agency / campaign viewers are intentionally strict and should not be
+    further narrowed by assignment handoff logic; their visibility is already
+    limited to the approved source/state scope.
     """
     viewer = _authenticated_user(request)
     if viewer is None or not getattr(viewer, "pk", None):
+        return qs.filter(zone_q)
+
+    from enquiries.crm_api import is_restricted_crm_viewer
+
+    if is_restricted_crm_viewer(request=request, user=viewer):
         return qs.filter(zone_q)
 
     from enquiries.crm_users import assigner_visible_assignee_ids
