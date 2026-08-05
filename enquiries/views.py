@@ -844,12 +844,16 @@ class AdminCrmUsersView(APIView):
             or ""
         ).strip()
         utm_source = (request.query_params.get("utmSource") or "").strip()
-        from .crm_users import is_meta_instant_form_lead
-
-        ignore_city = state_only_raw in ("1", "true", "yes") or is_meta_instant_form_lead(
-            source=source,
-            utm_source=utm_source,
+        form_name = (request.query_params.get("formName") or "").strip()
+        from .crm_users import (
+            is_meta_instant_form_lead,
+            meta_has_reliable_city_dropdown,
         )
+
+        force_state_only = state_only_raw in ("1", "true", "yes")
+        is_meta = is_meta_instant_form_lead(source=source, utm_source=utm_source)
+        reliable_city = meta_has_reliable_city_dropdown(form_name=form_name)
+        ignore_city = force_state_only or (is_meta and (not reliable_city or not city))
         return Response(
             {
                 "users": list_crm_users_for_api(

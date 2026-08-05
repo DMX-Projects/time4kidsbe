@@ -348,7 +348,7 @@ META_LEADS_SYNC_SINCE = (os.getenv("META_LEADS_SYNC_SINCE", "") or "").strip()
 # Only sync Instant Forms matching these name prefixes (used when exact list disabled).
 # Default in code: "BCWW TK". Use "*" to allow all form names.
 META_LEADS_FORM_PREFIXES = (os.getenv("META_LEADS_FORM_PREFIXES", "BCWW TK") or "BCWW TK").strip()
-# Exact form names (comma-separated). Empty = built-in 48 BCWW TK campaign forms.
+# Exact form names (comma-separated). Empty = built-in base forms + verified Kerala R1 forms.
 # META_LEADS_FORM_NAMES=* disables the exact list (falls back to prefixes).
 META_LEADS_FORM_NAMES = (os.getenv("META_LEADS_FORM_NAMES", "") or "").strip()
 # Optional exact form IDs (comma-separated). Empty = rely on form names.

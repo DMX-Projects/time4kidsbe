@@ -601,7 +601,7 @@ def assign_and_notify_new_lead(obj, *, lead_source: str = "") -> bool:
     """
     from .crm_users import (
         crm_users_matching_geo,
-        is_meta_instant_form_lead,
+        meta_should_ignore_city,
         resolve_notify_lead_kind,
         suggest_assignee_for_geo,
     )
@@ -655,9 +655,9 @@ def assign_and_notify_new_lead(obj, *, lead_source: str = "") -> bool:
 
     lead_kind = resolve_notify_lead_kind(obj, source)
 
-    # Meta: notify peers by state only; auto-assign still tries city when present.
-    ignore_city = is_meta_instant_form_lead(obj)
+    # Meta Instant Forms with city (R1) route like LP; blank city → state-only.
     city_for_assign = (city or str(centre or "") or "").strip() or None
+    ignore_city = meta_should_ignore_city(obj, city=city_for_assign)
 
     if hasattr(obj, "assigned_user_id") and not getattr(obj, "assigned_user_id", None):
         suggested = suggest_assignee_for_geo(

@@ -856,8 +856,10 @@ def _maybe_assign_lead(obj, request, data: dict | None = None) -> bool:
     request_user = getattr(request, "user", None) if request is not None else None
     state = (getattr(obj, "state", None) or "").strip()
     city = (getattr(obj, "city", None) or "").strip()
-    from .crm_users import is_meta_instant_form_lead, is_valid_assignee_for_lead, user_can_assign_crm_leads
+    # Meta Instant Forms: use city when present (R1 dropdowns); else state-only.
+    from .crm_users import is_valid_assignee_for_lead, meta_should_ignore_city, user_can_assign_crm_leads
 
+    ignore_city = meta_should_ignore_city(obj, city=city)
     try:
         from accounts.models import User, UserRole
 
@@ -889,8 +891,7 @@ def _maybe_assign_lead(obj, request, data: dict | None = None) -> bool:
                 obj.raw_payload = payload
         return changed
 
-    # Meta Instant Forms: validate assignee against state only (city is free-text).
-    ignore_city = is_meta_instant_form_lead(obj)
+    # Meta Instant Forms with a city (R1 dropdown) validate like LP; blank city → state only.
     if not is_valid_assignee_for_lead(
         user,
         state=state,
@@ -2187,6 +2188,10 @@ def unified_reports_data(request) -> dict:
                     _add_count(row["city"], "campaign", row["status"], row["count"])
             else:
                 _add_count(row["city"], "campaign", row["status"], row["count"])
+                # A single channel (META / Google) still covers both agencies —
+                # keep the per-agency bucket so BCWW and Ants stay separate columns.
+                if api_src and api_src != "campaign":
+                    _add_count(row["city"], api_src, row["status"], row["count"])
 
     # 4. Franchise (FranchiseEnquiry)
     if not source_filter or _include_franchise_enquiry(source_filter):

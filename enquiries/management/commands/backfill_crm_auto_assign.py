@@ -17,7 +17,7 @@ from django.core.management.base import BaseCommand
 
 from enquiries.crm_users import (
     crm_users_matching_geo,
-    is_meta_instant_form_lead,
+    meta_should_ignore_city,
     resolve_notify_lead_kind,
     suggest_assignee_for_geo,
 )
@@ -28,7 +28,7 @@ from enquiries.models import CrmLead
 def _assignee_covers_lead(lead, user) -> bool:
     if user is None:
         return False
-    ignore_city = is_meta_instant_form_lead(lead)
+    ignore_city = meta_should_ignore_city(lead)
     city = None if ignore_city else ((lead.city or "").strip() or None)
     matches = crm_users_matching_geo(
         (lead.state or "").strip() or None,
@@ -77,7 +77,7 @@ class Command(BaseCommand):
         for lead in qs:
             source = lead_source_label_for_crm_lead(lead)
             kind = resolve_notify_lead_kind(lead, source)
-            ignore_city = is_meta_instant_form_lead(lead)
+            ignore_city = meta_should_ignore_city(lead)
             city = (lead.city or "").strip() or None
 
             suggested = suggest_assignee_for_geo(
