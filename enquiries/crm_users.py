@@ -462,7 +462,8 @@ def is_meta_instant_form_lead(obj=None, *, source: str | None = None, utm_source
     """
     True for Meta Instant Form leads (facebook_lead_ads / july_meta).
 
-    Those forms have no reliable city dropdown — map RMs by state only.
+    Older Instant Forms used free-text city; R1 forms use city dropdowns.
+    Callers should set ignore_city only when city is blank.
     """
     raw = (source if source is not None else getattr(obj, "source", None) or "").strip().lower()
     utm = (
@@ -473,6 +474,47 @@ def is_meta_instant_form_lead(obj=None, *, source: str | None = None, utm_source
     if raw in ("july_meta", "july-meta", "meta", "facebook_lead_ads"):
         return True
     return False
+
+
+def meta_has_reliable_city_dropdown(obj=None, *, form_name: str | None = None) -> bool:
+    """True only for Instant Forms verified to use a controlled city dropdown."""
+    if form_name is None:
+        payload = getattr(obj, "raw_payload", None)
+        payload = payload if isinstance(payload, dict) else {}
+        form_name = (
+            payload.get("meta_form_name")
+            or getattr(obj, "utm_campaign", None)
+            or getattr(obj, "utm_medium", None)
+            or ""
+        )
+    from .meta_leads import BCWW_TK_KERALA_R1_FORM_NAMES
+
+    name = str(form_name or "").strip()
+    return name.casefold() in {item.casefold() for item in BCWW_TK_KERALA_R1_FORM_NAMES}
+
+
+def meta_should_ignore_city(
+    obj=None, *, city: str | None = None, form_name: str | None = None
+) -> bool:
+    """
+    Use state-only routing for old free-text Meta forms.
+
+    Only verified R1 dropdown forms route by state + city like landing pages.
+    """
+    if not is_meta_instant_form_lead(obj):
+        return False
+    if not meta_has_reliable_city_dropdown(obj, form_name=form_name):
+        return True
+    city_val = (
+        city
+        if city is not None
+        else (
+            getattr(obj, "city", None)
+            or getattr(obj, "preferred_centre_location", None)
+            or ""
+        )
+    )
+    return not str(city_val or "").strip()
 
 
 def crm_users_matching_geo(

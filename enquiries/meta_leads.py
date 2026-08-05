@@ -123,31 +123,126 @@ def is_before_sync_cutoff(created_time: Any) -> bool:
     return created < since
 
 
-# Exact Instant Form names from the campaign sheet (6 states × 8 segments = 48).
-# Only these Facebook Lead Forms are imported into CRM.
-BCWW_TK_CAMPAIGN_FORM_NAMES: frozenset[str] = frozenset(
-    {
-        f"BCWW TK {state} {segment}"
-        for state in (
-            "Tamil Nadu",
-            "Karnataka",
-            "Andhra Pradesh",
-            "Kerala",
-            "Telangana",
-            "Maharashtra",
-        )
-        for segment in (
-            "All Interest P1",
-            "RMK P1",
-            "LLK P1",
-            "Income P1",
-            "All Interest Ex P1",
-            "RMK Ex P1",
-            "LLK Ex P1",
-            "Income Ex P1",
-        )
-    }
+# Exact Instant Form names from the campaign sheet.
+# Base: 6 states × 8 segments = 48. Kerala R1 adds 8 verified city-dropdown forms.
+_BCWW_TK_STATES = (
+    "Tamil Nadu",
+    "Karnataka",
+    "Andhra Pradesh",
+    "Kerala",
+    "Telangana",
+    "Maharashtra",
 )
+_BCWW_TK_SEGMENTS = (
+    "All Interest P1",
+    "RMK P1",
+    "LLK P1",
+    "Income P1",
+    "All Interest Ex P1",
+    "RMK Ex P1",
+    "LLK Ex P1",
+    "Income Ex P1",
+)
+BCWW_TK_KERALA_R1_FORM_NAMES: frozenset[str] = frozenset(
+    f"BCWW TK Kerala {segment} - R1" for segment in _BCWW_TK_SEGMENTS
+)
+BCWW_TK_CAMPAIGN_FORM_NAMES: frozenset[str] = frozenset(
+    f"BCWW TK {state} {segment}"
+    for state in _BCWW_TK_STATES
+    for segment in _BCWW_TK_SEGMENTS
+) | BCWW_TK_KERALA_R1_FORM_NAMES
+
+# Meta Instant Form city dropdown keys → CRM territory city (matching sheet districts).
+# Display label is title-cased from the key when not listed.
+_META_CITY_TO_CRM: dict[str, str] = {
+    # P1 core cities
+    "kochi": "Ernakulam",
+    "cochin": "Ernakulam",
+    "ernakulam": "Ernakulam",
+    "thiruvananthapuram": "Trivandrum",
+    "trivandrum": "Trivandrum",
+    "kozhikode": "Kozhikode",
+    "calicut": "Kozhikode",
+    "thrissur": "Thrissur",
+    "trichur": "Thrissur",
+    "kollam": "Kollam",
+    "quilon": "Kollam",
+    "kannur": "Kannur",
+    "cannanore": "Kannur",
+    # Ex / extended towns → district used on CRM sheet
+    "pathanamthitta": "Pathanamthitta",
+    "alappuzha": "Alappuzha",
+    "alleppey": "Alappuzha",
+    "kottayam": "Kottayam",
+    "idukki": "Idukki",
+    "palakkad": "Palakkad",
+    "palghat": "Palakkad",
+    "malappuram": "Malappuram",
+    "pala": "Kottayam",
+    "nedumangad": "Trivandrum",
+    "kothamangalam": "Ernakulam",
+    "kasaragod": "Kasaragod",
+    "kasargod": "Kasaragod",
+    "kalpetta": "Wayanad",
+    "wayanad": "Wayanad",
+    "tirur": "Malappuram",
+    "perinthalmanna": "Malappuram",
+    "ponnani": "Malappuram",
+    "nilambur": "Malappuram",
+    "vadakara": "Kozhikode",
+    "koyilandy": "Kozhikode",
+    "feroke": "Kozhikode",
+    "guruvayur": "Thrissur",
+    "irinjalakuda": "Thrissur",
+    "chalakudy": "Thrissur",
+    "changanassery": "Kottayam",
+    "mavelikkara": "Alappuzha",
+    "cherthala": "Alappuzha",
+    "kayamkulam": "Alappuzha",
+    "neyyattinkara": "Trivandrum",
+    "attingal": "Trivandrum",
+    "kanhangad": "Kasaragod",
+    "taliparamba": "Kannur",
+    "payyanur": "Kannur",
+    "ottappalam": "Palakkad",
+    "shoranur": "Palakkad",
+    "adoor": "Pathanamthitta",
+    "pandalam": "Pathanamthitta",
+    "thodupuzha": "Idukki",
+    "muvattupuzha": "Ernakulam",
+    "north_paravur": "Ernakulam",
+    "north paravur": "Ernakulam",
+    "kodungallur": "Thrissur",
+    "angamaly": "Ernakulam",
+    "mattannur": "Kannur",
+    "sulthan_bathery": "Wayanad",
+    "sulthan bathery": "Wayanad",
+}
+
+
+def normalize_meta_city(raw: str) -> tuple[str, str]:
+    """
+    Map Meta Instant Form city dropdown keys to CRM territory cities.
+
+    Returns ``(crm_city, display_label)``.
+    ``crm_city`` matches sheet districts (Ernakulam, Trivandrum, …) for assignment.
+    ``display_label`` is a readable town/city name for preferred centre / UI.
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return "", ""
+    key = re.sub(r"\s+", "_", text.strip().lower().replace("-", "_"))
+    key_spaced = key.replace("_", " ")
+    crm = _META_CITY_TO_CRM.get(key) or _META_CITY_TO_CRM.get(key_spaced) or ""
+    # Pretty label from Meta key: north_paravur → North Paravur
+    display = re.sub(r"_+", " ", text).strip()
+    display = re.sub(r"\s+", " ", display)
+    if display.islower() or "_" in text:
+        display = display.replace("_", " ").title()
+    if not crm:
+        # Free-text / unknown: keep cleaned text as both
+        return display, display
+    return crm, display
 
 
 def meta_leads_form_id_allowlist() -> set[str]:
@@ -164,7 +259,7 @@ def meta_leads_form_name_allowlist() -> set[str] | None:
     """
     Exact form-name allowlist.
 
-    Default: the 48 BCWW TK campaign forms from the sheet.
+    Default: BCWW TK campaign forms (base + R1 city-dropdown revisions).
     META_LEADS_FORM_NAMES=name1,name2 → custom exact list.
     META_LEADS_FORM_NAMES=* → disable exact-name gate (use prefixes / IDs only).
     """
@@ -204,7 +299,7 @@ def is_allowed_meta_form(*, form_id: str = "", form_name: str = "") -> bool:
 
     Priority:
     1. META_LEADS_FORM_IDS — exact form ID always allowed.
-    2. Exact form-name allowlist (default: 48 BCWW TK forms).
+    2. Exact form-name allowlist (default: BCWW TK base + R1 forms).
     3. If exact list disabled (*): META_LEADS_FORM_PREFIXES (default BCWW TK).
     """
     form_id = str(form_id or "").strip()
@@ -573,12 +668,20 @@ def create_crm_lead_from_meta(
     if is_test_lead and not email:
         email = "test@meta.com"
     city = _clean_text(raw_city, fallback="Test City" if is_test_lead else "")
+    city_label = city
+    # Only verified R1 forms have controlled city dropdowns. Older forms remain
+    # free-text and must retain the old state-only routing rule.
+    if city and not is_test_lead and form_name in BCWW_TK_KERALA_R1_FORM_NAMES:
+        crm_city, display_city = normalize_meta_city(city)
+        city = crm_city or display_city or city
+        city_label = display_city or city
     state = (fields.get("state") or "").strip()
     inferred_city, inferred_state = _infer_location_from_form_name(form_name)
     if not state:
         state = inferred_state
     if not city:
         city = inferred_city
+        city_label = city
     post_code = (fields.get("post_code") or "").strip()
     if post_code and _is_meta_test_value(post_code):
         post_code = ""
@@ -626,6 +729,8 @@ def create_crm_lead_from_meta(
         "meta_webhook_value": webhook_value,
         "meta_is_test_lead": is_test_lead,
         "meta_post_code": post_code,
+        "meta_city_raw": raw_city,
+        "meta_city_label": city_label,
         "pageType": "facebook_lead_ads",
         "campaign": form_name or form_id,
         "source": "july_meta",
@@ -645,7 +750,7 @@ def create_crm_lead_from_meta(
         email=email,
         state=state,
         city=city,
-        preferred_centre_location=city,
+        preferred_centre_location=city_label or city,
         investment_range=investment_range,
         expected_start_date=expected_start,
         comments="\n".join(comments_parts).strip(),
