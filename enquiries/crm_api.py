@@ -262,6 +262,43 @@ def is_google_ads_lead(lead) -> bool:
     return is_google_ads_landing_url(getattr(lead, "landing_page_url", None))
 
 
+def effective_source_bucket_key(lead_or_row) -> str:
+    """Canonical CRM bucket key used in filters and breakdowns.
+
+    This keeps WB Meta traffic out of the Google bucket even when the stored source
+    is ``lp_wb`` or the landing path is a WB LP page.
+    """
+    if lead_or_row is None:
+        return "website"
+
+    source = str((lead_or_row.get("source") if isinstance(lead_or_row, dict) else getattr(lead_or_row, "source", "")) or "").strip().lower()
+    state = str((lead_or_row.get("state") if isinstance(lead_or_row, dict) else getattr(lead_or_row, "state", "")) or "").strip().lower()
+    utm_source = str((lead_or_row.get("utm_source") if isinstance(lead_or_row, dict) else getattr(lead_or_row, "utm_source", "")) or "").strip().lower()
+    utm_medium = str((lead_or_row.get("utm_medium") if isinstance(lead_or_row, dict) else getattr(lead_or_row, "utm_medium", "")) or "").strip().lower()
+    landing_url = str((lead_or_row.get("landing_page_url") if isinstance(lead_or_row, dict) else getattr(lead_or_row, "landing_page_url", "")) or "").lower()
+
+    is_wb = (
+        source == "lp_wb"
+        or "timekids-lp-wb" in landing_url
+        or state in {"west bengal", "wb"}
+        or "bengal" in state
+    )
+    meta_hint = (
+        source in {"july_meta", "facebook_lead_ads", "meta"}
+        or "facebook_lead_ads" in utm_source
+        or any(token in utm_source for token in ("meta", "facebook", "instagram"))
+        or any(token in utm_medium for token in ("meta", "facebook", "instagram"))
+    )
+
+    if is_wb:
+        return "ants_meta" if meta_hint else "lp_wb"
+    if source in {"july_meta", "facebook_lead_ads", "meta"} or "facebook_lead_ads" in utm_source:
+        return "july_meta"
+    if is_google_ads_landing_url(landing_url) or source in {"july_lp", "google"}:
+        return "google"
+    return source_to_api(source) or "website"
+
+
 def should_include_in_google_bucket(lead) -> bool:
     """Return True for genuinely Google-sourced leads only.
 
@@ -2221,9 +2258,14 @@ def parse_update_payload(data: dict) -> dict:
 
 def dashboard_stats(qs):
     today = timezone.localdate()
+    source_totals: dict[str, int] = {}
+    for row in qs.values("source", "state", "utm_source", "utm_medium", "landing_page_url"):
+        key = effective_source_bucket_key(row)
+        source_totals[key] = source_totals.get(key, 0) + 1
+
     source_breakdown = [
-        {"source": source_to_api(row["source"]), "count": row["count"]}
-        for row in qs.values("source").annotate(count=Count("id")).order_by("-count")
+        {"source": key, "count": count}
+        for key, count in sorted(source_totals.items(), key=lambda kv: (-kv[1], kv[0]))
     ]
     status_breakdown = [
         {"status": row["status"], "count": row["count"]}
