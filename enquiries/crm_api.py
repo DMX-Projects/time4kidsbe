@@ -361,21 +361,27 @@ def campaign_channel_api_key(
     """Map stored form source to CRM channel key (BCWW Google vs Ants WB vs META)."""
     state_l = (state or "").strip().lower()
     is_wb = state_l == "west bengal" or state_l == "wb" or "bengal" in state_l
-
     api = source_to_api(source) if source else ""
-    if api == "lp_wb" or (
-        landing_page_url and "timekids-lp-wb" in (landing_page_url or "").lower()
-    ):
-        return "lp_wb"  # Ants — West Bengal Google LP
+    lower_url = (landing_page_url or "").lower()
+    lower_source = (source or "").strip().lower()
 
-    # West Bengal Instant Form / Meta / Google traffic is Ants — never BCWW.
+    # West Bengal traffic is always Ants-scoped, and Meta traffic must stay as Ants_Meta.
     if is_wb:
-        if api in ("july_meta", "facebook_lead_ads") or (
-            (source or "").strip().lower() == "facebook_lead_ads"
-        ):
+        meta_hint = (
+            api in ("july_meta", "facebook_lead_ads")
+            or lower_source == "facebook_lead_ads"
+            or "facebook_lead_ads" in lower_url
+            or any(token in lower_url for token in ("meta", "facebook", "instagram"))
+        )
+        if meta_hint:
             return "ants_meta"
+        if api == "lp_wb" or "timekids-lp-wb" in lower_url:
+            return "lp_wb"
         if is_google_ads_landing_url(landing_page_url) or api in ("july_lp", "google"):
             return "lp_wb"
+        return "lp_wb"
+
+    if api == "lp_wb" or "timekids-lp-wb" in lower_url:
         return "lp_wb"
 
     if is_google_ads_landing_url(landing_page_url):
