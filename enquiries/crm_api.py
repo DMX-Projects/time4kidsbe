@@ -238,12 +238,19 @@ def is_google_ads_landing_url(url: str | None) -> bool:
     return any(marker in text for marker in _GOOGLE_ADS_URL_MARKERS)
 
 
+def is_google_ads_lead(lead) -> bool:
+    """True when the lead has a stored gclid or Google Ads markers in the landing URL."""
+    if (getattr(lead, "gclid", None) or "").strip():
+        return True
+    return is_google_ads_landing_url(getattr(lead, "landing_page_url", None))
+
+
 def effective_crm_source(lead: CrmLead) -> str:
     """
     Channel source for CRM.
     Google Ads traffic on any LP (including Meta-named LP) counts as Google.
     """
-    if is_google_ads_landing_url(getattr(lead, "landing_page_url", None)):
+    if is_google_ads_lead(lead):
         return CrmLeadSource.JULY_LP
     return lead.source or ""
 
@@ -1182,7 +1189,8 @@ def _filter_crm_qs(
                 return CrmLead.objects.none()
         elif source_filter not in ("campaign", "franchise_all"):
             google_ads_landing_q = (
-                Q(landing_page_url__icontains="gclid=")
+                Q(gclid__gt="")
+                | Q(landing_page_url__icontains="gclid=")
                 | Q(landing_page_url__icontains="gad_source=")
                 | Q(landing_page_url__icontains="gad_campaignid=")
                 | Q(landing_page_url__icontains="gbraid=")
