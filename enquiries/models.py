@@ -219,6 +219,12 @@ class CrmLead(models.Model):
     comments = models.TextField(blank=True, default="")
     source = models.CharField(max_length=40, choices=CrmLeadSource.choices, default=CrmLeadSource.WEB)
     landing_page_url = models.URLField(max_length=500, blank=True, default="")
+    gclid = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="Google Ads click ID (gclid) from the landing URL.",
+    )
     utm_source = models.CharField(max_length=150, blank=True, default="")
     utm_medium = models.CharField(max_length=150, blank=True, default="")
     utm_campaign = models.CharField(max_length=150, blank=True, default="")
@@ -248,6 +254,7 @@ class CrmLead(models.Model):
             models.Index(fields=["source"], name="idx_campaign_leads_source"),
             models.Index(fields=["status"], name="idx_campaign_leads_status"),
             models.Index(fields=["mobile"], name="idx_campaign_leads_mobile"),
+            models.Index(fields=["gclid"], name="idx_campaign_leads_gclid"),
         ]
 
     def __str__(self) -> str:

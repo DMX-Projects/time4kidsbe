@@ -215,6 +215,7 @@ class CrmLeadSerializer(serializers.ModelSerializer):
     investmentRange = serializers.CharField(source="investment_range", required=False, allow_blank=True, write_only=True)
     expectedStartDate = serializers.CharField(source="expected_start_date", required=False, allow_blank=True, write_only=True)
     landingPageUrl = serializers.CharField(source="landing_page_url", required=False, allow_blank=True, write_only=True)
+    gclid = serializers.CharField(required=False, allow_blank=True, write_only=True)
     utmSource = serializers.CharField(source="utm_source", required=False, allow_blank=True, write_only=True)
     utmMedium = serializers.CharField(source="utm_medium", required=False, allow_blank=True, write_only=True)
     utmCampaign = serializers.CharField(source="utm_campaign", required=False, allow_blank=True, write_only=True)
@@ -243,6 +244,7 @@ class CrmLeadSerializer(serializers.ModelSerializer):
             "source",
             "landing_page_url",
             "landingPageUrl",
+            "gclid",
             "utm_source",
             "utmSource",
             "utm_medium",
@@ -270,6 +272,7 @@ class CrmLeadSerializer(serializers.ModelSerializer):
             "expected_start_date": {"required": False, "allow_blank": True},
             "comments": {"required": False, "allow_blank": True},
             "landing_page_url": {"required": False, "allow_blank": True},
+            "gclid": {"required": False, "allow_blank": True},
             "utm_source": {"required": False, "allow_blank": True},
             "utm_medium": {"required": False, "allow_blank": True},
             "utm_campaign": {"required": False, "allow_blank": True},
@@ -327,7 +330,20 @@ class CrmLeadSerializer(serializers.ModelSerializer):
         if landing_url and not (validated_data.get("landing_page_url") or "").strip():
             validated_data["landing_page_url"] = landing_url
 
-        if is_google_ads_landing_url(landing_url):
+        # Prefer explicit gclid from payload; else parse from landing URL.
+        gclid = (validated_data.get("gclid") or "").strip() or _pick("gclid", "GCLID")
+        if not gclid and landing_url:
+            try:
+                from urllib.parse import urlparse, parse_qs
+
+                qs = parse_qs(urlparse(landing_url).query)
+                gclid = str((qs.get("gclid") or [""])[0] or "").strip()
+            except Exception:
+                gclid = ""
+        if gclid:
+            validated_data["gclid"] = gclid[:255]
+
+        if gclid or is_google_ads_landing_url(landing_url):
             src = (validated_data.get("source") or "").strip().lower()
             if src in ("", "july_meta", "july-meta", "meta"):
                 validated_data["source"] = CrmLeadSource.JULY_LP

@@ -250,6 +250,7 @@ def _crm_lead_team_html(lead) -> str:
                 <div class="field"><div class="label">📣 Campaign:</div><div class="value">{html.escape(campaign)}</div></div>
                 <div class="field"><div class="label">🔗 Source:</div><div class="value">{html.escape(source_label)}</div></div>
                 <div class="field"><div class="label">🌐 Landing URL:</div><div class="value">{html.escape(lead.landing_page_url or "—")}</div></div>
+                <div class="field"><div class="label">🆔 GCLID:</div><div class="value">{html.escape(getattr(lead, "gclid", "") or "—")}</div></div>
                 <div class="field"><div class="label">💬 Comments:</div><div class="value" style="white-space: pre-wrap;">{html.escape(lead.comments or "—")}</div></div>
             </div>
         </div>
@@ -716,7 +717,7 @@ def lead_source_label_for_enquiry(enquiry) -> str:
 
 
 def lead_source_label_for_crm_lead(lead) -> str:
-    from .crm_api import is_google_ads_landing_url
+    from .crm_api import is_google_ads_lead, is_google_ads_landing_url
 
     raw = (getattr(lead, "source", None) or "").strip().lower()
     url = (getattr(lead, "landing_page_url", None) or "").lower()
@@ -734,7 +735,7 @@ def lead_source_label_for_crm_lead(lead) -> str:
             return "Ants_Meta"
         return "Ants_Google"
 
-    if is_google_ads_landing_url(getattr(lead, "landing_page_url", None)):
+    if is_google_ads_lead(lead) or is_google_ads_landing_url(getattr(lead, "landing_page_url", None)):
         return "Google"
     mapping = {
         "web": "Website (CRM)",
