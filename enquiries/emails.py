@@ -737,8 +737,8 @@ def lead_source_label_for_crm_lead(lead, *, request=None, user=None) -> str:
             or any(token in utm_medium for token in ("meta", "facebook", "instagram"))
         )
         if meta_hint:
-            return "Ants_Meta" if ants_viewer else "META"
-        return "Ants_Google" if ants_viewer else "Google"
+            return "Ants_Meta"
+        return "Ants_Google"
 
     if is_google_ads_lead(lead) or is_google_ads_landing_url(getattr(lead, "landing_page_url", None)):
         return "Google"
