@@ -265,27 +265,21 @@ def is_google_ads_lead(lead) -> bool:
 def effective_source_bucket_key(lead_or_row, *, request=None, user=None) -> str:
     """Canonical CRM bucket key used in filters and breakdowns.
 
-    West Bengal Meta leads should stay in the generic Meta bucket for normal CRM
-    viewers and super-admins. The Ants-specific Ants_Meta bucket is preserved only
-    for the Ants agency viewer.
+    Only leads from the West Bengal landing page (source=lp_wb or
+    timekids-lp-wb in URL) are classified as Ants_Google / Ants_Meta.
+    Regular Meta Instant Form leads whose state happens to be West Bengal
+    are NOT WB LP leads — they stay in the standard july_meta bucket.
     """
     if lead_or_row is None:
         return "website"
 
     source = str((lead_or_row.get("source") if isinstance(lead_or_row, dict) else getattr(lead_or_row, "source", "")) or "").strip().lower()
-    state = str((lead_or_row.get("state") if isinstance(lead_or_row, dict) else getattr(lead_or_row, "state", "")) or "").strip().lower()
     utm_source = str((lead_or_row.get("utm_source") if isinstance(lead_or_row, dict) else getattr(lead_or_row, "utm_source", "")) or "").strip().lower()
     utm_medium = str((lead_or_row.get("utm_medium") if isinstance(lead_or_row, dict) else getattr(lead_or_row, "utm_medium", "")) or "").strip().lower()
     landing_url = str((lead_or_row.get("landing_page_url") if isinstance(lead_or_row, dict) else getattr(lead_or_row, "landing_page_url", "")) or "").lower()
-    viewer = user if user is not None else getattr(request, "user", None) if request is not None else None
-    ants_viewer = is_ants_agency_user(request=request, user=viewer)
 
-    is_wb = (
-        source == "lp_wb"
-        or "timekids-lp-wb" in landing_url
-        or state in {"west bengal", "wb"}
-        or "bengal" in state
-    )
+    # Only the dedicated WB landing page gets Ants_* labels.
+    is_wb_lp = source == "lp_wb" or "timekids-lp-wb" in landing_url
     meta_hint = (
         source in {"july_meta", "facebook_lead_ads", "meta"}
         or "facebook_lead_ads" in utm_source
@@ -293,8 +287,8 @@ def effective_source_bucket_key(lead_or_row, *, request=None, user=None) -> str:
         or any(token in utm_medium for token in ("meta", "facebook", "instagram"))
     )
 
-    if is_wb:
-        return "ants_meta" if meta_hint and ants_viewer else "july_meta" if meta_hint else "lp_wb"
+    if is_wb_lp:
+        return "ants_meta" if meta_hint else "lp_wb"
     if source in {"july_meta", "facebook_lead_ads", "meta"} or "facebook_lead_ads" in utm_source:
         return "july_meta"
     if is_google_ads_landing_url(landing_url) or source in {"july_lp", "google"}:
@@ -366,18 +360,19 @@ def campaign_channel_api_key(
 ) -> str:
     """Map stored form source to CRM channel key.
 
-    Generic Meta is the default for normal CRM users and super-admins. Ants_Meta is
-    reserved for the Ants agency viewer only.
+    Only leads from the dedicated West Bengal landing page (source=lp_wb or
+    timekids-lp-wb in URL) are classified as Ants_Google / Ants_Meta.
+    Regular Meta Instant Form leads whose state happens to be West Bengal
+    stay in the standard BCWW Meta bucket (july_meta).
     """
-    state_l = (state or "").strip().lower()
-    is_wb = state_l == "west bengal" or state_l == "wb" or "bengal" in state_l
     api = source_to_api(source) if source else ""
     lower_url = (landing_page_url or "").lower()
     lower_source = (source or "").strip().lower()
-    viewer = user if user is not None else getattr(request, "user", None) if request is not None else None
-    ants_viewer = is_ants_agency_user(request=request, user=viewer)
 
-    if is_wb:
+    # Only the dedicated WB landing page gets Ants_* labels.
+    is_wb_lp = lower_source == "lp_wb" or "timekids-lp-wb" in lower_url
+
+    if is_wb_lp:
         meta_hint = (
             api in ("july_meta", "facebook_lead_ads")
             or lower_source == "facebook_lead_ads"
@@ -385,14 +380,9 @@ def campaign_channel_api_key(
             or any(token in lower_url for token in ("meta", "facebook", "instagram"))
         )
         if meta_hint:
-            return "ants_meta" if ants_viewer else "july_meta"
-        if api == "lp_wb" or "timekids-lp-wb" in lower_url:
-            return "lp_wb"
+            return "ants_meta"
         if is_google_ads_landing_url(landing_page_url) or api in ("july_lp", "google"):
             return "lp_wb"
-        return "lp_wb"
-
-    if api == "lp_wb" or "timekids-lp-wb" in lower_url:
         return "lp_wb"
 
     if is_google_ads_landing_url(landing_page_url):
@@ -515,7 +505,7 @@ def log_crm_communication(
     return unified_note_to_dict(note)
 
 
-def lead_to_dict(lead: CrmLead, *, include_detail: bool = False) -> dict:
+def lead_to_dict(lead: CrmLead, *, include_detail: bool = False, request=None) -> dict:
     # LP / Meta / LP-WB forms only collect state + city — never invent a centre.
     is_franchise_campaign = lead.source in FRANCHISE_CAMPAIGN_SOURCES
 
@@ -550,7 +540,15 @@ def lead_to_dict(lead: CrmLead, *, include_detail: bool = False) -> dict:
             if (lead.expected_start_date or "").strip()
             else None
         ),
-        "source": source_to_api(effective_crm_source(lead)),
+        "source": (
+            campaign_channel_api_key(
+                lead.source,
+                lead.landing_page_url,
+                state,
+                request=request,
+            )
+            or source_to_api(effective_crm_source(lead))
+        ),
         "landingPageUrl": lead.landing_page_url or "",
         "formName": crm_lead_form_name(lead),
         "pageType": crm_lead_form_name(lead) or (lead.utm_source or source_to_api(effective_crm_source(lead)) or ""),
@@ -1717,7 +1715,7 @@ def unified_leads_page(request, *, page: int, limit: int) -> list[dict]:
     merged: list[dict] = []
 
     if _include_crm(_request_source_filter(request)):
-        merged.extend(lead_to_dict(row) for row in _filter_crm_qs(request)[:fetch_count])
+        merged.extend(lead_to_dict(row, request=request) for row in _filter_crm_qs(request)[:fetch_count])
     if _include_admission(_request_source_filter(request)):
         merged.extend(
             enquiry_to_dict(row) for row in _filter_enquiry_qs(request, EnquiryType.ADMISSION)[:fetch_count]
@@ -1913,7 +1911,7 @@ def unified_reminders(request) -> dict:
 
     if not source_filter or _include_crm(source_filter):
         crm_qs = _filter_crm_qs(request)
-        res = _get_reminders(crm_qs, lead_to_dict, "updated_at")
+        res = _get_reminders(crm_qs, lambda l: lead_to_dict(l, request=request), "updated_at")
         meetings.extend(res["meetings"])
         follow_ups.extend(res["followUps"])
 
@@ -2020,7 +2018,7 @@ def unified_lead_detail(raw_id: str, *, include_detail: bool = False, request=No
         lead = qs.first()
         if not lead:
             return None
-        return _attach_viewer_flags(lead_to_dict(lead, include_detail=include_detail), request)
+        return _attach_viewer_flags(lead_to_dict(lead, include_detail=include_detail, request=request), request)
     if kind == "enquiry":
         qs = Enquiry.objects.select_related("franchise", "assigned_user").filter(pk=pk)
         if request is not None:
@@ -2085,7 +2083,7 @@ def update_unified_lead(raw_id: str, data: dict, *, include_detail: bool = False
         lead.save()
         if assignment_changed:
             _notify_explicit_assignment(lead, request)
-        return _attach_viewer_flags(lead_to_dict(lead, include_detail=include_detail), request)
+        return _attach_viewer_flags(lead_to_dict(lead, include_detail=include_detail, request=request), request)
 
     if kind == "enquiry":
         enquiry = Enquiry.objects.select_related("franchise", "assigned_user").filter(pk=numeric_id).first()
