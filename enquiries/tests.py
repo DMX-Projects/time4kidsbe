@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 from django.test import SimpleTestCase
 
-from enquiries.crm_api import should_include_in_google_bucket
+from enquiries.crm_api import effective_source_bucket_key, should_include_in_google_bucket
 
 
 class CrmGoogleBucketTests(SimpleTestCase):
@@ -27,3 +27,15 @@ class CrmGoogleBucketTests(SimpleTestCase):
         )
 
         self.assertTrue(should_include_in_google_bucket(lead))
+
+    def test_wb_meta_lead_bucket_is_ants_meta(self):
+        lead = SimpleNamespace(
+            source="lp_wb",
+            state="West Bengal",
+            utm_source="facebook_lead_ads",
+            utm_medium="cpc",
+            landing_page_url="https://www.timekidspreschools.in/timekids-lp-wb/?utm_source=facebook_lead_ads",
+            gclid="",
+        )
+
+        self.assertEqual(effective_source_bucket_key(lead), "ants_meta")
