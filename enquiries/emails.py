@@ -718,7 +718,6 @@ def lead_source_label_for_enquiry(enquiry) -> str:
 
 def lead_source_label_for_crm_lead(lead, *, request=None, user=None) -> str:
     from .crm_api import (
-        is_ants_agency_user,
         is_google_ads_lead,
         is_google_ads_landing_url,
     )
@@ -728,7 +727,6 @@ def lead_source_label_for_crm_lead(lead, *, request=None, user=None) -> str:
     utm_source = (getattr(lead, "utm_source", None) or "").strip().lower()
     utm_medium = (getattr(lead, "utm_medium", None) or "").strip().lower()
     is_wb = raw == "lp_wb" or "timekids-lp-wb" in url
-    ants_viewer = is_ants_agency_user(request=request, user=user)
 
     if is_wb:
         meta_hint = (
@@ -741,7 +739,7 @@ def lead_source_label_for_crm_lead(lead, *, request=None, user=None) -> str:
         return "Ants_Google"
 
     if is_google_ads_lead(lead) or is_google_ads_landing_url(getattr(lead, "landing_page_url", None)):
-        return "Google"
+        return "BCWW_Google"
     mapping = {
         "web": "Website (CRM)",
         "website": "Website (CRM)",
@@ -749,10 +747,10 @@ def lead_source_label_for_crm_lead(lead, *, request=None, user=None) -> str:
         "facebook": "Facebook",
         "insta": "Instagram",
         "instagram": "Instagram",
-        "july_lp": "Google",
-        "july_meta": "META",
-        "lp_wb": "Google",
-        "google": "Google",
+        "july_lp": "BCWW_Google",
+        "july_meta": "BCWW_Meta",
+        "lp_wb": "Ants_Google",
+        "google": "BCWW_Google",
     }
     return mapping.get(raw, raw.replace("_", " ").title() or "Campaign")
 

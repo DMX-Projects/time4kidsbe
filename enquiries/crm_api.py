@@ -320,10 +320,14 @@ def should_include_in_google_bucket(lead) -> bool:
 def effective_crm_source(lead: CrmLead) -> str:
     """
     Channel source for CRM.
-    Google Ads traffic on any LP (including Meta-named LP) counts as Google.
+    Google Ads traffic on any LP (including Meta-named LP) counts as Google,
+    except the dedicated West Bengal Ants LP which stays lp_wb.
     """
+    raw = (getattr(lead, "source", None) or "").strip().lower()
+    url = (getattr(lead, "landing_page_url", None) or "").lower()
+    is_wb_lp = raw == CrmLeadSource.LP_WB or raw == "lp_wb" or "timekids-lp-wb" in url
     if is_google_ads_lead(lead):
-        return CrmLeadSource.JULY_LP
+        return CrmLeadSource.LP_WB if is_wb_lp else CrmLeadSource.JULY_LP
     return lead.source or ""
 
 
@@ -505,6 +509,41 @@ def log_crm_communication(
     return unified_note_to_dict(note)
 
 
+def cross_state_form_info(
+    state: str | None,
+    city: str | None,
+    raw_payload=None,
+) -> dict:
+    """
+    Flag leads whose Meta/LP form state does not match the prospect city state.
+
+    Example: Kerala form + city Mumbai → additional cross-state form lead.
+    Uses crm_original_form_state when reporting state was later moved.
+    """
+    from franchises.franchise_geo import STATE_CODE_TO_NAME, state_to_code
+
+    from .crm_users import resolve_lead_state_code
+
+    payload = raw_payload if isinstance(raw_payload, dict) else {}
+    form_state = (
+        str(payload.get("crm_original_form_state") or "").strip()
+        or str(state or "").strip()
+    )
+    form_code = state_to_code(form_state)
+    city_code = resolve_lead_state_code(None, city)
+    if not form_code or not city_code or form_code == city_code:
+        return {
+            "isCrossStateForm": False,
+            "crossStateFormFrom": "",
+            "crossStateFormTo": "",
+        }
+    return {
+        "isCrossStateForm": True,
+        "crossStateFormFrom": STATE_CODE_TO_NAME.get(form_code, form_state),
+        "crossStateFormTo": STATE_CODE_TO_NAME.get(city_code, city_code),
+    }
+
+
 def lead_to_dict(lead: CrmLead, *, include_detail: bool = False, request=None) -> dict:
     # LP / Meta / LP-WB forms only collect state + city — never invent a centre.
     is_franchise_campaign = lead.source in FRANCHISE_CAMPAIGN_SOURCES
@@ -523,6 +562,14 @@ def lead_to_dict(lead: CrmLead, *, include_detail: bool = False, request=None) -
         if not centre_name:
             centre_name = (lead.preferred_centre_location or "").strip()
 
+    cross_state = cross_state_form_info(state, city, getattr(lead, "raw_payload", None))
+    if is_restricted_crm_viewer(request=request):
+        cross_state = {
+            "isCrossStateForm": False,
+            "crossStateFormFrom": "",
+            "crossStateFormTo": "",
+        }
+
     data = {
         "id": f"crm-{lead.id}",
         "leadKind": "crm",
@@ -532,6 +579,7 @@ def lead_to_dict(lead: CrmLead, *, include_detail: bool = False, request=None) -
         "email": lead.email or "",
         "city": city,
         "state": state,
+        **cross_state,
         "preferredCentreLocation": centre_name,
         "franchiseType": lead.franchise_type or None,
         "investmentRange": lead.investment_range or None,
@@ -883,9 +931,20 @@ def _request_source_filter(request) -> str | None:
 
 def _request_agency_filter(request) -> str | None:
     """
-    Super-admin-only agency scope: ``bcww`` | ``ants``.
-    Ignored for non-super-admin logins (cannot spoof via query string).
+    Returns the agency scope to apply (``bcww`` | ``ants`` | None).
+
+    - Super-admin: reads the ``agency`` query param (can filter by either).
+    - Agency-viewer logins (bcwebwise / ants): auto-scoped to their own agency,
+      ignoring any query param (cannot spoof).
+    - Everyone else: None (no agency scoping).
     """
+    # Auto-scope for agency-viewer logins — takes priority over query param.
+    if is_bcwebwise_agency_user(request=request):
+        return "bcww"
+    if is_ants_agency_user(request=request):
+        return "ants"
+
+    # Super-admin can select agency via query param.
     if not is_crm_super_admin_user(request=request):
         return None
     raw = (_query_params(request).get("agency") or "").strip().lower()
@@ -1375,13 +1434,19 @@ def _filter_crm_qs(
     source_filter = _request_source_filter(request)
     if source_filter and _include_crm(source_filter):
         if source_filter == "agency":
-            # Bcwebwise: Facebook Instant Forms / Meta LP.
+            # Bcwebwise: Meta Instant Forms + Google LPs for the 6 BCWW states
+            # (WB excluded later by _apply_agency_filter_to_crm_qs).
             # Ants: West Bengal Ants Google franchise LP only (CrmLead lp_wb).
             # KidsEnquiry city landing = admission paid campaign — not shown to agencies.
             if is_ants_agency_user(request=request):
                 qs = qs.filter(source=CrmLeadSource.LP_WB)
             elif is_bcwebwise_agency_user(request=request):
-                qs = qs.filter(source=CrmLeadSource.JULY_META)
+                qs = qs.filter(
+                    source__in=[
+                        CrmLeadSource.JULY_META,
+                        CrmLeadSource.JULY_LP,
+                    ]
+                )
             else:
                 return CrmLead.objects.none()
         elif source_filter not in ("campaign", "franchise_all"):
@@ -1744,6 +1809,7 @@ def unified_dashboard_stats(request) -> dict:
     converted = 0
     meeting_fixed = 0
     meeting_done = 0
+    cross_state_form_leads = 0
 
     if _include_crm(_request_source_filter(request)):
         crm_qs = _filter_crm_qs(request)
@@ -1766,6 +1832,10 @@ def unified_dashboard_stats(request) -> dict:
         converted += crm_qs.filter(status=CrmLeadStatus.CONVERTED_ADMISSION).count()
         meeting_fixed += crm_qs.filter(meeting_fixed=True).count()
         meeting_done += crm_qs.filter(meeting_done=True).count()
+        if not is_restricted_crm_viewer(request=request):
+            for lead in crm_qs.only("state", "city", "raw_payload").iterator(chunk_size=200):
+                if cross_state_form_info(lead.state, lead.city, lead.raw_payload).get("isCrossStateForm"):
+                    cross_state_form_leads += 1
 
     if _include_admission(_request_source_filter(request)):
         admission_qs = _filter_enquiry_qs(request, EnquiryType.ADMISSION)
@@ -1838,6 +1908,7 @@ def unified_dashboard_stats(request) -> dict:
         "converted": converted,
         "meetingFixed": meeting_fixed,
         "meetingDone": meeting_done,
+        "crossStateFormLeads": cross_state_form_leads,
         "sourceBreakdown": [
             {"source": source, "count": count}
             for source, count in sorted(source_counts.items(), key=lambda item: item[1], reverse=True)
@@ -2431,3 +2502,511 @@ def unified_reports_data(request) -> dict:
             _add_count(row.get("city") or "Unknown", "landing", mapped_status, 1)
 
     return {"cities": cities_data}
+
+
+STATE_CANONICAL_MAP = {
+    "kerala": "Kerala",
+    "karnataka": "Karnataka",
+    "tamilnadu": "Tamilnadu",
+    "tamil nadu": "Tamilnadu",
+    "tn": "Tamilnadu",
+    "telangana": "Telengana",
+    "telengana": "Telengana",
+    "ts": "Telengana",
+    "andhra": "Andhra",
+    "andhra pradesh": "Andhra",
+    "ap": "Andhra",
+    "west bengal": "West Bengal",
+    "wb": "West Bengal",
+}
+
+PRIMARY_STATES = ["Kerala", "Karnataka", "Tamilnadu", "Telengana", "Andhra", "West Bengal"]
+
+
+def _normalize_report_state(raw_state: str | None) -> str:
+    if not raw_state:
+        return "Unknown"
+    s = raw_state.strip().lower()
+    for k, v in STATE_CANONICAL_MAP.items():
+        if k in s:
+            return v
+    return raw_state.strip().title()
+
+
+def state_wise_lead_report_data(request) -> dict:
+    """State-wise summary of leads grouped by agency channel and source."""
+    start, end = _parse_request_dates(request)
+
+    rows_map = {}
+    for st in PRIMARY_STATES:
+        rows_map[st] = {
+            "state": st,
+            "bcww_google": 0,
+            "bcww_meta": 0,
+            "bcww_others": 0,
+            "ants_google": 0,
+            "ants_meta": 0,
+            "ants_others": 0,
+            "franchise_referrals": 0,
+            "website": 0,
+        }
+
+    def _get_row(st_name):
+        if st_name not in rows_map:
+            rows_map[st_name] = {
+                "state": st_name,
+                "bcww_google": 0,
+                "bcww_meta": 0,
+                "bcww_others": 0,
+                "ants_google": 0,
+                "ants_meta": 0,
+                "ants_others": 0,
+                "franchise_referrals": 0,
+                "website": 0,
+            }
+        return rows_map[st_name]
+
+    # 1. CrmLead
+    crm_qs = CrmLead.objects.all()
+    if start:
+        crm_qs = crm_qs.filter(created_at__gte=start)
+    if end:
+        crm_qs = crm_qs.filter(created_at__lte=end)
+
+    for lead in crm_qs.iterator():
+        st = _normalize_report_state(lead.state)
+        row = _get_row(st)
+        src = (lead.source or "").lower()
+        is_wb = bool(lead.state and "bengal" in lead.state.lower()) or src == "lp_wb"
+        landing_url = (lead.landing_page_url or "").lower()
+        is_gclid = "gclid=" in landing_url or "gad_source=" in landing_url or "gads" in src
+
+        if src in ("franchise_referral", "franchise_friends_family", "referral_parents", "referral_family_friends"):
+            row["franchise_referrals"] += 1
+        elif is_wb:
+            if "google" in src or "lp_wb" in src or is_gclid:
+                row["ants_google"] += 1
+            elif "meta" in src or "fb" in src or "insta" in src:
+                row["ants_meta"] += 1
+            else:
+                row["ants_others"] += 1
+        else:
+            if "july_lp" in src or "google" in src or is_gclid:
+                row["bcww_google"] += 1
+            elif "july_meta" in src or "meta" in src or "fb" in src or "insta" in src:
+                row["bcww_meta"] += 1
+            else:
+                row["bcww_others"] += 1
+
+    # 2. Enquiry (Admission & Contact)
+    enq_qs = Enquiry.objects.all()
+    if start:
+        enq_qs = enq_qs.filter(created_at__gte=start)
+    if end:
+        enq_qs = enq_qs.filter(created_at__lte=end)
+    for enq in enq_qs.select_related("franchise").iterator():
+        st = _normalize_report_state((enq.franchise.state if enq.franchise else None) or enq.city)
+        _get_row(st)["website"] += 1
+
+    # 3. KidsEnquiry (Landing page enquiries)
+    kids_qs = KidsEnquiry.objects.all()
+    if start:
+        kids_qs = kids_qs.filter(created_date__gte=start)
+    if end:
+        kids_qs = kids_qs.filter(created_date__lte=end)
+    for kid in kids_qs.iterator():
+        st = _normalize_report_state(kid.state)
+        _get_row(st)["website"] += 1
+
+    # 4. FranchiseEnquiry
+    fran_qs = FranchiseEnquiry.objects.all()
+    if start:
+        fran_qs = fran_qs.filter(created_at__gte=start)
+    if end:
+        fran_qs = fran_qs.filter(created_at__lte=end)
+    for fe in fran_qs.iterator():
+        st = _normalize_report_state(fe.state)
+        _get_row(st)["website"] += 1
+
+
+
+    # Prepare rows list & calculated totals
+    rows_list = []
+    ordered_keys = [s for s in PRIMARY_STATES if s in rows_map] + [s for s in rows_map if s not in PRIMARY_STATES]
+
+    totals = {
+        "state": "Grand Total",
+        "bcww_google": 0,
+        "bcww_meta": 0,
+        "bcww_others": 0,
+        "bcww_total": 0,
+        "ants_google": 0,
+        "ants_meta": 0,
+        "ants_others": 0,
+        "ants_total": 0,
+        "franchise_referrals": 0,
+        "website": 0,
+        "grand_total": 0,
+    }
+
+    for key in ordered_keys:
+        item = rows_map[key]
+        bcww_tot = item["bcww_google"] + item["bcww_meta"] + item["bcww_others"]
+        ants_tot = item["ants_google"] + item["ants_meta"] + item["ants_others"]
+        grand_tot = bcww_tot + ants_tot + item["franchise_referrals"] + item["website"]
+
+        if key not in PRIMARY_STATES and grand_tot == 0:
+            continue
+
+        item_row = {
+            "state": item["state"],
+            "bcww_google": item["bcww_google"],
+            "bcww_meta": item["bcww_meta"],
+            "bcww_others": item["bcww_others"],
+            "bcww_total": bcww_tot,
+            "ants_google": item["ants_google"],
+            "ants_meta": item["ants_meta"],
+            "ants_others": item["ants_others"],
+            "ants_total": ants_tot,
+            "franchise_referrals": item["franchise_referrals"],
+            "website": item["website"],
+            "grand_total": grand_tot,
+        }
+        rows_list.append(item_row)
+
+        totals["bcww_google"] += item_row["bcww_google"]
+        totals["bcww_meta"] += item_row["bcww_meta"]
+        totals["bcww_others"] += item_row["bcww_others"]
+        totals["bcww_total"] += item_row["bcww_total"]
+        totals["ants_google"] += item_row["ants_google"]
+        totals["ants_meta"] += item_row["ants_meta"]
+        totals["ants_others"] += item_row["ants_others"]
+        totals["ants_total"] += item_row["ants_total"]
+        totals["franchise_referrals"] += item_row["franchise_referrals"]
+        totals["website"] += item_row["website"]
+        totals["grand_total"] += item_row["grand_total"]
+
+    start_str = start.strftime("%Y-%m-%d") if start else "All-Time"
+    end_str = end.strftime("%Y-%m-%d") if end else "Present"
+
+    return {
+        "period": f"{start_str} to {end_str}",
+        "startDate": start_str,
+        "endDate": end_str,
+        "rows": rows_list,
+        "grandTotal": totals,
+    }
+
+
+def generate_state_wise_lead_report_excel(report_data: dict) -> bytes:
+    """Generate styled Excel binary bytes matching ODS template layout.
+
+    Layout mirrors the ODS template:
+    Row 1: Count | A | B | C | D=A+B+C | E | F | G | H=E+F+G | I | J | K=D+H+I+J
+    Row 2: State | BCWW-Google | BCWW-META | BCWW-Others | BCWW Total |
+           ANTS-Google | ANTS-Meta | ANTS-Others | ANTS-Total |
+           Franchise referrals | Website | Grand Total
+    """
+    import io
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "State Lead Report"
+
+    # ── Colour palette (mirrors ODS) ──────────────────────────────────────────
+    # Dark blue header background (Row 1 & 2)
+    blue_fill   = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
+    # Yellow highlight for sub-total columns D, H, K
+    yellow_fill = PatternFill(start_color="FFD966", end_color="FFD966", fill_type="solid")
+    # Light yellow for Grand-Total row
+    lt_yellow   = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
+    # Alternating row fill
+    row_even    = PatternFill(start_color="EBF3FB", end_color="EBF3FB", fill_type="solid")
+
+    white_bold  = Font(name="Calibri", size=10, bold=True, color="FFFFFF")
+    black_bold  = Font(name="Calibri", size=10, bold=True, color="000000")
+    normal      = Font(name="Calibri", size=10)
+
+    thin = Side(style="thin", color="BFBFBF")
+    med  = Side(style="medium", color="1F4E79")
+    all_borders = Border(left=thin, right=thin, top=thin, bottom=thin)
+    med_bottom  = Border(left=thin, right=thin, top=thin, bottom=med)
+
+    center_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    left_align   = Alignment(horizontal="left",   vertical="center")
+    right_align  = Alignment(horizontal="right",  vertical="center")
+
+    # Columns that are "sub-total" and get yellow highlight (1-indexed)
+    YELLOW_COLS = {5, 9, 12}   # D (BCWW Total), H (ANTS Total), K (Grand Total)
+
+    # ── Row 1: letter labels ───────────────────────────────────────────────────
+    row0_vals = [
+        "Count", "A", "B", "C", "D = A+B+C",
+        "E", "F", "G", "H = E+F+G",
+        "I", "J", "K = D+H+I+J"
+    ]
+    ws.append(row0_vals)
+    for col_idx, _ in enumerate(row0_vals, start=1):
+        cell = ws.cell(row=1, column=col_idx)
+        cell.fill   = yellow_fill if col_idx in YELLOW_COLS else blue_fill
+        cell.font   = black_bold  if col_idx in YELLOW_COLS else white_bold
+        cell.alignment = center_align
+        cell.border = all_borders
+    ws.row_dimensions[1].height = 30
+
+    # ── Row 2: column headings ─────────────────────────────────────────────────
+    row1_vals = [
+        "State",
+        "BCWW \u2013 Google", "BCWW \u2013 META", "BCWW \u2013 Others", "BCWW Total",
+        "ANTS \u2013 Google", "ANTS \u2013 Meta",  "ANTS \u2013 Others", "ANTS \u2013 Total",
+        "Franchise referrals", "Website", "Grand Total"
+    ]
+    ws.append(row1_vals)
+    for col_idx, _ in enumerate(row1_vals, start=1):
+        cell = ws.cell(row=2, column=col_idx)
+        cell.fill   = yellow_fill if col_idx in YELLOW_COLS else blue_fill
+        cell.font   = black_bold  if col_idx in YELLOW_COLS else white_bold
+        cell.alignment = center_align
+        cell.border = all_borders
+    ws.row_dimensions[2].height = 32
+
+    # ── Data rows ─────────────────────────────────────────────────────────────
+    rows = report_data.get("rows", [])
+    for i, item in enumerate(rows):
+        data_row = [
+            item["state"],
+            item["bcww_google"],
+            item["bcww_meta"],
+            item["bcww_others"],
+            item["bcww_total"],
+            item["ants_google"],
+            item["ants_meta"],
+            item["ants_others"],
+            item["ants_total"],
+            item["franchise_referrals"],
+            item["website"],
+            item["grand_total"],
+        ]
+        ws.append(data_row)
+        curr_row = ws.max_row
+        alt_fill = row_even if i % 2 == 0 else None
+
+        for col_idx in range(1, 13):
+            cell = ws.cell(row=curr_row, column=col_idx)
+            cell.border = all_borders
+            if col_idx in YELLOW_COLS:
+                cell.fill  = yellow_fill
+                cell.font  = black_bold
+            elif alt_fill:
+                cell.fill  = alt_fill
+                cell.font  = normal
+            else:
+                cell.font  = normal
+            if col_idx == 1:
+                cell.alignment = left_align
+            else:
+                cell.alignment = right_align
+                if isinstance(cell.value, (int, float)):
+                    cell.number_format = "#,##0"
+        ws.row_dimensions[curr_row].height = 18
+
+    # ── Grand Total row ───────────────────────────────────────────────────────
+    gt = report_data.get("grandTotal", {})
+    gt_vals = [
+        "Grand Total",
+        gt.get("bcww_google", 0),
+        gt.get("bcww_meta", 0),
+        gt.get("bcww_others", 0),
+        gt.get("bcww_total", 0),
+        gt.get("ants_google", 0),
+        gt.get("ants_meta", 0),
+        gt.get("ants_others", 0),
+        gt.get("ants_total", 0),
+        gt.get("franchise_referrals", 0),
+        gt.get("website", 0),
+        gt.get("grand_total", 0),
+    ]
+    ws.append(gt_vals)
+    gt_row = ws.max_row
+    for col_idx in range(1, 13):
+        cell = ws.cell(row=gt_row, column=col_idx)
+        cell.fill   = yellow_fill if col_idx in YELLOW_COLS else lt_yellow
+        cell.font   = black_bold
+        cell.border = med_bottom
+        cell.alignment = left_align if col_idx == 1 else right_align
+        if col_idx > 1 and isinstance(cell.value, (int, float)):
+            cell.number_format = "#,##0"
+    ws.row_dimensions[gt_row].height = 22
+
+    # ── Column widths ─────────────────────────────────────────────────────────
+    # State column wider; number columns narrower
+    ws.column_dimensions["A"].width = 22
+    for col_idx in range(2, 13):
+        col_letter = get_column_letter(col_idx)
+        ws.column_dimensions[col_letter].width = 17
+
+    # Freeze the first two header rows + state column
+    ws.freeze_panes = "B3"
+
+    # ── Period label in cell M1 ───────────────────────────────────────────────
+    period = report_data.get("period", "")
+    if period:
+        m1 = ws.cell(row=1, column=14, value=f"Period: {period}")
+        m1.font = Font(name="Calibri", size=10, italic=True, color="1F4E79")
+        m1.alignment = left_align
+
+    output = io.BytesIO()
+    wb.save(output)
+    return output.getvalue()
+
+
+def agency_lead_report_data(request) -> dict:
+    """Return flat lead detailed report data for Agency logins (11 columns)."""
+    qs = _filter_crm_qs(request).order_by("-created_at")
+
+    q_params = getattr(request, "query_params", getattr(request, "GET", {}))
+
+    # Date filters
+    raw_start = (q_params.get("startDate") or "").strip()
+    raw_end = (q_params.get("endDate") or "").strip()
+    start = parse_datetime(raw_start) or (parse_date(raw_start) if raw_start else None)
+    end = parse_datetime(raw_end) or (parse_date(raw_end) if raw_end else None)
+    if start:
+        qs = qs.filter(created_at__gte=start)
+    if end:
+        qs = qs.filter(created_at__lte=end)
+
+    # State filter
+    state_param = (q_params.get("state") or "").strip()
+    if state_param:
+        states = [s.strip() for s in state_param.split(",") if s.strip() and s.strip().lower() != "all"]
+        if states:
+            qs = qs.filter(state__in=states)
+
+    # City filter
+    city_param = (q_params.get("city") or "").strip()
+    if city_param:
+        cities = [c.strip() for c in city_param.split(",") if c.strip() and c.strip().lower() != "all"]
+        if cities:
+            qs = qs.filter(city__in=cities)
+
+    # Search filter
+    search = (q_params.get("search") or "").strip()
+    if search:
+        qs = qs.filter(
+            Q(full_name__icontains=search)
+            | Q(city__icontains=search)
+            | Q(state__icontains=search)
+            | Q(utm_source__icontains=search)
+            | Q(utm_medium__icontains=search)
+            | Q(utm_campaign__icontains=search)
+            | Q(status__icontains=search)
+            | Q(gclid__icontains=search)
+        )
+
+    from .models import UnifiedLeadNote, CrmLeadNote
+
+    lead_list = list(qs)
+    lead_ids = [l.id for l in lead_list]
+    crm_keys = [f"crm_{lid}" for lid in lead_ids]
+
+    # Description = CRM History notes only (unified_lead_notes + legacy campaign_lead_notes).
+    # Never use CrmLead.comments — that stores original Meta/form answers, not History.
+    notes_map: dict[int, str] = {}
+
+    unified_qs = (
+        UnifiedLeadNote.objects.filter(lead_id__in=crm_keys)
+        .order_by("-created_at")
+        .only("lead_id", "content", "created_at")
+    )
+    for n in unified_qs:
+        content = (n.content or "").strip()
+        if not content or content.startswith("[Email]") or content.startswith("[WhatsApp]"):
+            continue
+        try:
+            numeric_id = int(str(n.lead_id).split("_", 1)[1])
+        except (IndexError, ValueError):
+            continue
+        if numeric_id not in notes_map:
+            notes_map[numeric_id] = content
+
+    legacy_qs = (
+        CrmLeadNote.objects.filter(lead_id__in=lead_ids)
+        .order_by("-created_at")
+        .only("lead_id", "content", "created_at")
+    )
+    for n in legacy_qs:
+        content = (n.content or "").strip()
+        if not content or content.startswith("[Email]") or content.startswith("[WhatsApp]"):
+            continue
+        lid = int(n.lead_id)
+        if lid not in notes_map:
+            notes_map[lid] = content
+
+    leads = []
+    for lead in lead_list:
+        dt_str = lead.created_at.strftime("%Y-%m-%d %H:%M:%S") if lead.created_at else ""
+        leads.append({
+            "id": lead.id,
+            "name": lead.full_name or "",
+            "state": lead.state or "",
+            "city": lead.city or "",
+            "utm_source": lead.utm_source or "",
+            "utm_medium": lead.utm_medium or "",
+            "utm_campaign": lead.utm_campaign or "",
+            "status": lead.status or "",
+            "created_at": dt_str,
+            "utm_content": lead.utm_content or "",
+            "gclid": lead.gclid or "",
+            "description": notes_map.get(lead.id, ""),
+        })
+
+    return {
+        "mode": "agency",
+        "total": len(leads),
+        "leads": leads,
+    }
+
+
+def generate_agency_report_csv(request) -> bytes:
+    """Generate CSV with exact 11 columns matching spreadsheet layout."""
+    import csv, io
+    report_data = agency_lead_report_data(request)
+    leads = report_data.get("leads", [])
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "name",
+        "state",
+        "city",
+        "utm_source",
+        "utm_medium",
+        "utm_campaign",
+        "status",
+        "created_at",
+        "utm_content",
+        "gclid",
+        "description",
+    ])
+
+    for lead in leads:
+        writer.writerow([
+            lead["name"],
+            lead["state"],
+            lead["city"],
+            lead["utm_source"],
+            lead["utm_medium"],
+            lead["utm_campaign"],
+            lead["status"],
+            lead["created_at"],
+            lead["utm_content"],
+            lead["gclid"],
+            lead["description"],
+        ])
+
+    return output.getvalue().encode("utf-8-sig")
+
