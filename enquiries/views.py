@@ -735,7 +735,50 @@ class AdminCrmLeadStatsView(APIView):
 
 
 class AdminCrmReportsView(APIView):
-    """CRM reports data — pivot table."""
+    """CRM reports data — pivot table or flat agency lead report."""
+
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        if not can_view_crm_leads(request):
+            return Response(
+                {"detail": "CRM login required. Sign in with a CRM account to view CRM reports."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        from .crm_api import is_ants_agency_user
+        if is_ants_agency_user(request=request):
+            return Response(
+                {"detail": "Reports access disabled for this account."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        from django.http import HttpResponse
+        from .crm_api import (
+            unified_reports_data,
+            agency_lead_report_data,
+            generate_agency_report_csv,
+            _request_agency_filter,
+        )
+
+        export_fmt = (request.query_params.get("export") or "").strip().lower()
+        mode_param = (request.query_params.get("mode") or "").strip().lower()
+        agency_filter = _request_agency_filter(request)
+
+        if agency_filter or mode_param == "agency" or export_fmt == "csv":
+            if export_fmt == "csv":
+                csv_bytes = generate_agency_report_csv(request)
+                response = HttpResponse(csv_bytes, content_type="text/csv; charset=utf-8")
+                filename = f"Agency_Lead_Report_{agency_filter or 'leads'}.csv"
+                response["Content-Disposition"] = f'attachment; filename="{filename}"'
+                return response
+            return Response(agency_lead_report_data(request))
+
+        return Response(unified_reports_data(request))
+
+
+class AdminCrmStateLeadReportView(APIView):
+    """State-wise total leads report (JSON + Excel export)."""
 
     permission_classes = [permissions.AllowAny]
 
@@ -748,9 +791,24 @@ class AdminCrmReportsView(APIView):
         if _is_campaign_readonly_user(request):
             return Response({"detail": "View-only account."}, status=status.HTTP_403_FORBIDDEN)
 
-        from .crm_api import unified_reports_data
+        from .crm_api import state_wise_lead_report_data, generate_state_wise_lead_report_excel
+        from django.http import HttpResponse
 
-        return Response(unified_reports_data(request))
+        data = state_wise_lead_report_data(request)
+
+        export_format = (request.query_params.get("export") or "").strip().lower()
+        if export_format in ("excel", "xlsx"):
+            excel_bytes = generate_state_wise_lead_report_excel(data)
+            filename = f"State_Wise_Lead_Report_{data['startDate']}_to_{data['endDate']}.xlsx"
+            response = HttpResponse(
+                excel_bytes,
+                content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+            response["Content-Disposition"] = f'attachment; filename="{filename}"'
+            return response
+
+        return Response(data)
+
 
 
 class AdminCrmLeadRemindersView(APIView):

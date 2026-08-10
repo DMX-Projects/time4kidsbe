@@ -11,6 +11,7 @@ from .views import (
     AdminCrmLeadNoteCreateView,
     AdminCrmLeadRemindersView,
     AdminCrmReportsView,
+    AdminCrmStateLeadReportView,
     AdminCrmLeadStatsView,
     AdminCrmSendReminderView,
     AdminCrmStatesView,
@@ -44,7 +45,9 @@ urlpatterns = [
 
     path("admin/crm-leads/", AdminCrmLeadListView.as_view(), name="admin-crm-leads"),
     path("admin/crm-leads/reports/", AdminCrmReportsView.as_view(), name="admin-crm-leads-reports"),
+    path("admin/crm-leads/reports/state-summary/", AdminCrmStateLeadReportView.as_view(), name="admin-crm-state-lead-report"),
     path("admin/crm-leads/stats/", AdminCrmLeadStatsView.as_view(), name="admin-crm-leads-stats"),
+
     path("admin/crm-leads/reminders/", AdminCrmLeadRemindersView.as_view(), name="admin-crm-leads-reminders"),
     path("admin/crm-leads/send-reminder/", AdminCrmSendReminderView.as_view(), name="admin-crm-send-reminder"),
     path("admin/crm-centres/", AdminCrmCentresView.as_view(), name="admin-crm-centres"),

@@ -431,12 +431,28 @@ def resolve_lead_state_code(state: str | None = None, city: str | None = None) -
     if not city_name:
         return None
 
-    # Common free-text abbreviations that cannot be resolved from centre names.
+    # Common free-text city labels that may not match a centre row exactly.
+    city_key = city_name.casefold().rstrip(".")
     city_alias_code = {
         "hyd": "TG",
-    }.get(city_name.casefold().rstrip("."))
+        "hyderabad": "TG",
+        "navi mumbai": "MH",
+        "new mumbai": "MH",
+        "jalna": "MH",
+        "thane": "MH",
+        "nagpur": "MH",
+        "nashik": "MH",
+        "nasik": "MH",
+        "aurangabad": "MH",
+        "chhatrapati sambhajinagar": "MH",
+        "kalyan": "MH",
+        "dombivli": "MH",
+        "dombivali": "MH",
+    }.get(city_key)
     if city_alias_code:
         return city_alias_code
+    if "mumbai" in city_key or "bombay" in city_key:
+        return "MH"
 
     from franchises.models import Franchise, FranchiseLocation
 
