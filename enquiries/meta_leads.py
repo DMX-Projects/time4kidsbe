@@ -482,6 +482,91 @@ def fetch_form_name(form_id: str) -> str:
         return ""
 
 
+def form_name_to_utm_token(form_name: str) -> str:
+    """
+    Instant Form display name → UTM medium/campaign token.
+
+    Example naming only:
+      BCWW TK Andhra Pradesh All Interest P1
+      → BCWW_TK_Andhra_Pradesh_All_Interest_P1
+    """
+    text = str(form_name or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"[\s\-]+", "_", text)
+    text = re.sub(r"_+", "_", text)
+    return text.strip("_")
+
+
+def _pick_passed_utm(*sources: dict[str, Any], keys: tuple[str, ...]) -> str:
+    """Return the first non-empty UTM value literally passed by Meta/agency."""
+    for src in sources:
+        if not isinstance(src, dict):
+            continue
+        for key in keys:
+            value = src.get(key)
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text:
+                return text[:150]
+    return ""
+
+
+def meta_instant_form_utm_fields(
+    *,
+    form_name: str = "",
+    form_id: str = "",
+    ad_id: str = "",
+    lead_payload: dict[str, Any] | None = None,
+    webhook_value: dict[str, Any] | None = None,
+    fields: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    """
+    Capture Instant Form UTMs as passed; fall back to form name for medium/campaign.
+
+    Agency naming example (form name → medium/campaign):
+      utm_source=facebook_lead_ads
+      &utm_medium=BCWW_TK_Andhra_Pradesh_All_Interest_P1
+      &utm_campaign=BCWW_TK_Andhra_Pradesh_All_Interest_P1
+      &utm_content=dm   ← only saved if they actually pass it
+    """
+    payload = lead_payload or {}
+    webhook = webhook_value or {}
+    mapped = fields or {}
+    form_token = form_name_to_utm_token(form_name)
+
+    source = (
+        _pick_passed_utm(payload, webhook, mapped, keys=("utm_source", "utmSource"))
+        or "facebook_lead_ads"
+    )
+    medium = (
+        _pick_passed_utm(payload, webhook, mapped, keys=("utm_medium", "utmMedium"))
+        or form_token
+        or "meta_instant_form"
+    )
+    campaign = (
+        _pick_passed_utm(
+            payload, webhook, mapped, keys=("utm_campaign", "utmCampaign", "campaign")
+        )
+        or form_token
+        or form_id
+        or ad_id
+        or medium
+    )
+    # Content/term: store only when Meta/agency actually sends them — do not invent.
+    content = _pick_passed_utm(payload, webhook, mapped, keys=("utm_content", "utmContent"))
+    term = _pick_passed_utm(payload, webhook, mapped, keys=("utm_term", "utmTerm"))
+
+    return {
+        "utm_source": source[:150],
+        "utm_medium": medium[:150],
+        "utm_campaign": campaign[:150],
+        "utm_content": content[:150],
+        "utm_term": term[:150],
+    }
+
+
 def _field_map(field_data: list[dict[str, Any]] | None) -> dict[str, str]:
     mapped: dict[str, str] = {}
     extras: list[str] = []
@@ -495,6 +580,22 @@ def _field_map(field_data: list[dict[str, Any]] | None) -> dict[str, str]:
         if key:
             mapped[key] = value
         else:
+            # Capture UTM fields if agency/Meta passes them on the Instant Form.
+            utm_key = {
+                "utm_source": "utm_source",
+                "utmsource": "utm_source",
+                "utm_medium": "utm_medium",
+                "utmmedium": "utm_medium",
+                "utm_campaign": "utm_campaign",
+                "utmcampaign": "utm_campaign",
+                "utm_content": "utm_content",
+                "utmcontent": "utm_content",
+                "utm_term": "utm_term",
+                "utmterm": "utm_term",
+            }.get(name.lower().replace(" ", "").strip())
+            if utm_key and value:
+                mapped[utm_key] = value
+                continue
             extras.append(f"{name}: {value}")
             # Soft-match custom franchise questions
             lower = name.lower().replace("_", " ")
@@ -717,12 +818,26 @@ def create_crm_lead_from_meta(
     ).strip()
     form_id = str(lead_payload.get("form_id") or webhook_value.get("form_id") or "").strip()
     ad_id = str(lead_payload.get("ad_id") or webhook_value.get("ad_id") or "").strip()
+    adset_id = str(lead_payload.get("adset_id") or webhook_value.get("adset_id") or "").strip()
+    campaign_id = str(
+        lead_payload.get("campaign_id") or webhook_value.get("campaign_id") or ""
+    ).strip()
+    utm = meta_instant_form_utm_fields(
+        form_name=form_name,
+        form_id=form_id,
+        ad_id=ad_id,
+        lead_payload=lead_payload,
+        webhook_value=webhook_value,
+        fields=fields,
+    )
 
     raw_payload = {
         "meta_leadgen_id": leadgen_id,
         "meta_form_id": form_id,
         "meta_form_name": form_name,
         "meta_ad_id": ad_id,
+        "meta_adset_id": adset_id,
+        "meta_campaign_id": campaign_id,
         "meta_page_id": str(webhook_value.get("page_id") or ""),
         "meta_created_time": lead_payload.get("created_time") or webhook_value.get("created_time"),
         "meta_field_data": lead_payload.get("field_data") or [],
@@ -732,8 +847,12 @@ def create_crm_lead_from_meta(
         "meta_city_raw": raw_city,
         "meta_city_label": city_label,
         "pageType": "facebook_lead_ads",
-        "campaign": form_name or form_id,
+        "campaign": utm["utm_campaign"] or form_name or form_id,
         "source": "july_meta",
+        "utm_source": utm["utm_source"],
+        "utm_medium": utm["utm_medium"],
+        "utm_campaign": utm["utm_campaign"],
+        "utm_content": utm["utm_content"],
     }
 
     if not mobile:
@@ -756,9 +875,11 @@ def create_crm_lead_from_meta(
         comments="\n".join(comments_parts).strip(),
         source=CrmLeadSource.JULY_META,
         landing_page_url="",
-        utm_source="facebook_lead_ads",
-        utm_medium=form_name or "meta_instant_form",
-        utm_campaign=form_name or form_id or ad_id,
+        utm_source=utm["utm_source"],
+        utm_medium=utm["utm_medium"],
+        utm_campaign=utm["utm_campaign"],
+        utm_content=utm["utm_content"],
+        utm_term=utm["utm_term"],
         raw_payload=raw_payload,
     )
     # Permanent ledger: deleting this CRM row (even via SQL) must not re-import.

@@ -6,7 +6,39 @@ from accounts.crm_zones import filter_qs_by_zone_or_assigned
 from accounts.models import User
 from enquiries.crm_api import campaign_channel_api_key, effective_source_bucket_key, should_include_in_google_bucket
 from enquiries.emails import lead_source_label_for_crm_lead
+from enquiries.meta_leads import form_name_to_utm_token, meta_instant_form_utm_fields
 from enquiries.models import CrmLead, CrmLeadSource
+
+
+class MetaInstantFormUtmTests(SimpleTestCase):
+    def test_form_name_to_utm_token_matches_agency_example(self):
+        self.assertEqual(
+            form_name_to_utm_token("BCWW TK Andhra Pradesh All Interest P1"),
+            "BCWW_TK_Andhra_Pradesh_All_Interest_P1",
+        )
+
+    def test_meta_instant_form_utm_uses_form_name_when_nothing_else_passed(self):
+        utm = meta_instant_form_utm_fields(
+            form_name="BCWW TK Andhra Pradesh All Interest P1",
+        )
+        self.assertEqual(utm["utm_source"], "facebook_lead_ads")
+        self.assertEqual(utm["utm_medium"], "BCWW_TK_Andhra_Pradesh_All_Interest_P1")
+        self.assertEqual(utm["utm_campaign"], "BCWW_TK_Andhra_Pradesh_All_Interest_P1")
+        self.assertEqual(utm["utm_content"], "")
+
+    def test_meta_instant_form_utm_captures_passed_values_only(self):
+        utm = meta_instant_form_utm_fields(
+            form_name="BCWW TK Andhra Pradesh All Interest P1",
+            fields={
+                "utm_medium": "BCWW_TK_Andhra_Pradesh_All_Interest_P1",
+                "utm_campaign": "BCWW_TK_Andhra_Pradesh_All_Interest_P1",
+                "utm_content": "dm",
+            },
+        )
+        self.assertEqual(utm["utm_source"], "facebook_lead_ads")
+        self.assertEqual(utm["utm_medium"], "BCWW_TK_Andhra_Pradesh_All_Interest_P1")
+        self.assertEqual(utm["utm_campaign"], "BCWW_TK_Andhra_Pradesh_All_Interest_P1")
+        self.assertEqual(utm["utm_content"], "dm")
 
 
 class CrmGoogleBucketTests(SimpleTestCase):

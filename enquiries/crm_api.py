@@ -2516,11 +2516,22 @@ STATE_CANONICAL_MAP = {
     "andhra": "Andhra",
     "andhra pradesh": "Andhra",
     "ap": "Andhra",
+    "maharashtra": "Maharashtra",
+    "mh": "Maharashtra",
     "west bengal": "West Bengal",
     "wb": "West Bengal",
 }
 
-PRIMARY_STATES = ["Kerala", "Karnataka", "Tamilnadu", "Telengana", "Andhra", "West Bengal"]
+# Maharashtra before West Bengal (BCWW states, then MH, then Ants WB).
+PRIMARY_STATES = [
+    "Kerala",
+    "Karnataka",
+    "Tamilnadu",
+    "Telengana",
+    "Andhra",
+    "Maharashtra",
+    "West Bengal",
+]
 
 
 def _normalize_report_state(raw_state: str | None) -> str:
@@ -2534,39 +2545,46 @@ def _normalize_report_state(raw_state: str | None) -> str:
 
 
 def state_wise_lead_report_data(request) -> dict:
-    """State-wise summary of leads grouped by agency channel and source."""
+    """State-wise summary of leads grouped by agency channel and source.
+
+    Channel buckets align with dashboard ``campaign_channel_api_key``:
+    BCWW Google/META, Ants Google (lp_wb) / Ants Meta, franchise referrals,
+    and Website = franchise website form (FranchiseEnquiry without a centre),
+    matching Franchise All dashboard counts.
+    """
     start, end = _parse_request_dates(request)
 
-    rows_map = {}
+    empty_row = {
+        "bcww_google": 0,
+        "bcww_meta": 0,
+        "bcww_others": 0,
+        "ants_google": 0,
+        "ants_meta": 0,
+        "ants_others": 0,
+        "franchise_referrals": 0,
+        "website": 0,
+    }
+    rows_map: dict[str, dict] = {}
     for st in PRIMARY_STATES:
-        rows_map[st] = {
-            "state": st,
-            "bcww_google": 0,
-            "bcww_meta": 0,
-            "bcww_others": 0,
-            "ants_google": 0,
-            "ants_meta": 0,
-            "ants_others": 0,
-            "franchise_referrals": 0,
-            "website": 0,
-        }
+        rows_map[st] = {"state": st, **empty_row}
 
-    def _get_row(st_name):
+    def _get_row(st_name: str) -> dict:
         if st_name not in rows_map:
-            rows_map[st_name] = {
-                "state": st_name,
-                "bcww_google": 0,
-                "bcww_meta": 0,
-                "bcww_others": 0,
-                "ants_google": 0,
-                "ants_meta": 0,
-                "ants_others": 0,
-                "franchise_referrals": 0,
-                "website": 0,
-            }
+            rows_map[st_name] = {"state": st_name, **{k: 0 for k in empty_row}}
         return rows_map[st_name]
 
-    # 1. CrmLead
+    referral_sources = {
+        CrmLeadSource.FRANCHISE_REFERRAL,
+        CrmLeadSource.FRANCHISE_FRIENDS_FAMILY,
+        CrmLeadSource.REFERRAL_PARENTS,
+        CrmLeadSource.REFERRAL_FAMILY_FRIENDS,
+        "franchise_referral",
+        "franchise_friends_family",
+        "referral_parents",
+        "referral_family_friends",
+    }
+
+    # 1. CrmLead — same channel rules as dashboard / pie chart
     crm_qs = CrmLead.objects.all()
     if start:
         crm_qs = crm_qs.filter(created_at__gte=start)
@@ -2576,50 +2594,37 @@ def state_wise_lead_report_data(request) -> dict:
     for lead in crm_qs.iterator():
         st = _normalize_report_state(lead.state)
         row = _get_row(st)
-        src = (lead.source or "").lower()
-        is_wb = bool(lead.state and "bengal" in lead.state.lower()) or src == "lp_wb"
-        landing_url = (lead.landing_page_url or "").lower()
-        is_gclid = "gclid=" in landing_url or "gad_source=" in landing_url or "gads" in src
-
-        if src in ("franchise_referral", "franchise_friends_family", "referral_parents", "referral_family_friends"):
+        src = (lead.source or "").strip()
+        src_l = src.lower()
+        if src in referral_sources or src_l in referral_sources:
             row["franchise_referrals"] += 1
-        elif is_wb:
-            if "google" in src or "lp_wb" in src or is_gclid:
-                row["ants_google"] += 1
-            elif "meta" in src or "fb" in src or "insta" in src:
-                row["ants_meta"] += 1
-            else:
-                row["ants_others"] += 1
+            continue
+
+        channel = campaign_channel_api_key(
+            lead.source,
+            lead.landing_page_url,
+            lead.state,
+            request=request,
+        )
+        if channel == "ants_meta":
+            row["ants_meta"] += 1
+        elif channel in ("lp_wb", "ants_google"):
+            row["ants_google"] += 1
+        elif channel in ("july_meta", "facebook", "instagram", "fb", "insta"):
+            row["bcww_meta"] += 1
+        elif channel in ("google", "july_lp"):
+            row["bcww_google"] += 1
         else:
-            if "july_lp" in src or "google" in src or is_gclid:
-                row["bcww_google"] += 1
-            elif "july_meta" in src or "meta" in src or "fb" in src or "insta" in src:
-                row["bcww_meta"] += 1
+            # Unknown / legacy campaign sources — keep under BCWW others
+            # unless clearly the WB LP path.
+            lower_url = (lead.landing_page_url or "").lower()
+            if src_l == "lp_wb" or "timekids-lp-wb" in lower_url:
+                row["ants_others"] += 1
             else:
                 row["bcww_others"] += 1
 
-    # 2. Enquiry (Admission & Contact)
-    enq_qs = Enquiry.objects.all()
-    if start:
-        enq_qs = enq_qs.filter(created_at__gte=start)
-    if end:
-        enq_qs = enq_qs.filter(created_at__lte=end)
-    for enq in enq_qs.select_related("franchise").iterator():
-        st = _normalize_report_state((enq.franchise.state if enq.franchise else None) or enq.city)
-        _get_row(st)["website"] += 1
-
-    # 3. KidsEnquiry (Landing page enquiries)
-    kids_qs = KidsEnquiry.objects.all()
-    if start:
-        kids_qs = kids_qs.filter(created_date__gte=start)
-    if end:
-        kids_qs = kids_qs.filter(created_date__lte=end)
-    for kid in kids_qs.iterator():
-        st = _normalize_report_state(kid.state)
-        _get_row(st)["website"] += 1
-
-    # 4. FranchiseEnquiry
-    fran_qs = FranchiseEnquiry.objects.all()
+    # 2. Website = franchise website form (no centre linked), same as CRM Franchise All
+    fran_qs = FranchiseEnquiry.objects.filter(franchise__isnull=True)
     if start:
         fran_qs = fran_qs.filter(created_at__gte=start)
     if end:
@@ -2628,11 +2633,11 @@ def state_wise_lead_report_data(request) -> dict:
         st = _normalize_report_state(fe.state)
         _get_row(st)["website"] += 1
 
-
-
     # Prepare rows list & calculated totals
     rows_list = []
-    ordered_keys = [s for s in PRIMARY_STATES if s in rows_map] + [s for s in rows_map if s not in PRIMARY_STATES]
+    ordered_keys = [s for s in PRIMARY_STATES if s in rows_map] + [
+        s for s in rows_map if s not in PRIMARY_STATES
+    ]
 
     totals = {
         "state": "Grand Total",
