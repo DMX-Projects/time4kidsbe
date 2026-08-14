@@ -482,6 +482,96 @@ def fetch_form_name(form_id: str) -> str:
         return ""
 
 
+def _normalize_tracking_param_map(raw: Any) -> dict[str, str]:
+    """Normalize Meta tracking_parameters (dict or [{key,value}, ...]) to a flat map."""
+    out: dict[str, str] = {}
+    if isinstance(raw, dict):
+        for key, value in raw.items():
+            k = str(key or "").strip()
+            v = str(value or "").strip()
+            if k and v:
+                out[k] = v[:150]
+        return out
+    if isinstance(raw, list):
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            k = str(item.get("key") or item.get("name") or "").strip()
+            v = str(item.get("value") or "").strip()
+            if k and v:
+                out[k] = v[:150]
+    return out
+
+
+def fetch_form_tracking_parameters(form_id: str) -> dict[str, str]:
+    """Instant Form tracking_parameters (e.g. utm_content=dm) configured in Meta."""
+    if not form_id:
+        return {}
+    try:
+        data = _graph_get(str(form_id), {"fields": "tracking_parameters"})
+        return _normalize_tracking_param_map(data.get("tracking_parameters"))
+    except Exception:
+        logger.exception("Failed to fetch Meta form tracking_parameters form_id=%s", form_id)
+        return {}
+
+
+def fetch_ad_url_tags(ad_id: str) -> str:
+    """
+    Ad-level URL parameters from Ads Manager (url_tags).
+
+    Agency example often lives here:
+      utm_source=facebook_lead_ads&utm_medium=...&utm_campaign=...&utm_content=dm
+    """
+    if not ad_id:
+        return ""
+    try:
+        data = _graph_get(str(ad_id), {"fields": "url_tags,name"})
+        tags = str(data.get("url_tags") or "").strip()
+        if tags:
+            return tags
+        # Some setups put the query string in the ad name; keep raw name as fallback parse source.
+        return str(data.get("name") or "").strip()
+    except Exception:
+        logger.exception("Failed to fetch Meta ad url_tags ad_id=%s", ad_id)
+        return ""
+
+
+def parse_utm_query_string(raw: str) -> dict[str, str]:
+    """Parse utm_* (and gclid) from a query string or full URL."""
+    text = str(raw or "").strip()
+    if not text:
+        return {}
+    try:
+        from urllib.parse import parse_qs, urlparse, unquote
+
+        candidate = text
+        if "://" in text or text.startswith("?"):
+            parsed = urlparse(text if "://" in text else f"https://x.local/{text}")
+            candidate = parsed.query or text.lstrip("?")
+        elif "utm_" not in text.lower() and "=" not in text:
+            return {}
+
+        # Allow bare "utm_source=facebook_lead_ads&utm_content=dm"
+        if "utm_" in candidate.lower() or "gclid=" in candidate.lower():
+            qs = parse_qs(candidate, keep_blank_values=False)
+        else:
+            # Maybe the whole string is embedded; extract query-looking segment.
+            match = re.search(r"(utm_[^=&\s]+=[^&\s]+(?:&[^=&\s]+=[^&\s]+)*)", text, flags=re.I)
+            if not match:
+                return {}
+            qs = parse_qs(match.group(1), keep_blank_values=False)
+
+        out: dict[str, str] = {}
+        for key in ("utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term", "gclid"):
+            values = qs.get(key) or qs.get(key.upper()) or []
+            if values and str(values[0]).strip():
+                out[key] = unquote(str(values[0]).strip())[:150]
+        return out
+    except Exception:
+        logger.exception("Failed to parse UTM query string")
+        return {}
+
+
 def form_name_to_utm_token(form_name: str) -> str:
     """
     Instant Form display name → UTM medium/campaign token.
@@ -521,42 +611,54 @@ def meta_instant_form_utm_fields(
     lead_payload: dict[str, Any] | None = None,
     webhook_value: dict[str, Any] | None = None,
     fields: dict[str, Any] | None = None,
+    form_tracking: dict[str, str] | None = None,
+    ad_url_tags: str = "",
 ) -> dict[str, str]:
     """
-    Capture Instant Form UTMs as passed; fall back to form name for medium/campaign.
+    Capture Instant Form UTMs from whatever Meta/agency actually sends.
 
-    Agency naming example (form name → medium/campaign):
-      utm_source=facebook_lead_ads
-      &utm_medium=BCWW_TK_Andhra_Pradesh_All_Interest_P1
-      &utm_campaign=BCWW_TK_Andhra_Pradesh_All_Interest_P1
-      &utm_content=dm   ← only saved if they actually pass it
+    Priority:
+      1) lead field_data / payload / webhook
+      2) Instant Form tracking_parameters
+      3) Ad url_tags (Ads Manager URL parameters)
+      4) form-name fallback for medium/campaign; source defaults to facebook_lead_ads
     """
     payload = lead_payload or {}
     webhook = webhook_value or {}
     mapped = fields or {}
+    tracking = form_tracking or {}
+    from_ad_tags = parse_utm_query_string(ad_url_tags)
     form_token = form_name_to_utm_token(form_name)
 
     source = (
-        _pick_passed_utm(payload, webhook, mapped, keys=("utm_source", "utmSource"))
+        _pick_passed_utm(payload, webhook, mapped, tracking, from_ad_tags, keys=("utm_source", "utmSource"))
         or "facebook_lead_ads"
     )
     medium = (
-        _pick_passed_utm(payload, webhook, mapped, keys=("utm_medium", "utmMedium"))
+        _pick_passed_utm(payload, webhook, mapped, tracking, from_ad_tags, keys=("utm_medium", "utmMedium"))
         or form_token
         or "meta_instant_form"
     )
     campaign = (
         _pick_passed_utm(
-            payload, webhook, mapped, keys=("utm_campaign", "utmCampaign", "campaign")
+            payload,
+            webhook,
+            mapped,
+            tracking,
+            from_ad_tags,
+            keys=("utm_campaign", "utmCampaign", "campaign"),
         )
         or form_token
         or form_id
         or ad_id
         or medium
     )
-    # Content/term: store only when Meta/agency actually sends them — do not invent.
-    content = _pick_passed_utm(payload, webhook, mapped, keys=("utm_content", "utmContent"))
-    term = _pick_passed_utm(payload, webhook, mapped, keys=("utm_term", "utmTerm"))
+    content = _pick_passed_utm(
+        payload, webhook, mapped, tracking, from_ad_tags, keys=("utm_content", "utmContent")
+    )
+    term = _pick_passed_utm(
+        payload, webhook, mapped, tracking, from_ad_tags, keys=("utm_term", "utmTerm")
+    )
 
     return {
         "utm_source": source[:150],
@@ -822,6 +924,8 @@ def create_crm_lead_from_meta(
     campaign_id = str(
         lead_payload.get("campaign_id") or webhook_value.get("campaign_id") or ""
     ).strip()
+    form_tracking = fetch_form_tracking_parameters(form_id) if form_id else {}
+    ad_url_tags = fetch_ad_url_tags(ad_id) if ad_id else ""
     utm = meta_instant_form_utm_fields(
         form_name=form_name,
         form_id=form_id,
@@ -829,6 +933,8 @@ def create_crm_lead_from_meta(
         lead_payload=lead_payload,
         webhook_value=webhook_value,
         fields=fields,
+        form_tracking=form_tracking,
+        ad_url_tags=ad_url_tags,
     )
 
     raw_payload = {
@@ -838,6 +944,8 @@ def create_crm_lead_from_meta(
         "meta_ad_id": ad_id,
         "meta_adset_id": adset_id,
         "meta_campaign_id": campaign_id,
+        "meta_ad_url_tags": ad_url_tags,
+        "meta_form_tracking_parameters": form_tracking,
         "meta_page_id": str(webhook_value.get("page_id") or ""),
         "meta_created_time": lead_payload.get("created_time") or webhook_value.get("created_time"),
         "meta_field_data": lead_payload.get("field_data") or [],
