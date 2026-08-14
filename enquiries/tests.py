@@ -6,7 +6,11 @@ from accounts.crm_zones import filter_qs_by_zone_or_assigned
 from accounts.models import User
 from enquiries.crm_api import campaign_channel_api_key, effective_source_bucket_key, should_include_in_google_bucket
 from enquiries.emails import lead_source_label_for_crm_lead
-from enquiries.meta_leads import form_name_to_utm_token, meta_instant_form_utm_fields
+from enquiries.meta_leads import (
+    form_name_to_utm_token,
+    meta_instant_form_utm_fields,
+    parse_utm_query_string,
+)
 from enquiries.models import CrmLead, CrmLeadSource
 
 
@@ -38,6 +42,29 @@ class MetaInstantFormUtmTests(SimpleTestCase):
         self.assertEqual(utm["utm_source"], "facebook_lead_ads")
         self.assertEqual(utm["utm_medium"], "BCWW_TK_Andhra_Pradesh_All_Interest_P1")
         self.assertEqual(utm["utm_campaign"], "BCWW_TK_Andhra_Pradesh_All_Interest_P1")
+        self.assertEqual(utm["utm_content"], "dm")
+
+    def test_utm_content_from_ad_url_tags(self):
+        tags = (
+            "utm_source=facebook_lead_ads"
+            "&utm_medium=BCWW_TK_Andhra_Pradesh_All_Interest_P1"
+            "&utm_campaign=BCWW_TK_Andhra_Pradesh_All_Interest_P1"
+            "&utm_content=dm"
+        )
+        parsed = parse_utm_query_string(tags)
+        self.assertEqual(parsed.get("utm_content"), "dm")
+        utm = meta_instant_form_utm_fields(
+            form_name="BCWW TK Andhra Pradesh All Interest P1",
+            ad_url_tags=tags,
+        )
+        self.assertEqual(utm["utm_content"], "dm")
+        self.assertEqual(utm["utm_source"], "facebook_lead_ads")
+
+    def test_utm_content_from_form_tracking_parameters(self):
+        utm = meta_instant_form_utm_fields(
+            form_name="BCWW TK Andhra Pradesh All Interest P1",
+            form_tracking={"utm_content": "dm"},
+        )
         self.assertEqual(utm["utm_content"], "dm")
 
 
