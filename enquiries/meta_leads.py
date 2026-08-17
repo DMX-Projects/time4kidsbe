@@ -468,7 +468,16 @@ def _graph_get(path: str, params: dict[str, str] | None = None) -> dict[str, Any
 
 
 def fetch_lead_by_id(leadgen_id: str) -> dict[str, Any]:
-    return _graph_get(str(leadgen_id), {"fields": "id,created_time,ad_id,adset_id,campaign_id,form_id,field_data"})
+    # Ads Manager CSV uses ad_name / campaign_name / adset_name — request the same fields.
+    return _graph_get(
+        str(leadgen_id),
+        {
+            "fields": (
+                "id,created_time,ad_id,ad_name,adset_id,adset_name,"
+                "campaign_id,campaign_name,form_id,field_data,platform,is_organic"
+            )
+        },
+    )
 
 
 def fetch_form_name(form_id: str) -> str:
@@ -515,6 +524,21 @@ def fetch_form_tracking_parameters(form_id: str) -> dict[str, str]:
         return {}
 
 
+def fetch_ad_details(ad_id: str) -> dict[str, str]:
+    """Ad name + url_tags from Ads Manager (for Instant Form → CRM UTM mapping)."""
+    if not ad_id:
+        return {"name": "", "url_tags": ""}
+    try:
+        data = _graph_get(str(ad_id), {"fields": "url_tags,name"})
+        return {
+            "name": str(data.get("name") or "").strip(),
+            "url_tags": str(data.get("url_tags") or "").strip(),
+        }
+    except Exception:
+        logger.exception("Failed to fetch Meta ad details ad_id=%s", ad_id)
+        return {"name": "", "url_tags": ""}
+
+
 def fetch_ad_url_tags(ad_id: str) -> str:
     """
     Ad-level URL parameters from Ads Manager (url_tags).
@@ -522,18 +546,11 @@ def fetch_ad_url_tags(ad_id: str) -> str:
     Agency example often lives here:
       utm_source=facebook_lead_ads&utm_medium=...&utm_campaign=...&utm_content=dm
     """
-    if not ad_id:
-        return ""
-    try:
-        data = _graph_get(str(ad_id), {"fields": "url_tags,name"})
-        tags = str(data.get("url_tags") or "").strip()
-        if tags:
-            return tags
-        # Some setups put the query string in the ad name; keep raw name as fallback parse source.
-        return str(data.get("name") or "").strip()
-    except Exception:
-        logger.exception("Failed to fetch Meta ad url_tags ad_id=%s", ad_id)
-        return ""
+    details = fetch_ad_details(ad_id)
+    if details.get("url_tags"):
+        return details["url_tags"]
+    # Some setups put the query string in the ad name; keep raw name as fallback parse source.
+    return details.get("name") or ""
 
 
 def parse_utm_query_string(raw: str) -> dict[str, str]:
@@ -608,6 +625,9 @@ def meta_instant_form_utm_fields(
     form_name: str = "",
     form_id: str = "",
     ad_id: str = "",
+    ad_name: str = "",
+    adset_name: str = "",
+    campaign_name: str = "",
     lead_payload: dict[str, Any] | None = None,
     webhook_value: dict[str, Any] | None = None,
     fields: dict[str, Any] | None = None,
@@ -615,13 +635,18 @@ def meta_instant_form_utm_fields(
     ad_url_tags: str = "",
 ) -> dict[str, str]:
     """
-    Capture Instant Form UTMs from whatever Meta/agency actually sends.
+    Map Instant Form data onto CRM UTM columns.
 
-    Priority:
-      1) lead field_data / payload / webhook
-      2) Instant Form tracking_parameters
-      3) Ad url_tags (Ads Manager URL parameters)
-      4) form-name fallback for medium/campaign; source defaults to facebook_lead_ads
+    Instant Forms do not send utm_* names. Ads Manager CSV sends form_name /
+    campaign_name / ad_name / adset_name instead. We match:
+
+      utm_source   ← facebook_lead_ads (or a real utm_source if present)
+      utm_medium   ← form_name
+      utm_campaign ← campaign_name, else form_name
+      utm_content  ← utm_content if present, else ad_name
+      utm_term     ← utm_term if present, else adset_name
+
+    Explicit utm_* from tracking_parameters / url_tags / field_data still win.
     """
     payload = lead_payload or {}
     webhook = webhook_value or {}
@@ -629,6 +654,9 @@ def meta_instant_form_utm_fields(
     tracking = form_tracking or {}
     from_ad_tags = parse_utm_query_string(ad_url_tags)
     form_token = form_name_to_utm_token(form_name)
+    campaign_token = form_name_to_utm_token(campaign_name) or str(campaign_name or "").strip()
+    ad_token = str(ad_name or "").strip() or form_name_to_utm_token(ad_name)
+    adset_token = str(adset_name or "").strip() or form_name_to_utm_token(adset_name)
 
     source = (
         _pick_passed_utm(payload, webhook, mapped, tracking, from_ad_tags, keys=("utm_source", "utmSource"))
@@ -648,16 +676,19 @@ def meta_instant_form_utm_fields(
             from_ad_tags,
             keys=("utm_campaign", "utmCampaign", "campaign"),
         )
+        or campaign_token
         or form_token
         or form_id
         or ad_id
         or medium
     )
-    content = _pick_passed_utm(
-        payload, webhook, mapped, tracking, from_ad_tags, keys=("utm_content", "utmContent")
+    content = (
+        _pick_passed_utm(payload, webhook, mapped, tracking, from_ad_tags, keys=("utm_content", "utmContent"))
+        or ad_token
     )
-    term = _pick_passed_utm(
-        payload, webhook, mapped, tracking, from_ad_tags, keys=("utm_term", "utmTerm")
+    term = (
+        _pick_passed_utm(payload, webhook, mapped, tracking, from_ad_tags, keys=("utm_term", "utmTerm"))
+        or adset_token
     )
 
     return {
@@ -919,17 +950,39 @@ def create_crm_lead_from_meta(
         or ""
     ).strip()
     form_id = str(lead_payload.get("form_id") or webhook_value.get("form_id") or "").strip()
-    ad_id = str(lead_payload.get("ad_id") or webhook_value.get("ad_id") or "").strip()
+    ad_id = str(
+        lead_payload.get("ad_id")
+        or webhook_value.get("ad_id")
+        or webhook_value.get("adgroup_id")
+        or ""
+    ).strip()
     adset_id = str(lead_payload.get("adset_id") or webhook_value.get("adset_id") or "").strip()
     campaign_id = str(
         lead_payload.get("campaign_id") or webhook_value.get("campaign_id") or ""
     ).strip()
+    ad_name = str(
+        lead_payload.get("ad_name") or webhook_value.get("ad_name") or ""
+    ).strip()
+    adset_name = str(
+        lead_payload.get("adset_name") or webhook_value.get("adset_name") or ""
+    ).strip()
+    campaign_name = str(
+        lead_payload.get("campaign_name") or webhook_value.get("campaign_name") or ""
+    ).strip()
     form_tracking = fetch_form_tracking_parameters(form_id) if form_id else {}
-    ad_url_tags = fetch_ad_url_tags(ad_id) if ad_id else ""
+    ad_details = fetch_ad_details(ad_id) if ad_id else {"name": "", "url_tags": ""}
+    if not ad_name:
+        ad_name = ad_details.get("name") or ""
+    ad_url_tags = ad_details.get("url_tags") or ""
+    if not ad_url_tags and ad_name:
+        ad_url_tags = ad_name
     utm = meta_instant_form_utm_fields(
         form_name=form_name,
         form_id=form_id,
         ad_id=ad_id,
+        ad_name=ad_name,
+        adset_name=adset_name,
+        campaign_name=campaign_name,
         lead_payload=lead_payload,
         webhook_value=webhook_value,
         fields=fields,
@@ -942,8 +995,11 @@ def create_crm_lead_from_meta(
         "meta_form_id": form_id,
         "meta_form_name": form_name,
         "meta_ad_id": ad_id,
+        "meta_ad_name": ad_name,
         "meta_adset_id": adset_id,
+        "meta_adset_name": adset_name,
         "meta_campaign_id": campaign_id,
+        "meta_campaign_name": campaign_name,
         "meta_ad_url_tags": ad_url_tags,
         "meta_form_tracking_parameters": form_tracking,
         "meta_page_id": str(webhook_value.get("page_id") or ""),
@@ -1151,7 +1207,10 @@ def sync_page_leads(*, per_form_limit: int = 20, max_forms: int = 200) -> dict[s
     }
 
     lead_query: dict[str, str] = {
-        "fields": "id,created_time,form_id",
+        "fields": (
+            "id,created_time,form_id,ad_id,ad_name,adset_id,adset_name,"
+            "campaign_id,campaign_name,field_data,platform,is_organic"
+        ),
         "limit": str(max(1, min(per_form_limit, 50))),
     }
     if since is not None:
@@ -1217,6 +1276,12 @@ def sync_page_leads(*, per_form_limit: int = 20, max_forms: int = 200) -> dict[s
                         "form_id": str(lead.get("form_id") or form_id),
                         "page_id": page_id,
                         "created_time": lead.get("created_time"),
+                        "ad_id": lead.get("ad_id") or "",
+                        "ad_name": lead.get("ad_name") or "",
+                        "adset_id": lead.get("adset_id") or "",
+                        "adset_name": lead.get("adset_name") or "",
+                        "campaign_id": lead.get("campaign_id") or "",
+                        "campaign_name": lead.get("campaign_name") or "",
                     },
                     form_name=form_name,
                 )
