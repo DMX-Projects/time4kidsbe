@@ -67,6 +67,27 @@ class MetaInstantFormUtmTests(SimpleTestCase):
         )
         self.assertEqual(utm["utm_content"], "dm")
 
+    def test_instant_form_csv_names_map_to_utm_columns(self):
+        utm = meta_instant_form_utm_fields(
+            form_name="BCWW TK Kerala LLK Ex P1 - R1",
+            campaign_name="WTC Leadgen P1 Kerala",
+            ad_name="dm",
+            adset_name="Kerala LLK Ex P1",
+        )
+        self.assertEqual(utm["utm_source"], "facebook_lead_ads")
+        self.assertEqual(utm["utm_medium"], "BCWW_TK_Kerala_LLK_Ex_P1_R1")
+        self.assertEqual(utm["utm_campaign"], "WTC_Leadgen_P1_Kerala")
+        self.assertEqual(utm["utm_content"], "dm")
+        self.assertEqual(utm["utm_term"], "Kerala LLK Ex P1")
+
+    def test_explicit_utm_content_wins_over_ad_name(self):
+        utm = meta_instant_form_utm_fields(
+            form_name="BCWW TK Kerala LLK Ex P1 - R1",
+            ad_name="some_ad_creative",
+            form_tracking={"utm_content": "dm"},
+        )
+        self.assertEqual(utm["utm_content"], "dm")
+
 
 class CrmGoogleBucketTests(SimpleTestCase):
     def test_wb_meta_lead_is_not_counted_as_google(self):
