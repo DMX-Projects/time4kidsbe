@@ -66,6 +66,16 @@ CRM_ASSIGNABLE_DESIGNATIONS = (
     "Assistant Manager",
 )
 
+# AP / Telangana have two same-scope handlers and no city split on the sheet.
+# Auto-assign shares new Hyd/Andhra leads evenly between them (least current load).
+AP_TS_EQUAL_SHARE_EMAILS = frozenset(
+    {
+        "saikishore@timekidspreschools.com",
+        "harshit@timekidspreschools.com",
+    }
+)
+AP_TS_STATE_CODES = frozenset({"AP", "TG", "TS"})
+
 # TKPL Franchise sheet — handlers under each Zonal Manager (Select User / assign for franchise leads).
 ZONAL_MANAGER_FRANCHISE_TEAM_EMAILS: dict[str, frozenset[str]] = {
     "tejbal@timekidspreschools.com": frozenset(
@@ -675,6 +685,177 @@ def _pipeline_handler_emails(pipeline: str | None) -> frozenset[str]:
     return frozenset(email for team in teams for email in team)
 
 
+def _is_ap_ts_geo(state: str | None, city: str | None) -> bool:
+    return resolve_lead_state_code(state, city) in AP_TS_STATE_CODES
+
+
+# Closed / terminal — do not count toward equal-share load.
+_CRM_CLOSED_STATUSES = frozenset(
+    {
+        "not_interested",
+        "wrong_enquiry",
+        "converted_admission",
+        "converted_mou_signed",
+        "converted_agreement_signed",
+        "joined_competition",
+    }
+)
+
+
+def _crm_assigned_load(user_id: int) -> int:
+    """Open CRM leads currently on this login (excludes closed/converted)."""
+    from .models import CrmLead, Enquiry, FranchiseEnquiry, KidsEnquiry
+
+    def _open_count(model) -> int:
+        qs = model.objects.filter(assigned_user_id=user_id)
+        if any(f.name == "status" for f in model._meta.fields):
+            qs = qs.exclude(status__in=_CRM_CLOSED_STATUSES)
+        return qs.count()
+
+    return (
+        _open_count(CrmLead)
+        + _open_count(Enquiry)
+        + _open_count(FranchiseEnquiry)
+        + _open_count(KidsEnquiry)
+    )
+
+
+def _pick_least_loaded_user(users: list[User]) -> User:
+    """Prefer the handler with fewer assigned leads; on a tie, not whoever got the last one."""
+    from .models import CrmLead
+
+    if len(users) == 1:
+        return users[0]
+    loads = [(_crm_assigned_load(user.id), user) for user in users]
+    min_load = min(load for load, _user in loads)
+    tied = [user for load, user in loads if load == min_load]
+    if len(tied) == 1:
+        return tied[0]
+    last = (
+        CrmLead.objects.filter(assigned_user_id__in=[user.id for user in tied])
+        .order_by("-created_at", "-id")
+        .first()
+    )
+    if last and last.assigned_user_id:
+        for user in tied:
+            if user.id != last.assigned_user_id:
+                return user
+    return min(tied, key=lambda user: user.id)
+
+
+def _pick_pipeline_handler(
+    matches: list[User],
+    allowed_handlers: frozenset[str],
+    *,
+    state: str | None,
+    city: str | None,
+) -> User | None:
+    """First matching sheet handler, with AP/TS shared evenly between Sai and Harshit."""
+    candidates: list[User] = []
+    seen: set[int] = set()
+    for user in matches:
+        email = (user.email or "").strip().lower()
+        if email not in allowed_handlers or user.id in seen:
+            continue
+        seen.add(user.id)
+        candidates.append(user)
+    if not candidates:
+        return None
+    if _is_ap_ts_geo(state, city):
+        peers = [
+            user
+            for user in candidates
+            if (user.email or "").strip().lower() in AP_TS_EQUAL_SHARE_EMAILS
+        ]
+        if len(peers) >= 2:
+            return _pick_least_loaded_user(peers)
+        if len(peers) == 1:
+            return peers[0]
+    return candidates[0]
+
+
+def _ap_ts_lead_q():
+    from django.db.models import Q
+
+    return (
+        Q(state__icontains="andhra")
+        | Q(state__icontains="telangana")
+        | Q(state__iexact="AP")
+        | Q(state__iexact="TG")
+        | Q(state__iexact="TS")
+        | Q(city__icontains="hyderabad")
+        | Q(city__icontains="secunderabad")
+    )
+
+
+def ap_ts_equal_share_users() -> list[User]:
+    """Live Sai Kishore / Harshit rows (email match is case-insensitive)."""
+    users: list[User] = []
+    seen: set[int] = set()
+    for email in AP_TS_EQUAL_SHARE_EMAILS:
+        user = User.objects.filter(email__iexact=email, is_active=True).first()
+        if user and user.id not in seen:
+            seen.add(user.id)
+            users.append(user)
+    return users
+
+
+def rebalance_ap_ts_equal_share(*, dry_run: bool = True) -> dict:
+    """
+    Move untouched AP/TS campaign leads so Sai and Harshit each have
+    about half. In-progress leads stay with the current owner.
+    """
+    from .models import CrmLead, CrmLeadStatus
+
+    peers = ap_ts_equal_share_users()
+    if len(peers) < 2:
+        return {"moved": 0, "dry_run": dry_run, "reason": "need both AP/TS handlers"}
+
+    peer_ids = [user.id for user in peers]
+    untouched = list(
+        CrmLead.objects.filter(
+            _ap_ts_lead_q(),
+            assigned_user_id__in=peer_ids,
+            status=CrmLeadStatus.UNTOUCHED,
+            meeting_fixed=False,
+            meeting_done=False,
+        )
+        .filter(meeting_date__isnull=True)
+        .order_by("-created_at", "-id")
+    )
+    counts = {user.id: 0 for user in peers}
+    for lead in untouched:
+        counts[lead.assigned_user_id] += 1
+    heavier = max(peers, key=lambda user: (counts[user.id], -user.id))
+    lighter = min(peers, key=lambda user: (counts[user.id], -user.id))
+    to_move = (counts[heavier.id] - counts[lighter.id]) // 2
+    if to_move <= 0:
+        return {
+            "moved": 0,
+            "dry_run": dry_run,
+            "heavier": heavier.email,
+            "lighter": lighter.email,
+            "untouched": {user.email: counts[user.id] for user in peers},
+        }
+
+    movable = [
+        lead for lead in untouched if lead.assigned_user_id == heavier.id
+    ][:to_move]
+    if not dry_run:
+        for lead in movable:
+            lead.assigned_user = lighter
+            lead.save(update_fields=["assigned_user", "updated_at"])
+
+    return {
+        "moved": len(movable),
+        "dry_run": dry_run,
+        "heavier": heavier.email,
+        "lighter": lighter.email,
+        "untouched_before": {user.email: counts[user.id] for user in peers},
+        "lead_ids": [lead.id for lead in movable],
+    }
+
+
 def suggest_assignee_for_geo(
     state: str | None = None,
     city: str | None = None,
@@ -687,7 +868,7 @@ def suggest_assignee_for_geo(
 
     Meta / Facebook (``ignore_city=True``):
     1. If city is present and matches a pipeline handler → that manager
-       (e.g. AP/TS + city → Sai Kishore / Harshit on franchise sheet).
+       (e.g. AP/TS + city → Sai Kishore / Harshit, shared evenly).
     2. Else state-only → covering Regional Manager, then Zonal Manager.
     """
     allowed_handlers = _pipeline_handler_emails(pipeline)
@@ -697,10 +878,11 @@ def suggest_assignee_for_geo(
     # or Instant Form city that happens to match territory).
     if city_name:
         city_matches = crm_users_matching_geo(state, city_name, ignore_city=False)
-        for user in city_matches:
-            email = (user.email or "").strip().lower()
-            if email in allowed_handlers:
-                return user
+        picked = _pick_pipeline_handler(
+            city_matches, allowed_handlers, state=state, city=city_name
+        )
+        if picked:
+            return picked
 
     if ignore_city:
         state_matches = crm_users_matching_geo(state, None, ignore_city=True)
@@ -719,10 +901,11 @@ def suggest_assignee_for_geo(
     matches = crm_users_matching_geo(state, city_name or None, ignore_city=False)
     if not matches:
         return None
-    for user in matches:
-        email = (user.email or "").strip().lower()
-        if email in allowed_handlers:
-            return user
+    picked = _pick_pipeline_handler(
+        matches, allowed_handlers, state=state, city=city_name or None
+    )
+    if picked:
+        return picked
     for user in matches:
         email = (user.email or "").strip().lower()
         if email in ZONAL_MANAGER_ASSIGN_EMAILS:
