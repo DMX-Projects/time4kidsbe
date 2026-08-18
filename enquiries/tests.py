@@ -192,3 +192,102 @@ class RestrictedAgencyViewerTests(TestCase):
         result = filter_qs_by_zone_or_assigned(qs, __import__('django.db.models').db.models.Q(state__iexact='West Bengal'), request)
 
         self.assertEqual(result.count(), 1)
+
+
+class ApTsEqualShareAssignTests(TestCase):
+    def setUp(self):
+        from accounts.models import UserRole
+        from enquiries.crm_users import suggest_assignee_for_geo, rebalance_ap_ts_equal_share
+
+        self.suggest_assignee_for_geo = suggest_assignee_for_geo
+        self.rebalance_ap_ts_equal_share = rebalance_ap_ts_equal_share
+        self.harshit = User.objects.create_user(
+            email="harshit@timekidspreschools.com",
+            password="testpass123",
+            role=UserRole.CRM,
+            full_name="Harshit Katare",
+            crm_states="Andhra Pradesh, Telangana",
+        )
+        self.sai = User.objects.create_user(
+            email="saikishore@timekidspreschools.com",
+            password="testpass123",
+            role=UserRole.CRM,
+            full_name="Sai Kishore",
+            crm_states="Andhra Pradesh, Telangana",
+        )
+        self.jayaraj = User.objects.create_user(
+            email="jayaraj@timekidspreschools.com",
+            password="testpass123",
+            role=UserRole.CRM,
+            full_name="M. Jayaraj",
+            crm_states="Tamil Nadu",
+        )
+        self.sivaraman = User.objects.create_user(
+            email="sivaraman@timekidspreschools.com",
+            password="testpass123",
+            role=UserRole.CRM,
+            full_name="Sivaraman",
+            crm_states="Tamil Nadu",
+        )
+
+    def _assign(self, user, *, state, city, status="untouched"):
+        return CrmLead.objects.create(
+            full_name=f"Lead {user.id} {city}",
+            mobile="9999999999",
+            email="lead@example.com",
+            state=state,
+            city=city,
+            source=CrmLeadSource.JULY_META,
+            status=status,
+            assigned_user=user,
+        )
+
+    def test_hyd_and_andra_alternate_between_sai_and_harshit(self):
+        first = self.suggest_assignee_for_geo(
+            "Telangana", "Hyderabad", pipeline="franchise"
+        )
+        self.assertIsNotNone(first)
+        self._assign(first, state="Telangana", city="Hyderabad")
+
+        second = self.suggest_assignee_for_geo(
+            "Andhra Pradesh", "Vijayawada", pipeline="franchise"
+        )
+        self.assertIsNotNone(second)
+        self.assertNotEqual(first.id, second.id)
+        self.assertSetEqual(
+            {first.email.lower(), second.email.lower()},
+            {"harshit@timekidspreschools.com", "saikishore@timekidspreschools.com"},
+        )
+
+        self._assign(second, state="Andhra Pradesh", city="Vijayawada")
+        third = self.suggest_assignee_for_geo(
+            "Telangana", "Hyderabad", pipeline="franchise", ignore_city=True
+        )
+        self.assertEqual(third.id, first.id)
+
+    def test_tamil_nadu_still_goes_to_first_handler_not_round_robin(self):
+        for _ in range(3):
+            self._assign(self.jayaraj, state="Tamil Nadu", city="Chennai")
+        picked = self.suggest_assignee_for_geo(
+            "Tamil Nadu", "Chennai", pipeline="franchise"
+        )
+        self.assertEqual(picked.id, self.jayaraj.id)
+
+    def test_rebalance_moves_untouched_only(self):
+        for _ in range(4):
+            self._assign(self.harshit, state="Telangana", city="Hyderabad")
+        self._assign(self.harshit, state="Andhra Pradesh", city="Guntur", status="follow_up")
+        result = self.rebalance_ap_ts_equal_share(dry_run=False)
+        self.assertEqual(result["moved"], 2)
+        self.assertEqual(
+            CrmLead.objects.filter(assigned_user=self.harshit).count(), 3
+        )
+        self.assertEqual(
+            CrmLead.objects.filter(assigned_user=self.sai).count(), 2
+        )
+        self.assertEqual(
+            CrmLead.objects.filter(
+                assigned_user=self.harshit, status="follow_up"
+            ).count(),
+            1,
+        )
