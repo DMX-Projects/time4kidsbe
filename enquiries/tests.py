@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from django.test import RequestFactory, SimpleTestCase, TestCase
+from django.test import RequestFactory, SimpleTestCase, TestCase, override_settings
 
 from accounts.crm_zones import filter_qs_by_zone_or_assigned
 from accounts.models import User
@@ -8,6 +8,7 @@ from enquiries.crm_api import campaign_channel_api_key, effective_source_bucket_
 from enquiries.emails import lead_source_label_for_crm_lead
 from enquiries.meta_leads import (
     form_name_to_utm_token,
+    is_allowed_meta_form,
     meta_instant_form_utm_fields,
     parse_utm_query_string,
 )
@@ -87,6 +88,17 @@ class MetaInstantFormUtmTests(SimpleTestCase):
             form_tracking={"utm_content": "dm"},
         )
         self.assertEqual(utm["utm_content"], "dm")
+
+
+class MetaFormAllowlistTests(SimpleTestCase):
+    @override_settings(META_LEADS_FORM_NAMES="", META_LEADS_FORM_PREFIXES="BCWW TK", META_LEADS_FORM_IDS="")
+    def test_prefix_mode_captures_new_bcww_campaign_forms(self):
+        self.assertTrue(is_allowed_meta_form(form_name="BCWW TK Tamil Nadu All Interest P1"))
+        self.assertTrue(is_allowed_meta_form(form_name="BCWW TK Tamil Nadu All Interest P1 - R2"))
+        self.assertTrue(is_allowed_meta_form(form_name="BCWW TK Kerala LLK Ex P1 - R1"))
+        self.assertFalse(is_allowed_meta_form(form_name="TIME Kids Old City Form"))
+        self.assertFalse(is_allowed_meta_form(form_name="Ants WB Form"))
+        self.assertFalse(is_allowed_meta_form(form_name=""))
 
 
 class CrmGoogleBucketTests(SimpleTestCase):

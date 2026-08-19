@@ -146,6 +146,7 @@ _BCWW_TK_SEGMENTS = (
 BCWW_TK_KERALA_R1_FORM_NAMES: frozenset[str] = frozenset(
     f"BCWW TK Kerala {segment} - R1" for segment in _BCWW_TK_SEGMENTS
 )
+# Original sheet names (kept for reference). Default import gate is prefix "BCWW TK".
 BCWW_TK_CAMPAIGN_FORM_NAMES: frozenset[str] = frozenset(
     f"BCWW TK {state} {segment}"
     for state in _BCWW_TK_STATES
@@ -257,19 +258,17 @@ def meta_leads_form_id_allowlist() -> set[str]:
 
 def meta_leads_form_name_allowlist() -> set[str] | None:
     """
-    Exact form-name allowlist.
+    Exact form-name allowlist, or None to use name prefixes.
 
-    Default: BCWW TK campaign forms (base + R1 city-dropdown revisions).
-    META_LEADS_FORM_NAMES=name1,name2 → custom exact list.
-    META_LEADS_FORM_NAMES=* → disable exact-name gate (use prefixes / IDs only).
+    Default / ``*``: prefix mode — any Instant Form whose name starts with
+    ``BCWW TK`` (new campaign revisions like ``… - R2`` capture automatically).
+    ``META_LEADS_FORM_NAMES=name1,name2`` → lock to that exact list only.
     """
     raw = getattr(settings, "META_LEADS_FORM_NAMES", None)
     if raw is None:
         raw = os.getenv("META_LEADS_FORM_NAMES")
-    if raw is None or not str(raw).strip():
-        return set(BCWW_TK_CAMPAIGN_FORM_NAMES)
-    text = str(raw).strip()
-    if text == "*":
+    text = str(raw or "").strip()
+    if not text or text == "*":
         return None
     return {part.strip() for part in text.split(",") if part.strip()}
 
@@ -295,12 +294,13 @@ def meta_leads_form_prefixes() -> list[str]:
 
 def is_allowed_meta_form(*, form_id: str = "", form_name: str = "") -> bool:
     """
-    Gate Instant Form imports to the campaign sheet forms only.
+    Gate Instant Form imports to BCWW TK campaign forms.
 
     Priority:
     1. META_LEADS_FORM_IDS — exact form ID always allowed.
-    2. Exact form-name allowlist (default: BCWW TK base + R1 forms).
-    3. If exact list disabled (*): META_LEADS_FORM_PREFIXES (default BCWW TK).
+    2. Exact form-name list, only if META_LEADS_FORM_NAMES is a comma list.
+    3. Default: META_LEADS_FORM_PREFIXES (BCWW TK) — new ``BCWW TK …`` forms
+       are captured without updating an allowlist.
     """
     form_id = str(form_id or "").strip()
     form_name = str(form_name or "").strip()
@@ -1168,7 +1168,7 @@ def sync_page_leads(*, per_form_limit: int = 20, max_forms: int = 200) -> dict[s
     Use as a reliable auto-sync backup while webhook delivery is Pending
     (common for unpublished / new apps). Dedupes via meta_leadgen_id.
 
-    Honours META_LEADS_SYNC_SINCE and the BCWW TK form allowlist so only the
+    Honours META_LEADS_SYNC_SINCE and the BCWW TK name prefix so only
     paid-campaign Instant Forms are imported — not old city forms.
     """
     page_id = meta_page_id()

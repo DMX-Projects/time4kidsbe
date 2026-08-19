@@ -345,11 +345,10 @@ META_PAGE_ID = (os.getenv("META_PAGE_ID", "") or "").strip() or "187099544682886
 # Only import Instant Form leads created on/after this date (YYYY-MM-DD).
 # Stops auto-sync from pulling old historical form leads before campaigns go live.
 META_LEADS_SYNC_SINCE = (os.getenv("META_LEADS_SYNC_SINCE", "") or "").strip()
-# Only sync Instant Forms matching these name prefixes (used when exact list disabled).
-# Default in code: "BCWW TK". Use "*" to allow all form names.
+# Instant Forms whose name starts with this prefix are imported (default: BCWW TK).
+# New campaign forms named "BCWW TK …" capture automatically. Use "*" to allow all names.
 META_LEADS_FORM_PREFIXES = (os.getenv("META_LEADS_FORM_PREFIXES", "BCWW TK") or "BCWW TK").strip()
-# Exact form names (comma-separated). Empty = built-in base forms + verified Kerala R1 forms.
-# META_LEADS_FORM_NAMES=* disables the exact list (falls back to prefixes).
+# Empty or * = prefix mode. Comma-separated names lock the gate to an exact list.
 META_LEADS_FORM_NAMES = (os.getenv("META_LEADS_FORM_NAMES", "") or "").strip()
 # Optional exact form IDs (comma-separated). Empty = rely on form names.
 META_LEADS_FORM_IDS = (os.getenv("META_LEADS_FORM_IDS", "") or "").strip()
