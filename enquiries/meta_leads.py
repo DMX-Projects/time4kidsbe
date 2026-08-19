@@ -39,6 +39,73 @@ _FIELD_ALIASES = {
     "state": "state",
 }
 
+# Instant Form tracking / Ads Manager CSV columns (hidden or export metadata).
+# CSV values use prefixes: l: lead, ag: ad, as: adset, c: campaign, f: form, p: phone.
+_TRACKING_FIELD_ALIASES = {
+    "ad_id": "ad_id",
+    "adid": "ad_id",
+    "adgroup_id": "ad_id",
+    "ad_name": "ad_name",
+    "adname": "ad_name",
+    "adset_id": "adset_id",
+    "adsetid": "adset_id",
+    "adset_name": "adset_name",
+    "adsetname": "adset_name",
+    "campaign_id": "campaign_id",
+    "campaignid": "campaign_id",
+    "campaign_name": "campaign_name",
+    "campaignname": "campaign_name",
+    "form_id": "form_id",
+    "formid": "form_id",
+    "form_name": "form_name",
+    "formname": "form_name",
+    "platform": "platform",
+    "is_organic": "is_organic",
+    "created_time": "created_time",
+    "fbclid": "fbclid",
+}
+
+_META_EXPORT_ID_PREFIXES = ("l:", "ag:", "as:", "c:", "f:", "p:")
+
+
+def _normalize_meta_field_key(name: str) -> str:
+    return re.sub(r"[\s.\-]+", "_", str(name or "").strip().lower()).strip("_")
+
+
+def _is_unresolved_meta_macro(value: str) -> bool:
+    text = str(value or "").strip()
+    return text.startswith("{{") and text.endswith("}}")
+
+
+def strip_meta_export_prefix(value: Any) -> str:
+    """Strip Ads Manager CSV prefixes: l: / ag: / as: / c: / f: / p:."""
+    text = str(value or "").strip().strip('"')
+    if not text:
+        return ""
+    lower = text.lower()
+    for prefix in _META_EXPORT_ID_PREFIXES:
+        if lower.startswith(prefix):
+            return text[len(prefix) :].strip().strip('"')
+    return text
+
+
+def _first_tracking_id(*values: Any) -> str:
+    """First real tracking id — skip blanks, {{ad.id}} macros, and CSV prefixes."""
+    for value in values:
+        text = strip_meta_export_prefix(value)
+        if text and not _is_unresolved_meta_macro(text):
+            return text
+    return ""
+
+
+def _first_tracking_text(*values: Any) -> str:
+    """First non-empty name/label (ad_name, campaign_name, …)."""
+    for value in values:
+        text = str(value or "").strip().strip('"')
+        if text and not _is_unresolved_meta_macro(text):
+            return text
+    return ""
+
 
 def meta_page_access_token() -> str:
     return (getattr(settings, "META_PAGE_ACCESS_TOKEN", "") or "").strip()
@@ -637,16 +704,16 @@ def meta_instant_form_utm_fields(
     """
     Map Instant Form data onto CRM UTM columns.
 
-    Instant Forms do not send utm_* names. Ads Manager CSV sends form_name /
-    campaign_name / ad_name / adset_name instead. We match:
+    Instant Forms do not send utm_* names. This mapping applies to every
+    Instant Form (all states / segments / R1 / R2), not one geography.
 
       utm_source   ← facebook_lead_ads (or a real utm_source if present)
       utm_medium   ← form_name
       utm_campaign ← campaign_name, else form_name
-      utm_content  ← utm_content if present, else ad_name
+      utm_content  ← utm_content if present, else ad_id
       utm_term     ← utm_term if present, else adset_name
 
-    Explicit utm_* from tracking_parameters / url_tags / field_data still win.
+    CRM still labels the column utm_content. Instant Form value is ad_id.
     """
     payload = lead_payload or {}
     webhook = webhook_value or {}
@@ -655,8 +722,8 @@ def meta_instant_form_utm_fields(
     from_ad_tags = parse_utm_query_string(ad_url_tags)
     form_token = form_name_to_utm_token(form_name)
     campaign_token = form_name_to_utm_token(campaign_name) or str(campaign_name or "").strip()
-    ad_token = str(ad_name or "").strip() or form_name_to_utm_token(ad_name)
     adset_token = str(adset_name or "").strip() or form_name_to_utm_token(adset_name)
+    ad_id_token = strip_meta_export_prefix(ad_id)
 
     source = (
         _pick_passed_utm(payload, webhook, mapped, tracking, from_ad_tags, keys=("utm_source", "utmSource"))
@@ -679,12 +746,12 @@ def meta_instant_form_utm_fields(
         or campaign_token
         or form_token
         or form_id
-        or ad_id
+        or ad_id_token
         or medium
     )
     content = (
         _pick_passed_utm(payload, webhook, mapped, tracking, from_ad_tags, keys=("utm_content", "utmContent"))
-        or ad_token
+        or ad_id_token
     )
     term = (
         _pick_passed_utm(payload, webhook, mapped, tracking, from_ad_tags, keys=("utm_term", "utmTerm"))
@@ -728,6 +795,11 @@ def _field_map(field_data: list[dict[str, Any]] | None) -> dict[str, str]:
             }.get(name.lower().replace(" ", "").strip())
             if utm_key and value:
                 mapped[utm_key] = value
+                continue
+            track_key = _TRACKING_FIELD_ALIASES.get(_normalize_meta_field_key(name))
+            if track_key:
+                if value and not _is_unresolved_meta_macro(value):
+                    mapped[track_key] = value
                 continue
             extras.append(f"{name}: {value}")
             # Soft-match custom franchise questions
@@ -944,32 +1016,77 @@ def create_crm_lead_from_meta(
     if expected_start and expected_start != "Test":
         expected_start = _format_meta_choice_label(expected_start)
 
-    leadgen_id = str(
-        lead_payload.get("id")
-        or webhook_value.get("leadgen_id")
-        or ""
-    ).strip()
-    form_id = str(lead_payload.get("form_id") or webhook_value.get("form_id") or "").strip()
-    ad_id = str(
-        lead_payload.get("ad_id")
-        or webhook_value.get("ad_id")
-        or webhook_value.get("adgroup_id")
-        or ""
-    ).strip()
-    adset_id = str(lead_payload.get("adset_id") or webhook_value.get("adset_id") or "").strip()
-    campaign_id = str(
-        lead_payload.get("campaign_id") or webhook_value.get("campaign_id") or ""
-    ).strip()
-    ad_name = str(
-        lead_payload.get("ad_name") or webhook_value.get("ad_name") or ""
-    ).strip()
-    adset_name = str(
-        lead_payload.get("adset_name") or webhook_value.get("adset_name") or ""
-    ).strip()
-    campaign_name = str(
-        lead_payload.get("campaign_name") or webhook_value.get("campaign_name") or ""
-    ).strip()
+    leadgen_id = _first_tracking_id(
+        lead_payload.get("id"),
+        webhook_value.get("leadgen_id"),
+        fields.get("id"),
+    )
+    form_id = _first_tracking_id(
+        lead_payload.get("form_id"),
+        webhook_value.get("form_id"),
+        fields.get("form_id"),
+    )
     form_tracking = fetch_form_tracking_parameters(form_id) if form_id else {}
+    # Same columns as Ads Manager Instant Form CSV:
+    # id, created_time, ad_id, ad_name, adset_id, adset_name, campaign_id,
+    # campaign_name, form_id, form_name, is_organic, platform
+    ad_id = _first_tracking_id(
+        lead_payload.get("ad_id"),
+        webhook_value.get("ad_id"),
+        webhook_value.get("adgroup_id"),
+        fields.get("ad_id"),
+        form_tracking.get("ad_id"),
+    )
+    adset_id = _first_tracking_id(
+        lead_payload.get("adset_id"),
+        webhook_value.get("adset_id"),
+        fields.get("adset_id"),
+        form_tracking.get("adset_id"),
+    )
+    campaign_id = _first_tracking_id(
+        lead_payload.get("campaign_id"),
+        webhook_value.get("campaign_id"),
+        fields.get("campaign_id"),
+        form_tracking.get("campaign_id"),
+    )
+    ad_name = _first_tracking_text(
+        lead_payload.get("ad_name"),
+        webhook_value.get("ad_name"),
+        fields.get("ad_name"),
+        form_tracking.get("ad_name"),
+    )
+    adset_name = _first_tracking_text(
+        lead_payload.get("adset_name"),
+        webhook_value.get("adset_name"),
+        fields.get("adset_name"),
+        form_tracking.get("adset_name"),
+    )
+    campaign_name = _first_tracking_text(
+        lead_payload.get("campaign_name"),
+        webhook_value.get("campaign_name"),
+        fields.get("campaign_name"),
+        form_tracking.get("campaign_name"),
+    )
+    if not form_name:
+        form_name = _first_tracking_text(
+            lead_payload.get("form_name"),
+            webhook_value.get("form_name"),
+            fields.get("form_name"),
+            form_tracking.get("form_name"),
+        )
+    platform = _first_tracking_text(
+        lead_payload.get("platform"),
+        webhook_value.get("platform"),
+        fields.get("platform"),
+        form_tracking.get("platform"),
+    )
+    is_organic_raw = _first_tracking_text(
+        lead_payload.get("is_organic"),
+        webhook_value.get("is_organic"),
+        fields.get("is_organic"),
+        form_tracking.get("is_organic"),
+    )
+    fbclid = _first_tracking_id(fields.get("fbclid"), form_tracking.get("fbclid"))
     ad_details = fetch_ad_details(ad_id) if ad_id else {"name": "", "url_tags": ""}
     if not ad_name:
         ad_name = ad_details.get("name") or ""
@@ -1002,6 +1119,9 @@ def create_crm_lead_from_meta(
         "meta_campaign_name": campaign_name,
         "meta_ad_url_tags": ad_url_tags,
         "meta_form_tracking_parameters": form_tracking,
+        "meta_platform": platform,
+        "meta_is_organic": is_organic_raw,
+        "meta_fbclid": fbclid,
         "meta_page_id": str(webhook_value.get("page_id") or ""),
         "meta_created_time": lead_payload.get("created_time") or webhook_value.get("created_time"),
         "meta_field_data": lead_payload.get("field_data") or [],
@@ -1062,11 +1182,11 @@ def process_leadgen_event(
     *,
     form_name: str | None = None,
 ) -> dict[str, Any]:
-    leadgen_id = str(webhook_value.get("leadgen_id") or "").strip()
+    leadgen_id = _first_tracking_id(webhook_value.get("leadgen_id"))
     if not leadgen_id:
         return {"ok": False, "error": "missing_leadgen_id"}
 
-    early_form_id = str(webhook_value.get("form_id") or "").strip()
+    early_form_id = _first_tracking_id(webhook_value.get("form_id"))
     early_form_name = (form_name or "").strip()
     if early_form_name or early_form_id:
         if early_form_name and not is_allowed_meta_form(
@@ -1108,7 +1228,7 @@ def process_leadgen_event(
             "reason": "before_sync_since",
         }
 
-    form_id = str(lead_payload.get("form_id") or webhook_value.get("form_id") or "").strip()
+    form_id = _first_tracking_id(lead_payload.get("form_id"), webhook_value.get("form_id"))
     resolved_form_name = (form_name or "").strip()
     if not resolved_form_name and form_id:
         resolved_form_name = fetch_form_name(form_id)
@@ -1259,7 +1379,7 @@ def sync_page_leads(*, per_form_limit: int = 20, max_forms: int = 200) -> dict[s
                 continue
 
         for lead in leads_payload.get("data") or []:
-            leadgen_id = str(lead.get("id") or "").strip()
+            leadgen_id = _first_tracking_id(lead.get("id"))
             if not leadgen_id:
                 continue
             if is_before_sync_cutoff(lead.get("created_time")):
