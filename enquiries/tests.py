@@ -7,10 +7,13 @@ from accounts.models import User
 from enquiries.crm_api import campaign_channel_api_key, effective_source_bucket_key, should_include_in_google_bucket
 from enquiries.emails import lead_source_label_for_crm_lead
 from enquiries.meta_leads import (
+    _field_map,
+    _first_tracking_id,
     form_name_to_utm_token,
     is_allowed_meta_form,
     meta_instant_form_utm_fields,
     parse_utm_query_string,
+    strip_meta_export_prefix,
 )
 from enquiries.models import CrmLead, CrmLeadSource
 
@@ -68,26 +71,76 @@ class MetaInstantFormUtmTests(SimpleTestCase):
         )
         self.assertEqual(utm["utm_content"], "dm")
 
+    def test_ad_id_maps_to_utm_content_for_any_instant_form(self):
+        for form_name in (
+            "BCWW TK Tamil Nadu All Interest P1",
+            "BCWW TK Karnataka RMK P1",
+            "BCWW TK Andhra Pradesh LLK Ex P1",
+            "BCWW TK Telangana Income P1",
+            "BCWW TK Maharashtra All Interest Ex P1",
+            "BCWW TK Kerala All Interest Ex P1 - R1",
+        ):
+            utm = meta_instant_form_utm_fields(
+                form_name=form_name,
+                ad_id="ag:120246896442180772",
+            )
+            self.assertEqual(utm["utm_content"], "120246896442180772", form_name)
+
     def test_instant_form_csv_names_map_to_utm_columns(self):
         utm = meta_instant_form_utm_fields(
-            form_name="BCWW TK Kerala LLK Ex P1 - R1",
-            campaign_name="WTC Leadgen P1 Kerala",
-            ad_name="dm",
-            adset_name="Kerala LLK Ex P1",
+            form_name="BCWW TK Kerala All Interest Ex P1 - R1",
+            campaign_name="Meta_Lead_Gen_Ex_P1_Kerala",
+            ad_id="ag:120246896442180772",
+            ad_name="Meta_Kerala_All Interest_Ex_P1 - Join without CTA",
+            adset_name="Meta_Kerala_All Interest_Ex_P1",
         )
         self.assertEqual(utm["utm_source"], "facebook_lead_ads")
-        self.assertEqual(utm["utm_medium"], "BCWW_TK_Kerala_LLK_Ex_P1_R1")
-        self.assertEqual(utm["utm_campaign"], "WTC_Leadgen_P1_Kerala")
-        self.assertEqual(utm["utm_content"], "dm")
-        self.assertEqual(utm["utm_term"], "Kerala LLK Ex P1")
+        self.assertEqual(utm["utm_medium"], "BCWW_TK_Kerala_All_Interest_Ex_P1_R1")
+        self.assertEqual(utm["utm_campaign"], "Meta_Lead_Gen_Ex_P1_Kerala")
+        self.assertEqual(utm["utm_content"], "120246896442180772")
+        self.assertEqual(utm["utm_term"], "Meta_Kerala_All Interest_Ex_P1")
 
-    def test_explicit_utm_content_wins_over_ad_name(self):
+    def test_explicit_utm_content_wins_over_ad_id(self):
         utm = meta_instant_form_utm_fields(
             form_name="BCWW TK Kerala LLK Ex P1 - R1",
-            ad_name="some_ad_creative",
+            ad_id="120246896442180772",
             form_tracking={"utm_content": "dm"},
         )
         self.assertEqual(utm["utm_content"], "dm")
+
+    def test_inline_form_params_capture_ad_id_from_field_data(self):
+        mapped = _field_map(
+            [
+                {"name": "full_name", "values": ["Ada"]},
+                {"name": "ad_id", "values": ["ag:120246896442180772"]},
+                {"name": "ad_name", "values": ["Meta_Kerala_All Interest_Ex_P1 - Join without CTA"]},
+                {"name": "adset_id", "values": ["as:120246827546650772"]},
+                {"name": "adset_name", "values": ["Meta_Kerala_All Interest_Ex_P1"]},
+                {"name": "campaign_id", "values": ["c:120246827546700772"]},
+                {"name": "campaign_name", "values": ["Meta_Lead_Gen_Ex_P1_Kerala"]},
+                {"name": "form_id", "values": ["f:2660208977769920"]},
+                {"name": "form_name", "values": ["BCWW TK Kerala All Interest Ex P1 - R1"]},
+                {"name": "platform", "values": ["ig"]},
+            ]
+        )
+        self.assertEqual(mapped["ad_id"], "ag:120246896442180772")
+        self.assertEqual(mapped["ad_name"], "Meta_Kerala_All Interest_Ex_P1 - Join without CTA")
+        self.assertEqual(mapped["campaign_id"], "c:120246827546700772")
+        self.assertEqual(mapped["form_id"], "f:2660208977769920")
+        self.assertEqual(mapped["platform"], "ig")
+        self.assertEqual(_first_tracking_id(mapped["ad_id"]), "120246896442180772")
+        self.assertEqual(_first_tracking_id(mapped["adset_id"]), "120246827546650772")
+        self.assertEqual(_first_tracking_id(mapped["campaign_id"]), "120246827546700772")
+        self.assertEqual(_first_tracking_id(mapped["form_id"]), "2660208977769920")
+        self.assertEqual(strip_meta_export_prefix("l:27933512212942750"), "27933512212942750")
+        self.assertEqual(strip_meta_export_prefix("p:+917306874088"), "+917306874088")
+        self.assertNotIn("ad_id", mapped.get("extra_qa", ""))
+        self.assertNotIn("120246896442180772", mapped.get("extra_qa", ""))
+
+    def test_inline_form_params_ignore_unresolved_macros(self):
+        mapped = _field_map([{"name": "ad_id", "values": ["{{ad.id}}"]}])
+        self.assertNotIn("ad_id", mapped)
+        self.assertEqual(_first_tracking_id("", "{{ad.id}}", "12021800111"), "12021800111")
 
 
 class MetaFormAllowlistTests(SimpleTestCase):

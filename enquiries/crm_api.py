@@ -562,7 +562,10 @@ def lead_to_dict(lead: CrmLead, *, include_detail: bool = False, request=None) -
         if not centre_name:
             centre_name = (lead.preferred_centre_location or "").strip()
 
-    cross_state = cross_state_form_info(state, city, getattr(lead, "raw_payload", None))
+    payload = getattr(lead, "raw_payload", None)
+    if not isinstance(payload, dict):
+        payload = {}
+    cross_state = cross_state_form_info(state, city, payload)
     if is_restricted_crm_viewer(request=request):
         cross_state = {
             "isCrossStateForm": False,
@@ -607,6 +610,15 @@ def lead_to_dict(lead: CrmLead, *, include_detail: bool = False, request=None) -
         "utmCampaign": lead.utm_campaign or "",
         "utmContent": getattr(lead, "utm_content", "") or "",
         "utmTerm": getattr(lead, "utm_term", "") or "",
+        "adId": str(payload.get("meta_ad_id") or ""),
+        "adName": str(payload.get("meta_ad_name") or ""),
+        "adsetId": str(payload.get("meta_adset_id") or ""),
+        "adsetName": str(payload.get("meta_adset_name") or ""),
+        "campaignId": str(payload.get("meta_campaign_id") or ""),
+        "campaignName": str(payload.get("meta_campaign_name") or ""),
+        "metaFormId": str(payload.get("meta_form_id") or ""),
+        "metaFormName": str(payload.get("meta_form_name") or ""),
+        "metaPlatform": str(payload.get("meta_platform") or ""),
         "comments": lead.comments or "",
         "status": lead.status,
         "meetingDate": _dt(lead.meeting_date),
@@ -2953,7 +2965,11 @@ def agency_lead_report_data(request) -> dict:
 
     leads = []
     for lead in lead_list:
-        dt_str = lead.created_at.strftime("%Y-%m-%d %H:%M:%S") if lead.created_at else ""
+        dt_str = (
+            timezone.localtime(lead.created_at).strftime("%Y-%m-%d %H:%M:%S")
+            if lead.created_at
+            else ""
+        )
         leads.append({
             "id": lead.id,
             "name": lead.full_name or "",
