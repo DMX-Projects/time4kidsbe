@@ -23,6 +23,7 @@ from enquiries.meta_capi import (
     meta_leadgen_id_from_lead,
     normalize_phone_e164_digits,
     send_crm_stage_event,
+    should_upload_capi_event,
 )
 from enquiries.models import CrmLead, CrmLeadSource
 
@@ -421,6 +422,9 @@ class MetaCapiPayloadTests(SimpleTestCase):
         self.assertTrue(is_qualified_capi_status("follow_up"))
         self.assertTrue(is_qualified_capi_status("hot"))
         self.assertTrue(is_qualified_capi_status("converted_agreement_signed"))
+        self.assertTrue(should_upload_capi_event("untouched", event_name="Lead"))
+        self.assertFalse(should_upload_capi_event("wrong_enquiry", event_name="Lead"))
+        self.assertFalse(should_upload_capi_event("untouched", event_name="Follow-up"))
 
     @override_settings(META_CAPI_ACCESS_TOKEN="test-token", META_CAPI_DATASET_ID="1502626011898766")
     def test_send_skips_unqualified_status(self):

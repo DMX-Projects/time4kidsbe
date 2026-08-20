@@ -35,8 +35,10 @@ EVENT_SOURCE = "crm"
 # Untouched / first CRM row = Meta's initial raw-lead stage.
 _INITIAL_STATUSES = frozenset({"", "untouched", "new"})
 
-# Only these CRM statuses are sent to Meta as qualified-lead events.
-# Untouched, not answering, not interested, and wrong enquiry are not sent.
+# These CRM stages are sent after a counsellor updates the lead.
+# Untouched is not a qualified stage, but a new Instant Form still sends "Lead"
+# so Meta lead coverage can reach ~60%.
+# Not answering, not interested, and wrong enquiry are never sent.
 QUALIFIED_CRM_STATUSES = frozenset(
     {
         "follow_up",
@@ -143,6 +145,15 @@ def split_name(full_name: str) -> tuple[str, str]:
 def is_qualified_capi_status(status: str) -> bool:
     """True only for team-defined qualified franchise CRM stages."""
     return str(status or "").strip().lower() in QUALIFIED_CRM_STATUSES
+
+
+def should_upload_capi_event(status: str, *, event_name: str | None = None) -> bool:
+    """Allow qualified stages, plus the initial Lead event for new Instant Forms."""
+    if is_qualified_capi_status(status):
+        return True
+    name = (event_name or "").strip()
+    status_key = str(status or "").strip().lower()
+    return name == "Lead" and status_key in _INITIAL_STATUSES
 
 
 def event_name_for_status(status: str) -> str:
@@ -382,10 +393,12 @@ def send_crm_stage_event(
         return {"ok": False, "skipped": True, "reason": "not_configured"}
     if not meta_leadgen_id_from_lead(lead):
         return {"ok": False, "skipped": True, "reason": "not_meta_instant_form"}
-    if not is_qualified_capi_status(getattr(lead, "status", "") or ""):
+    status = getattr(lead, "status", "") or ""
+    name = (event_name or event_name_for_status(status)).strip() or "Lead"
+    if not should_upload_capi_event(status, event_name=name):
         return {"ok": False, "skipped": True, "reason": "not_qualified_status"}
 
-    event = build_crm_event(lead, event_name=event_name, event_time=event_time)
+    event = build_crm_event(lead, event_name=name, event_time=event_time)
     if not event:
         return {"ok": False, "skipped": True, "reason": "insufficient_user_data"}
 
@@ -431,12 +444,13 @@ def schedule_crm_stage_event(lead: Any, *, event_name: str | None = None) -> Non
             return
         if not meta_leadgen_id_from_lead(lead):
             return
-        if not is_qualified_capi_status(getattr(lead, "status", "") or ""):
+        status = getattr(lead, "status", "") or ""
+        name = (event_name or event_name_for_status(status)).strip() or "Lead"
+        if not should_upload_capi_event(status, event_name=name):
             return
         pk = getattr(lead, "pk", None)
         if not pk:
             return
-        name = (event_name or event_name_for_status(getattr(lead, "status", "") or "")).strip() or "Lead"
         event_time = int(time.time())
 
         def _after_commit() -> None:
