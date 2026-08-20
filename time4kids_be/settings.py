@@ -360,6 +360,17 @@ try:
 except (TypeError, ValueError):
     META_LEADS_AUTO_SYNC_SECONDS = 300
 
+# --- Meta Conversions API (CRM / Conversion Leads) ---
+# Uploads Instant Form lead stage changes to the Pixel on the live BCWW ads account.
+# Dataset: Meta Pixel 1502626011898766 (T.I.M.E KIDS / BC Web Wise).
+# Token: Events Manager → that Pixel → Settings → Generate access token.
+META_CAPI_DATASET_ID = (os.getenv("META_CAPI_DATASET_ID", "") or "").strip() or "1502626011898766"
+META_CAPI_ACCESS_TOKEN = (os.getenv("META_CAPI_ACCESS_TOKEN", "") or "").strip()
+META_CAPI_API_VERSION = (os.getenv("META_CAPI_API_VERSION", "") or "").strip() or "v26.0"
+META_CAPI_LEAD_EVENT_SOURCE = (os.getenv("META_CAPI_LEAD_EVENT_SOURCE", "") or "").strip() or "TIME Kids CRM"
+# Optional. Only for Events Manager Test events tab — leave empty in production.
+META_CAPI_TEST_EVENT_CODE = (os.getenv("META_CAPI_TEST_EVENT_CODE", "") or "").strip()
+
 # Add file handler if enabled
 if ENABLE_FILE_LOGGING:
     (BASE_DIR / "logs").mkdir(exist_ok=True)
