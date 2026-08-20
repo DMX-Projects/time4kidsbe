@@ -15,6 +15,15 @@ from enquiries.meta_leads import (
     parse_utm_query_string,
     strip_meta_export_prefix,
 )
+from enquiries.meta_capi import (
+    build_crm_event,
+    event_name_for_status,
+    hash_sha256,
+    is_qualified_capi_status,
+    meta_leadgen_id_from_lead,
+    normalize_phone_e164_digits,
+    send_crm_stage_event,
+)
 from enquiries.models import CrmLead, CrmLeadSource
 
 
@@ -356,3 +365,70 @@ class ApTsEqualShareAssignTests(TestCase):
             ).count(),
             1,
         )
+
+
+class MetaCapiPayloadTests(SimpleTestCase):
+    def test_phone_hash_uses_india_country_code(self):
+        digits = normalize_phone_e164_digits("9876543210")
+        self.assertEqual(digits, "919876543210")
+        self.assertEqual(hash_sha256(digits), hash_sha256("919876543210"))
+
+    def test_event_name_maps_initial_and_crm_stages(self):
+        self.assertEqual(event_name_for_status("untouched"), "Lead")
+        self.assertEqual(event_name_for_status("follow_up"), "Follow-up")
+        self.assertEqual(event_name_for_status("visited_school"), "Visited the school")
+        self.assertEqual(event_name_for_status("converted_admission"), "Converted to Admission")
+
+    def test_build_crm_event_has_required_conversion_leads_fields(self):
+        lead = SimpleNamespace(
+            pk=12,
+            status="follow_up",
+            full_name="Anita Sharma",
+            mobile="9876543210",
+            email="anita@example.com",
+            city="Hyderabad",
+            state="Telangana",
+            landing_page_url="",
+            created_at=None,
+            raw_payload={"meta_leadgen_id": "1234567890123456"},
+        )
+        event = build_crm_event(lead)
+        self.assertIsNotNone(event)
+        self.assertEqual(event["event_name"], "Follow-up")
+        self.assertEqual(event["action_source"], "system_generated")
+        self.assertEqual(event["custom_data"]["event_source"], "crm")
+        self.assertEqual(event["custom_data"]["lead_event_source"], "TIME Kids CRM")
+        self.assertEqual(event["user_data"]["lead_id"], 1234567890123456)
+        self.assertEqual(event["user_data"]["em"], [hash_sha256("anita@example.com")])
+        self.assertEqual(event["user_data"]["ph"], [hash_sha256("919876543210")])
+
+    @override_settings(META_CAPI_ACCESS_TOKEN="test-token", META_CAPI_DATASET_ID="1502626011898766")
+    def test_send_skips_non_instant_form_leads(self):
+        lead = SimpleNamespace(pk=1, status="untouched", raw_payload={})
+        result = send_crm_stage_event(lead)
+        self.assertTrue(result.get("skipped"))
+        self.assertEqual(result.get("reason"), "not_meta_instant_form")
+
+    def test_leadgen_id_reader(self):
+        lead = SimpleNamespace(raw_payload={"meta_leadgen_id": " 9988776655443322 "})
+        self.assertEqual(meta_leadgen_id_from_lead(lead), "9988776655443322")
+
+    def test_only_qualified_statuses_are_sent(self):
+        self.assertFalse(is_qualified_capi_status("untouched"))
+        self.assertFalse(is_qualified_capi_status("not_answering_calls"))
+        self.assertFalse(is_qualified_capi_status("not_interested"))
+        self.assertFalse(is_qualified_capi_status("wrong_enquiry"))
+        self.assertTrue(is_qualified_capi_status("follow_up"))
+        self.assertTrue(is_qualified_capi_status("hot"))
+        self.assertTrue(is_qualified_capi_status("converted_agreement_signed"))
+
+    @override_settings(META_CAPI_ACCESS_TOKEN="test-token", META_CAPI_DATASET_ID="1502626011898766")
+    def test_send_skips_unqualified_status(self):
+        lead = SimpleNamespace(
+            pk=1,
+            status="wrong_enquiry",
+            raw_payload={"meta_leadgen_id": "1234567890123456"},
+        )
+        result = send_crm_stage_event(lead)
+        self.assertTrue(result.get("skipped"))
+        self.assertEqual(result.get("reason"), "not_qualified_status")
