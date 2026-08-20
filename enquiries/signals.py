@@ -34,7 +34,6 @@ def send_meta_capi_on_crm_stage_change(sender, instance: CrmLead, created: bool,
     try:
         from .meta_capi import (
             event_name_for_status,
-            is_qualified_capi_status,
             meta_leadgen_id_from_lead,
             schedule_crm_stage_event,
         )
@@ -42,10 +41,8 @@ def send_meta_capi_on_crm_stage_change(sender, instance: CrmLead, created: bool,
         if not meta_leadgen_id_from_lead(instance):
             return
         if created:
-            # New Instant Form rows start as Untouched — not a qualified event.
-            if not is_qualified_capi_status(instance.status):
-                return
-            schedule_crm_stage_event(instance, event_name=event_name_for_status(instance.status))
+            # New Instant Form → always send Lead so Meta can match coverage.
+            schedule_crm_stage_event(instance, event_name="Lead")
             return
         prev = getattr(instance, "_meta_capi_prev_status", None)
         if prev is None or prev == instance.status:
