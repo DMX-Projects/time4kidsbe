@@ -1181,6 +1181,7 @@ def process_leadgen_event(
     webhook_value: dict[str, Any],
     *,
     form_name: str | None = None,
+    send_emails: bool = True,
 ) -> dict[str, Any]:
     leadgen_id = _first_tracking_id(webhook_value.get("leadgen_id"))
     if not leadgen_id:
@@ -1256,18 +1257,20 @@ def process_leadgen_event(
             send_crm_lead_enquiry_emails,
         )
 
-        try:
-            send_crm_lead_enquiry_emails(lead)
-        except Exception:
-            logger.exception(
-                "CRM parent/team emails failed for Meta lead id=%s crm_id=%s",
-                leadgen_id,
-                lead.pk,
-            )
+        if send_emails:
+            try:
+                send_crm_lead_enquiry_emails(lead)
+            except Exception:
+                logger.exception(
+                    "CRM parent/team emails failed for Meta lead id=%s crm_id=%s",
+                    leadgen_id,
+                    lead.pk,
+                )
         try:
             assign_and_notify_new_lead(
                 lead,
                 lead_source=lead_source_label_for_crm_lead(lead),
+                notify=send_emails,
             )
         except Exception:
             logger.exception(
@@ -1281,7 +1284,12 @@ def process_leadgen_event(
     return {"ok": True, "crm_lead_id": lead.pk, "leadgen_id": leadgen_id}
 
 
-def sync_page_leads(*, per_form_limit: int = 20, max_forms: int = 200) -> dict[str, Any]:
+def sync_page_leads(
+    *,
+    per_form_limit: int = 20,
+    max_forms: int = 200,
+    send_emails: bool = True,
+) -> dict[str, Any]:
     """
     Poll Meta Instant Forms for new leads and import into CRM.
 
@@ -1404,6 +1412,7 @@ def sync_page_leads(*, per_form_limit: int = 20, max_forms: int = 200) -> dict[s
                         "campaign_name": lead.get("campaign_name") or "",
                     },
                     form_name=form_name,
+                    send_emails=send_emails,
                 )
                 summary["results"].append(result)
                 if result.get("reason") == "before_sync_since":

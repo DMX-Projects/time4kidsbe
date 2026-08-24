@@ -587,10 +587,12 @@ def send_crm_lead_assignment_email(obj, *, assigned_by=None) -> bool:
     return ok
 
 
-def assign_and_notify_new_lead(obj, *, lead_source: str = "") -> bool:
+def assign_and_notify_new_lead(obj, *, lead_source: str = "", notify: bool = True) -> bool:
     """
     Auto-assign a new lead to the best validated territory user (if still open),
-    then email CRM heads / the assignee.
+    then optionally email CRM heads / the assignee.
+
+    Set ``notify=False`` to assign only (used by manual Meta sync --no-emails).
 
     Validations kept:
     - Meta / Facebook: if state **and** city match a sheet manager → that manager;
@@ -691,6 +693,8 @@ def assign_and_notify_new_lead(obj, *, lead_source: str = "") -> bool:
                     )
 
     assigned = getattr(obj, "assigned_user", None)
+    if not notify:
+        return bool(assigned)
     preferred_to = (getattr(assigned, "email", None) or "").strip() or None
 
     return send_crm_heads_new_lead_reminder(
