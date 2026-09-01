@@ -9,6 +9,7 @@ from enquiries.emails import lead_source_label_for_crm_lead
 from enquiries.meta_leads import (
     _field_map,
     _first_tracking_id,
+    extract_url_tags_from_ad_graph,
     form_name_to_utm_token,
     is_allowed_meta_form,
     meta_instant_form_utm_fields,
@@ -81,7 +82,7 @@ class MetaInstantFormUtmTests(SimpleTestCase):
         )
         self.assertEqual(utm["utm_content"], "dm")
 
-    def test_ad_id_maps_to_utm_content_for_any_instant_form(self):
+    def test_ad_id_is_not_used_as_utm_content(self):
         for form_name in (
             "BCWW TK Tamil Nadu All Interest P1",
             "BCWW TK Karnataka RMK P1",
@@ -94,7 +95,7 @@ class MetaInstantFormUtmTests(SimpleTestCase):
                 form_name=form_name,
                 ad_id="ag:120246896442180772",
             )
-            self.assertEqual(utm["utm_content"], "120246896442180772", form_name)
+            self.assertEqual(utm["utm_content"], "", form_name)
 
     def test_instant_form_csv_names_map_to_utm_columns(self):
         utm = meta_instant_form_utm_fields(
@@ -107,7 +108,7 @@ class MetaInstantFormUtmTests(SimpleTestCase):
         self.assertEqual(utm["utm_source"], "facebook_lead_ads")
         self.assertEqual(utm["utm_medium"], "BCWW_TK_Kerala_All_Interest_Ex_P1_R1")
         self.assertEqual(utm["utm_campaign"], "Meta_Lead_Gen_Ex_P1_Kerala")
-        self.assertEqual(utm["utm_content"], "120246896442180772")
+        self.assertEqual(utm["utm_content"], "")
         self.assertEqual(utm["utm_term"], "Meta_Kerala_All Interest_Ex_P1")
 
     def test_explicit_utm_content_wins_over_ad_id(self):
@@ -117,6 +118,55 @@ class MetaInstantFormUtmTests(SimpleTestCase):
             form_tracking={"utm_content": "dm"},
         )
         self.assertEqual(utm["utm_content"], "dm")
+
+    def test_utm_content_keeps_any_campaign_assigned_value(self):
+        for value in ("dm_plain", "dm", "video", "carousel"):
+            utm = meta_instant_form_utm_fields(
+                form_name="BCWW TK Kerala LLK Ex P1 - R1",
+                ad_id="120246896442180772",
+                form_tracking={"utm_content": value},
+            )
+            self.assertEqual(utm["utm_content"], value)
+
+    def test_url_tags_utm_content_wins_over_ad_id(self):
+        utm = meta_instant_form_utm_fields(
+            form_name="BCWW TK Kerala LLK Ex P1 - R1",
+            ad_id="120246896442180772",
+            ad_url_tags="utm_content=dm_plain",
+        )
+        self.assertEqual(utm["utm_content"], "dm_plain")
+
+    def test_utm_content_matching_ad_id_is_ignored(self):
+        utm = meta_instant_form_utm_fields(
+            form_name="BCWW TK Kerala LLK Ex P1 - R1",
+            ad_id="ag:120246896442180772",
+            form_tracking={"utm_content": "120246896442180772"},
+        )
+        self.assertEqual(utm["utm_content"], "")
+
+    def test_extract_url_tags_from_ad_creative_graph(self):
+        self.assertEqual(
+            extract_url_tags_from_ad_graph({"url_tags": "utm_content=dm_plain"}),
+            "utm_content=dm_plain",
+        )
+        self.assertEqual(
+            extract_url_tags_from_ad_graph(
+                {"creative": {"url_tags": "utm_content=video"}}
+            ),
+            "utm_content=video",
+        )
+        self.assertEqual(
+            extract_url_tags_from_ad_graph(
+                {
+                    "creative": {
+                        "object_story_spec": {
+                            "link_data": {"url_tags": "utm_content=carousel"}
+                        }
+                    }
+                }
+            ),
+            "utm_content=carousel",
+        )
 
     def test_inline_form_params_capture_ad_id_from_field_data(self):
         mapped = _field_map(

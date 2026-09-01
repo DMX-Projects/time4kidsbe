@@ -559,8 +559,10 @@ def fetch_form_name(form_id: str) -> str:
 
 
 def _normalize_tracking_param_map(raw: Any) -> dict[str, str]:
-    """Normalize Meta tracking_parameters (dict or [{key,value}, ...]) to a flat map."""
+    """Normalize Meta tracking_parameters (dict, list, or query string) to a flat map."""
     out: dict[str, str] = {}
+    if isinstance(raw, str):
+        return parse_utm_query_string(raw)
     if isinstance(raw, dict):
         for key, value in raw.items():
             k = str(key or "").strip()
@@ -591,19 +593,63 @@ def fetch_form_tracking_parameters(form_id: str) -> dict[str, str]:
         return {}
 
 
+def extract_url_tags_from_ad_graph(data: dict[str, Any] | None) -> str:
+    """Pull Ads Manager URL parameters from an Ad or AdCreative Graph payload."""
+    if not isinstance(data, dict):
+        return ""
+
+    def from_spec(spec: Any) -> str:
+        if not isinstance(spec, dict):
+            return ""
+        text = str(spec.get("url_tags") or "").strip()
+        if text:
+            return text
+        for key in ("link_data", "video_data", "photo_data", "template_data"):
+            nested = spec.get(key)
+            if isinstance(nested, dict):
+                text = str(nested.get("url_tags") or "").strip()
+                if text:
+                    return text
+        return ""
+
+    text = str(data.get("url_tags") or "").strip()
+    if text:
+        return text
+    creative = data.get("creative")
+    if isinstance(creative, dict):
+        text = str(creative.get("url_tags") or "").strip()
+        if text:
+            return text
+        text = from_spec(creative.get("object_story_spec"))
+        if text:
+            return text
+    return from_spec(data.get("object_story_spec"))
+
+
 def fetch_ad_details(ad_id: str) -> dict[str, str]:
-    """Ad name + url_tags from Ads Manager (for Instant Form → CRM UTM mapping)."""
+    """Ad name + URL parameters from the ad and its creative."""
     if not ad_id:
         return {"name": "", "url_tags": ""}
+    name = ""
+    url_tags = ""
+    # ``url_tags`` is not available on all Ad nodes (Graph #100) — fetch name first.
     try:
-        data = _graph_get(str(ad_id), {"fields": "url_tags,name"})
-        return {
-            "name": str(data.get("name") or "").strip(),
-            "url_tags": str(data.get("url_tags") or "").strip(),
-        }
+        data = _graph_get(str(ad_id), {"fields": "name"})
+        name = str(data.get("name") or "").strip()
     except Exception:
-        logger.exception("Failed to fetch Meta ad details ad_id=%s", ad_id)
-        return {"name": "", "url_tags": ""}
+        logger.exception("Failed to fetch Meta ad name ad_id=%s", ad_id)
+    try:
+        data = _graph_get(str(ad_id), {"fields": "url_tags"})
+        url_tags = extract_url_tags_from_ad_graph(data)
+    except Exception:
+        logger.debug("Meta ad url_tags unavailable ad_id=%s", ad_id)
+    if not url_tags:
+        try:
+            data = _graph_get(str(ad_id), {"fields": "creative{url_tags,object_story_spec}"})
+            url_tags = extract_url_tags_from_ad_graph(data)
+        except Exception:
+            logger.debug("Meta ad creative url_tags unavailable ad_id=%s", ad_id)
+    return {"name": name, "url_tags": url_tags}
 
 
 def fetch_ad_url_tags(ad_id: str) -> str:
@@ -687,6 +733,17 @@ def _pick_passed_utm(*sources: dict[str, Any], keys: tuple[str, ...]) -> str:
     return ""
 
 
+def _usable_utm_content(value: str, *, ad_id: str = "") -> str:
+    """Keep campaign-assigned content tags; never store the Meta ad ID as content."""
+    text = str(value or "").strip()
+    if not text or _is_unresolved_meta_macro(text):
+        return ""
+    ad_token = strip_meta_export_prefix(ad_id)
+    if ad_token and strip_meta_export_prefix(text) == ad_token:
+        return ""
+    return text[:150]
+
+
 def meta_instant_form_utm_fields(
     *,
     form_name: str = "",
@@ -710,10 +767,11 @@ def meta_instant_form_utm_fields(
       utm_source   ← facebook_lead_ads (or a real utm_source if present)
       utm_medium   ← form_name
       utm_campaign ← campaign_name, else form_name
-      utm_content  ← utm_content if present, else ad_id
+      utm_content  ← campaign/form utm_content (URL params or Instant Form tracking)
       utm_term     ← utm_term if present, else adset_name
 
-    CRM still labels the column utm_content. Instant Form value is ad_id.
+    utm_content is the value assigned in Ads Manager / Instant Form tracking.
+    It is never filled from ad_id.
     """
     payload = lead_payload or {}
     webhook = webhook_value or {}
@@ -749,9 +807,9 @@ def meta_instant_form_utm_fields(
         or ad_id_token
         or medium
     )
-    content = (
-        _pick_passed_utm(payload, webhook, mapped, tracking, from_ad_tags, keys=("utm_content", "utmContent"))
-        or ad_id_token
+    content = _usable_utm_content(
+        _pick_passed_utm(payload, webhook, mapped, tracking, from_ad_tags, keys=("utm_content", "utmContent")),
+        ad_id=ad_id_token,
     )
     term = (
         _pick_passed_utm(payload, webhook, mapped, tracking, from_ad_tags, keys=("utm_term", "utmTerm"))
