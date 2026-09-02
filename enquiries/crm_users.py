@@ -19,6 +19,7 @@ CRM_SUPER_ADMIN_ASSIGN_EMAILS = frozenset(
         "admin@timekids.com",
         "jayesh@time4education.com",
         "bethleena@timekidspreschools.com",
+        "prashant.mishra@timekidspreschools.com",
     }
 )
 
