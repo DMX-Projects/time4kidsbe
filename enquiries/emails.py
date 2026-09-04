@@ -739,8 +739,8 @@ def lead_source_label_for_crm_lead(lead, *, request=None, user=None) -> str:
             or any(token in utm_medium for token in ("meta", "facebook", "instagram"))
         )
         if meta_hint:
-            return "BCWW_Meta"
-        return "BCWW_Google"
+            return "Ants_Meta"
+        return "Ants_Google"
 
     if is_google_ads_lead(lead) or is_google_ads_landing_url(getattr(lead, "landing_page_url", None)):
         return "BCWW_Google"
@@ -753,7 +753,7 @@ def lead_source_label_for_crm_lead(lead, *, request=None, user=None) -> str:
         "instagram": "Instagram",
         "july_lp": "BCWW_Google",
         "july_meta": "BCWW_Meta",
-        "lp_wb": "BCWW_Google",
+        "lp_wb": "Ants_Google",
         "google": "BCWW_Google",
     }
     return mapping.get(raw, raw.replace("_", " ").title() or "Campaign")

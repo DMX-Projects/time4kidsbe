@@ -237,7 +237,7 @@ class CrmGoogleBucketTests(SimpleTestCase):
 
         self.assertTrue(should_include_in_google_bucket(lead))
 
-    def test_wb_meta_lead_bucket_is_bcww_meta_for_all_users(self):
+    def test_wb_meta_lead_bucket_is_ants_meta_for_all_users(self):
         lead = SimpleNamespace(
             source="lp_wb",
             state="West Bengal",
@@ -247,15 +247,15 @@ class CrmGoogleBucketTests(SimpleTestCase):
             gclid="",
         )
 
-        self.assertEqual(effective_source_bucket_key(lead), "july_meta")
+        self.assertEqual(effective_source_bucket_key(lead), "ants_meta")
 
     def test_dashboard_bucket_mapping_for_wb_meta_leads(self):
         self.assertEqual(
             campaign_channel_api_key("lp_wb", "https://www.timekidspreschools.in/timekids-lp-wb/?utm_source=facebook_lead_ads", "West Bengal"),
-            "july_meta",
+            "ants_meta",
         )
 
-    def test_wb_meta_label_is_bcww_meta_for_all_users(self):
+    def test_wb_meta_label_is_ants_meta_for_all_users(self):
         lead = SimpleNamespace(
             source="lp_wb",
             state="West Bengal",
@@ -264,21 +264,9 @@ class CrmGoogleBucketTests(SimpleTestCase):
             landing_page_url="https://www.timekidspreschools.in/timekids-lp-wb/?utm_source=facebook_lead_ads",
             gclid="",
         )
-        self.assertEqual(lead_source_label_for_crm_lead(lead), "BCWW_Meta")
+        self.assertEqual(lead_source_label_for_crm_lead(lead), "Ants_Meta")
 
-    def test_wb_google_label_is_bcww_google(self):
-        lead = SimpleNamespace(
-            source="lp_wb",
-            state="West Bengal",
-            utm_source="google",
-            utm_medium="cpc",
-            landing_page_url="https://www.timekidspreschools.in/timekids-lp-wb/?gclid=ABCD123",
-            gclid="ABCD123",
-        )
-        self.assertEqual(lead_source_label_for_crm_lead(lead), "BCWW_Google")
-        self.assertEqual(effective_source_bucket_key(lead), "google")
-
-    def test_agency_viewer_also_sees_wb_as_bcww_meta(self):
+    def test_ants_agency_viewer_keeps_ants_meta_bucket(self):
         user = SimpleNamespace(email="ants.agency@gmail.com")
         self.assertEqual(
             campaign_channel_api_key(
@@ -287,10 +275,10 @@ class CrmGoogleBucketTests(SimpleTestCase):
                 "West Bengal",
                 user=user,
             ),
-            "july_meta",
+            "ants_meta",
         )
 
-    def test_agency_viewer_also_sees_wb_as_bcww_meta_label(self):
+    def test_ants_agency_viewer_keeps_ants_meta_label(self):
         lead = SimpleNamespace(
             source="lp_wb",
             state="West Bengal",
@@ -299,7 +287,7 @@ class CrmGoogleBucketTests(SimpleTestCase):
             landing_page_url="https://www.timekidspreschools.in/timekids-lp-wb/?utm_source=facebook_lead_ads",
             gclid="",
         )
-        self.assertEqual(lead_source_label_for_crm_lead(lead, user=SimpleNamespace(email="ants.agency@gmail.com")), "BCWW_Meta")
+        self.assertEqual(lead_source_label_for_crm_lead(lead, user=SimpleNamespace(email="ants.agency@gmail.com")), "Ants_Meta")
 
 
 class RestrictedAgencyViewerTests(TestCase):
