@@ -76,8 +76,9 @@ CAMPAIGN_EXTERNAL_VIEWER_EMAILS = {
 }
 
 # Agency viewers: state-scoped, view-only, PII hidden.
-# Bcwebwise = BCWW campaign states including West Bengal (Ants LP folded into BCWW).
-# Note: KidsEnquiry ``landing`` = admission paid-campaign city pages — not agency.
+# Bcwebwise = BCWW 6 Instant-Form states (Facebook/Meta + city landing if needed).
+# Ants = West Bengal Ants Google franchise LP only (CrmLead source lp_wb).
+# Note: KidsEnquiry ``landing`` = admission paid-campaign city pages — not Ants.
 BCWEBWISE_AGENCY_EMAILS = {
     "bcwebwise.agency@gmail.com",
 }
@@ -95,7 +96,6 @@ AGENCY_VIEWER_STATES: dict[str, tuple[str, ...]] = {
         "Kerala",
         "Telangana",
         "Maharashtra",
-        "West Bengal",
     ),
     "ants.agency@gmail.com": ("West Bengal",),
 }
@@ -265,8 +265,10 @@ def is_google_ads_lead(lead) -> bool:
 def effective_source_bucket_key(lead_or_row, *, request=None, user=None) -> str:
     """Canonical CRM bucket key used in filters and breakdowns.
 
-    West Bengal LP leads (source=lp_wb or timekids-lp-wb in URL) sit under
-    BCWW Google / BCWW Meta — same buckets as the other campaign states.
+    Only leads from the West Bengal landing page (source=lp_wb or
+    timekids-lp-wb in URL) are classified as Ants_Google / Ants_Meta.
+    Regular Meta Instant Form leads whose state happens to be West Bengal
+    are NOT WB LP leads — they stay in the standard july_meta bucket.
     """
     if lead_or_row is None:
         return "website"
@@ -276,7 +278,7 @@ def effective_source_bucket_key(lead_or_row, *, request=None, user=None) -> str:
     utm_medium = str((lead_or_row.get("utm_medium") if isinstance(lead_or_row, dict) else getattr(lead_or_row, "utm_medium", "")) or "").strip().lower()
     landing_url = str((lead_or_row.get("landing_page_url") if isinstance(lead_or_row, dict) else getattr(lead_or_row, "landing_page_url", "")) or "").lower()
 
-    # WB LP uses the same BCWW Google / Meta buckets as other campaign states.
+    # Only the dedicated WB landing page gets Ants_* labels.
     is_wb_lp = source == "lp_wb" or "timekids-lp-wb" in landing_url
     meta_hint = (
         source in {"july_meta", "facebook_lead_ads", "meta"}
@@ -286,7 +288,7 @@ def effective_source_bucket_key(lead_or_row, *, request=None, user=None) -> str:
     )
 
     if is_wb_lp:
-        return "july_meta" if meta_hint else "google"
+        return "ants_meta" if meta_hint else "lp_wb"
     if source in {"july_meta", "facebook_lead_ads", "meta"} or "facebook_lead_ads" in utm_source:
         return "july_meta"
     if is_google_ads_landing_url(landing_url) or source in {"july_lp", "google"}:
@@ -362,14 +364,16 @@ def campaign_channel_api_key(
 ) -> str:
     """Map stored form source to CRM channel key.
 
-    West Bengal LP leads (source=lp_wb or timekids-lp-wb in URL) use the same
-    BCWW Google / BCWW Meta channel keys as other campaign states.
+    Only leads from the dedicated West Bengal landing page (source=lp_wb or
+    timekids-lp-wb in URL) are classified as Ants_Google / Ants_Meta.
+    Regular Meta Instant Form leads whose state happens to be West Bengal
+    stay in the standard BCWW Meta bucket (july_meta).
     """
     api = source_to_api(source) if source else ""
     lower_url = (landing_page_url or "").lower()
     lower_source = (source or "").strip().lower()
 
-    # WB LP uses the same BCWW Google / Meta channel keys as other campaign states.
+    # Only the dedicated WB landing page gets Ants_* labels.
     is_wb_lp = lower_source == "lp_wb" or "timekids-lp-wb" in lower_url
 
     if is_wb_lp:
@@ -380,8 +384,10 @@ def campaign_channel_api_key(
             or any(token in lower_url for token in ("meta", "facebook", "instagram"))
         )
         if meta_hint:
-            return "july_meta"
-        return "google"
+            return "ants_meta"
+        if is_google_ads_landing_url(landing_page_url) or api in ("july_lp", "google"):
+            return "lp_wb"
+        return "lp_wb"
 
     if is_google_ads_landing_url(landing_page_url):
         return "google"
@@ -972,8 +978,8 @@ def _west_bengal_state_q(field: str = "state") -> Q:
 
 def _apply_agency_filter_to_crm_qs(qs, request):
     """
-    BCWW = all campaign states including West Bengal (Ants LP folded in).
-    Ants = West Bengal only (legacy filter; Ants login is disabled).
+    BCWW = all campaign states except West Bengal.
+    Ants = West Bengal only (Meta Instant Forms + Ants Google LP).
     """
     agency = _request_agency_filter(request)
     if not agency:
@@ -981,8 +987,8 @@ def _apply_agency_filter_to_crm_qs(qs, request):
     wb_q = _west_bengal_state_q("state") | Q(source=CrmLeadSource.LP_WB)
     if agency == "ants":
         return qs.filter(wb_q)
-    # bcww — include WB; do not exclude Ants territory
-    return qs
+    # bcww
+    return qs.exclude(wb_q)
 
 
 def _request_status_filters(request) -> list[str]:
@@ -1440,7 +1446,9 @@ def _filter_crm_qs(
     source_filter = _request_source_filter(request)
     if source_filter and _include_crm(source_filter):
         if source_filter == "agency":
-            # Bcwebwise: Meta Instant Forms + Google LPs, including West Bengal LP.
+            # Bcwebwise: Meta Instant Forms + Google LPs for the 6 BCWW states
+            # (WB excluded later by _apply_agency_filter_to_crm_qs).
+            # Ants: West Bengal Ants Google franchise LP only (CrmLead lp_wb).
             # KidsEnquiry city landing = admission paid campaign — not shown to agencies.
             if is_ants_agency_user(request=request):
                 qs = qs.filter(source=CrmLeadSource.LP_WB)
@@ -1449,7 +1457,6 @@ def _filter_crm_qs(
                     source__in=[
                         CrmLeadSource.JULY_META,
                         CrmLeadSource.JULY_LP,
-                        CrmLeadSource.LP_WB,
                     ]
                 )
             else:
@@ -1472,13 +1479,9 @@ def _filter_crm_qs(
                 | Q(utm_medium__icontains="instagram")
                 | Q(source=CrmLeadSource.JULY_META)
             )
-            if source_filter in ("google", "lp_wb", "lp-wb"):
+            if source_filter == "google":
                 # Genuine Google LP/WB sources only. Meta-attributed WB leads belong in the Meta bucket.
                 qs = qs.filter((Q(source__in=GOOGLE_CAMPAIGN_SOURCES) | google_ads_landing_q) & ~meta_like_q)
-            elif source_filter in ("july_meta", "july-meta", "ants_meta"):
-                qs = qs.filter(
-                    Q(source=CrmLeadSource.JULY_META) | meta_like_q
-                ).exclude(google_ads_landing_q)
             else:
                 mapped = normalize_source_from_api(source_filter)
                 if mapped in CRM_VISIBLE_SOURCES:
@@ -2487,6 +2490,8 @@ def unified_reports_data(request) -> dict:
                     _add_count(row["city"], "campaign", row["status"], row["count"])
             else:
                 _add_count(row["city"], "campaign", row["status"], row["count"])
+                # A single channel (META / Google) still covers both agencies —
+                # keep the per-agency bucket so BCWW and Ants stay separate columns.
                 if api_src and api_src != "campaign":
                     _add_count(row["city"], api_src, row["status"], row["count"])
 
@@ -2555,7 +2560,7 @@ def state_wise_lead_report_data(request) -> dict:
     """State-wise summary of leads grouped by agency channel and source.
 
     Channel buckets align with dashboard ``campaign_channel_api_key``:
-    BCWW Google/META (including West Bengal LP), franchise referrals,
+    BCWW Google/META, Ants Google (lp_wb) / Ants Meta, franchise referrals,
     and Website = franchise website form (FranchiseEnquiry without a centre),
     matching Franchise All dashboard counts.
     """
@@ -2613,16 +2618,20 @@ def state_wise_lead_report_data(request) -> dict:
             lead.state,
             request=request,
         )
-        if channel in ("ants_meta", "july_meta", "facebook", "instagram", "fb", "insta"):
+        if channel == "ants_meta":
+            row["ants_meta"] += 1
+        elif channel in ("lp_wb", "ants_google"):
+            row["ants_google"] += 1
+        elif channel in ("july_meta", "facebook", "instagram", "fb", "insta"):
             row["bcww_meta"] += 1
-        elif channel in ("lp_wb", "ants_google", "google", "july_lp"):
+        elif channel in ("google", "july_lp"):
             row["bcww_google"] += 1
         else:
             # Unknown / legacy campaign sources — keep under BCWW others
-            # unless clearly the WB LP path (now folded into BCWW).
+            # unless clearly the WB LP path.
             lower_url = (lead.landing_page_url or "").lower()
             if src_l == "lp_wb" or "timekids-lp-wb" in lower_url:
-                row["bcww_google"] += 1
+                row["ants_others"] += 1
             else:
                 row["bcww_others"] += 1
 
