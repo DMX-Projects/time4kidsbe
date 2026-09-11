@@ -1,8 +1,8 @@
 """
 Seed agency CRM viewers (History only; no comment box; no mobile/email).
 
-  Bcwebwise Agency — 6-state Facebook/Meta Instant Forms
-  Ants Agency — West Bengal Ants Google franchise LP (lp_wb)
+  Bcwebwise Agency — Instant Forms for non-WB BCWW states
+  Ants Agency — West Bengal Meta Instant Forms + Ants Google franchise LP (lp_wb)
 
   python manage.py seed_crm_agency_viewers
   python manage.py seed_crm_agency_viewers --force-password
@@ -87,8 +87,8 @@ class Command(BaseCommand):
 
         self.stdout.write(
             self.style.NOTICE(
-                "Access: Bcwebwise = Facebook/Meta Instant Forms (6 states); "
-                "Ants = West Bengal Ants Google franchise LP (lp_wb) · "
+                "Access: Bcwebwise = Facebook/Meta Instant Forms (non-WB states); "
+                "Ants = West Bengal Instant Forms + Ants Google LP (lp_wb) · "
                 "no mobile/email · History only · login /crm-admin/login"
             )
         )
