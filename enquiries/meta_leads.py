@@ -191,7 +191,7 @@ def is_before_sync_cutoff(created_time: Any) -> bool:
 
 
 # Exact Instant Form names from the campaign sheet.
-# Base: 6 states × 8 segments = 48. Kerala R1 adds 8 verified city-dropdown forms.
+# Base states × segments (+ Kerala R1 variants). Default import gate is prefix "BCWW TK".
 _BCWW_TK_STATES = (
     "Tamil Nadu",
     "Karnataka",
@@ -199,16 +199,19 @@ _BCWW_TK_STATES = (
     "Kerala",
     "Telangana",
     "Maharashtra",
+    "West Bengal",
 )
 _BCWW_TK_SEGMENTS = (
     "All Interest P1",
     "RMK P1",
     "LLK P1",
     "Income P1",
+    "Real Estate P1",
     "All Interest Ex P1",
     "RMK Ex P1",
     "LLK Ex P1",
     "Income Ex P1",
+    "Real Estate Ex P1",
 )
 BCWW_TK_KERALA_R1_FORM_NAMES: frozenset[str] = frozenset(
     f"BCWW TK Kerala {segment} - R1" for segment in _BCWW_TK_SEGMENTS
@@ -285,6 +288,25 @@ _META_CITY_TO_CRM: dict[str, str] = {
     "mattannur": "Kannur",
     "sulthan_bathery": "Wayanad",
     "sulthan bathery": "Wayanad",
+    # West Bengal Instant Form free-text / dropdown cities
+    "kolkata": "Kolkata",
+    "calcutta": "Kolkata",
+    "howrah": "Howrah",
+    "haora": "Howrah",
+    "hooghly": "Hooghly",
+    "siliguri": "Siliguri",
+    "shiliguri": "Siliguri",
+    "asansol": "Asansol",
+    "durgapur": "Durgapur",
+    "barasat": "Barasat",
+    "dinhata": "Dinhata",
+    "cooch_behar": "Cooch Behar",
+    "cooch behar": "Cooch Behar",
+    "koch_bihar": "Cooch Behar",
+    "koch bihar": "Cooch Behar",
+    "newtown": "Kolkata",
+    "new_town": "Kolkata",
+    "wb": "Kolkata",
 }
 
 
@@ -307,6 +329,19 @@ def normalize_meta_city(raw: str) -> tuple[str, str]:
     display = re.sub(r"\s+", " ", display)
     if display.islower() or "_" in text:
         display = display.replace("_", " ").title()
+    if not crm:
+        # Free-text Instant Form answers often paste names + city/state.
+        low = key_spaced
+        if "siliguri" in low or "shiliguri" in low:
+            crm = "Siliguri"
+        elif "kolkata" in low or "calcutta" in low or "newtown" in low:
+            crm = "Kolkata"
+        elif "cooch" in low and "behar" in low:
+            crm = "Cooch Behar"
+        elif "howrah" in low or "haora" in low:
+            crm = "Howrah"
+        elif low in {"wb", "west bengal", "w b"}:
+            crm = "Kolkata"
     if not crm:
         # Free-text / unknown: keep cleaned text as both
         return display, display
@@ -1033,9 +1068,12 @@ def create_crm_lead_from_meta(
         email = "test@meta.com"
     city = _clean_text(raw_city, fallback="Test City" if is_test_lead else "")
     city_label = city
-    # Only verified R1 forms have controlled city dropdowns. Older forms remain
-    # free-text and must retain the old state-only routing rule.
-    if city and not is_test_lead and form_name in BCWW_TK_KERALA_R1_FORM_NAMES:
+    # Normalize known Instant Form city keys (Kerala R1 dropdowns + WB free-text).
+    # Other free-text forms keep the typed value when unknown.
+    if city and not is_test_lead and (
+        form_name in BCWW_TK_KERALA_R1_FORM_NAMES
+        or "west bengal" in (form_name or "").lower()
+    ):
         crm_city, display_city = normalize_meta_city(city)
         city = crm_city or display_city or city
         city_label = display_city or city
@@ -1046,6 +1084,10 @@ def create_crm_lead_from_meta(
     if not city:
         city = inferred_city
         city_label = city
+    # Form name is authoritative for WB Instant Forms even if the prospect typed
+    # another city (Pune / Sambalpur / Bilaspur / etc.).
+    if "west bengal" in (form_name or "").lower():
+        state = "West Bengal"
     post_code = (fields.get("post_code") or "").strip()
     if post_code and _is_meta_test_value(post_code):
         post_code = ""

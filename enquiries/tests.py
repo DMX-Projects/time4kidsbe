@@ -4,7 +4,13 @@ from django.test import RequestFactory, SimpleTestCase, TestCase, override_setti
 
 from accounts.crm_zones import filter_qs_by_zone_or_assigned
 from accounts.models import User
-from enquiries.crm_api import campaign_channel_api_key, effective_source_bucket_key, should_include_in_google_bucket
+from enquiries.crm_api import (
+    _ants_crm_lead_q,
+    _apply_agency_filter_to_crm_qs,
+    campaign_channel_api_key,
+    effective_source_bucket_key,
+    should_include_in_google_bucket,
+)
 from enquiries.emails import lead_source_label_for_crm_lead
 from enquiries.meta_leads import (
     _field_map,
@@ -13,6 +19,7 @@ from enquiries.meta_leads import (
     form_name_to_utm_token,
     is_allowed_meta_form,
     meta_instant_form_utm_fields,
+    normalize_meta_city,
     parse_utm_query_string,
     strip_meta_export_prefix,
 )
@@ -288,6 +295,126 @@ class CrmGoogleBucketTests(SimpleTestCase):
             gclid="",
         )
         self.assertEqual(lead_source_label_for_crm_lead(lead, user=SimpleNamespace(email="ants.agency@gmail.com")), "Ants_Meta")
+
+
+class WestBengalInstantFormMappingTests(SimpleTestCase):
+    def test_wb_form_names_are_allowed_by_bcww_prefix(self):
+        self.assertTrue(is_allowed_meta_form(form_name="BCWW TK West Bengal Income P1"))
+        self.assertTrue(is_allowed_meta_form(form_name="BCWW TK West Bengal Real Estate P1"))
+
+    def test_wb_free_text_cities_normalize(self):
+        self.assertEqual(normalize_meta_city("Newtown .Kolkata")[0], "Kolkata")
+        self.assertEqual(normalize_meta_city("Cooch Beharwest")[0], "Cooch Behar")
+        self.assertEqual(normalize_meta_city("Payal Shah West Bengal Siliguri")[0], "Siliguri")
+        self.assertEqual(normalize_meta_city("WB")[0], "Kolkata")
+
+
+class AntsWestBengalInstantFormVisibilityTests(TestCase):
+    def test_ants_scope_includes_wb_instant_forms_and_lp(self):
+        instant = CrmLead.objects.create(
+            full_name="WB Instant Form Lead",
+            mobile="9000000001",
+            email="wb.instant@example.com",
+            state="West Bengal",
+            city="Kolkata",
+            source=CrmLeadSource.JULY_META,
+            status="untouched",
+            raw_payload={"meta_form_name": "BCWW TK West Bengal Income P1"},
+        )
+        lp = CrmLead.objects.create(
+            full_name="WB LP Lead",
+            mobile="9000000002",
+            email="wb.lp@example.com",
+            state="West Bengal",
+            city="Kolkata",
+            source=CrmLeadSource.LP_WB,
+            status="untouched",
+        )
+        other = CrmLead.objects.create(
+            full_name="Kerala Instant Form Lead",
+            mobile="9000000003",
+            email="kl.instant@example.com",
+            state="Kerala",
+            city="Ernakulam",
+            source=CrmLeadSource.JULY_META,
+            status="untouched",
+        )
+
+        visible = set(
+            CrmLead.objects.filter(_ants_crm_lead_q()).values_list("id", flat=True)
+        )
+        self.assertIn(instant.id, visible)
+        self.assertIn(lp.id, visible)
+        self.assertNotIn(other.id, visible)
+
+
+class BcwwAgencyFilterWestBengalInstantFormTests(TestCase):
+    def _leads(self):
+        instant = CrmLead.objects.create(
+            full_name="BCWW WB Inline Form",
+            mobile="9000000011",
+            email="bcww.wb@example.com",
+            state="West Bengal",
+            city="Kolkata",
+            source=CrmLeadSource.JULY_META,
+            status="untouched",
+            raw_payload={"meta_form_name": "BCWW TK West Bengal Income P1"},
+        )
+        lp = CrmLead.objects.create(
+            full_name="Ants WB LP",
+            mobile="9000000012",
+            email="ants.lp@example.com",
+            state="West Bengal",
+            city="Kolkata",
+            source=CrmLeadSource.LP_WB,
+            status="untouched",
+        )
+        kerala = CrmLead.objects.create(
+            full_name="BCWW Kerala Inline Form",
+            mobile="9000000013",
+            email="bcww.kl@example.com",
+            state="Kerala",
+            city="Ernakulam",
+            source=CrmLeadSource.JULY_META,
+            status="untouched",
+        )
+        return instant, lp, kerala
+
+    def test_superadmin_bcww_filter_includes_wb_inline_forms(self):
+        instant, lp, kerala = self._leads()
+        admin = User.objects.create_user(
+            email="crm.admin@timekidspreschools.com",
+            password="testpass123",
+            role="CRM",
+            full_name="CRM Admin",
+        )
+        request = RequestFactory().get("/crm-admin", {"agency": "bcww"})
+        request.user = admin
+
+        visible = set(
+            _apply_agency_filter_to_crm_qs(CrmLead.objects.all(), request).values_list("id", flat=True)
+        )
+        self.assertIn(instant.id, visible)
+        self.assertIn(kerala.id, visible)
+        self.assertNotIn(lp.id, visible)
+
+    def test_superadmin_ants_filter_is_lp_only(self):
+        instant, lp, kerala = self._leads()
+        admin = User.objects.create_user(
+            email="crm.admin@timekidspreschools.com",
+            password="testpass123",
+            role="CRM",
+            full_name="CRM Admin",
+        )
+        request = RequestFactory().get("/crm-admin", {"agency": "ants"})
+        request.user = admin
+
+        visible = set(
+            _apply_agency_filter_to_crm_qs(CrmLead.objects.all(), request).values_list("id", flat=True)
+        )
+        self.assertIn(lp.id, visible)
+        self.assertNotIn(instant.id, visible)
+        self.assertNotIn(kerala.id, visible)
 
 
 class RestrictedAgencyViewerTests(TestCase):

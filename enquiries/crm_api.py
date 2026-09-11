@@ -76,8 +76,9 @@ CAMPAIGN_EXTERNAL_VIEWER_EMAILS = {
 }
 
 # Agency viewers: state-scoped, view-only, PII hidden.
-# Bcwebwise = BCWW 6 Instant-Form states (Facebook/Meta + city landing if needed).
-# Ants = West Bengal Ants Google franchise LP only (CrmLead source lp_wb).
+# Bcwebwise = BCWW Instant Forms (all states including West Bengal) + Google LPs (july_lp).
+# Ants login = West Bengal territory (BCWW Instant Forms in WB + Ants Google LP lp_wb).
+# Super-admin Agency=Ants = Ants Google franchise LP (lp_wb) only — not BCWW TK Instant Forms.
 # Note: KidsEnquiry ``landing`` = admission paid-campaign city pages — not Ants.
 BCWEBWISE_AGENCY_EMAILS = {
     "bcwebwise.agency@gmail.com",
@@ -976,19 +977,44 @@ def _west_bengal_state_q(field: str = "state") -> Q:
     )
 
 
+def _ants_lp_q() -> Q:
+    """Campaigns Ants runs: West Bengal Google franchise LP (incl. Meta ads onto that LP)."""
+    return Q(source=CrmLeadSource.LP_WB) | Q(landing_page_url__icontains="timekids-lp-wb")
+
+
+def _bcww_campaign_q() -> Q:
+    """Campaigns BCWW runs: Meta Instant Forms (all states, including WB) + Google LPs."""
+    return Q(source=CrmLeadSource.JULY_META) | Q(source=CrmLeadSource.JULY_LP)
+
+
+def _ants_crm_lead_q() -> Q:
+    """
+    Ants agency-login territory on campaign_leads:
+    - West Bengal Google franchise LP (source=lp_wb)
+    - West Bengal Meta Instant Forms (source=july_meta + WB state)
+
+    Super-admin Agency=BCWW must still see those Instant Forms — they are BCWW TK
+    inline forms, not Ants LP campaigns.
+    """
+    return _ants_lp_q() | (
+        Q(source=CrmLeadSource.JULY_META) & _west_bengal_state_q("state")
+    )
+
+
 def _apply_agency_filter_to_crm_qs(qs, request):
     """
-    BCWW = all campaign states except West Bengal.
-    Ants = West Bengal only (Meta Instant Forms + Ants Google LP).
+    Super-admin Agency=BCWW: BCWW Instant Forms (incl. West Bengal) + BCWW Google LPs.
+    Super-admin Agency=Ants: Ants WB LP only.
+    Ants login: WB Instant Forms + Ants LP (territory).
     """
     agency = _request_agency_filter(request)
     if not agency:
         return qs
-    wb_q = _west_bengal_state_q("state") | Q(source=CrmLeadSource.LP_WB)
     if agency == "ants":
-        return qs.filter(wb_q)
-    # bcww
-    return qs.exclude(wb_q)
+        if is_ants_agency_user(request=request):
+            return qs.filter(_ants_crm_lead_q())
+        return qs.filter(_ants_lp_q())
+    return qs.filter(_bcww_campaign_q())
 
 
 def _request_status_filters(request) -> list[str]:
@@ -996,6 +1022,34 @@ def _request_status_filters(request) -> list[str]:
     raw = (_query_params(request).get("status") or "").strip()
     values = [part.strip() for part in raw.split(",") if part.strip()]
     return [value for value in values if value.casefold() != "all"]
+
+
+MEETING_DONE_STATUS_FILTER = "meeting_done"
+
+
+def _partition_status_filters(status_values: list[str]) -> tuple[list[str], bool]:
+    """Split Status checkboxes into CRM statuses vs the Meetings done flag."""
+    want_meeting_done = False
+    statuses: list[str] = []
+    for value in status_values:
+        if value in (MEETING_DONE_STATUS_FILTER, "meetings_done"):
+            want_meeting_done = True
+        else:
+            statuses.append(value)
+    return statuses, want_meeting_done
+
+
+def _apply_status_or_meeting_filters(qs, status_values: list[str], *, status_field: str = "status"):
+    """Match selected CRM statuses OR leads marked Meeting done."""
+    statuses, want_meeting_done = _partition_status_filters(status_values)
+    if not statuses and not want_meeting_done:
+        return qs
+    q = Q()
+    if statuses:
+        q |= Q(**{f"{status_field}__in": statuses})
+    if want_meeting_done:
+        q |= Q(meeting_done=True)
+    return qs.filter(q)
 
 
 def _request_user_filter(request) -> str | None:
@@ -1204,7 +1258,8 @@ def _include_crm(source_filter: str | None) -> bool:
     if not source_filter:
         return True
     if source_filter == "agency":
-        # Bcwebwise may include Meta CrmLeads; Ants uses lp_wb CrmLeads.
+        # Bcwebwise: Meta Instant Forms + Google LPs (all states, including West Bengal Instant Forms).
+        # Ants login: West Bengal Instant Forms + Ants Google LP (lp_wb).
         return True
     if source_filter in ("campaign", "franchise_all"):
         return True
@@ -1446,12 +1501,12 @@ def _filter_crm_qs(
     source_filter = _request_source_filter(request)
     if source_filter and _include_crm(source_filter):
         if source_filter == "agency":
-            # Bcwebwise: Meta Instant Forms + Google LPs for the 6 BCWW states
-            # (WB excluded later by _apply_agency_filter_to_crm_qs).
-            # Ants: West Bengal Ants Google franchise LP only (CrmLead lp_wb).
+            # Bcwebwise: Meta Instant Forms + Google LPs, including BCWW TK West Bengal forms
+            # (Ants WB LP is excluded later by _apply_agency_filter_to_crm_qs).
+            # Ants login: West Bengal Instant Forms + Ants Google LP (lp_wb).
             # KidsEnquiry city landing = admission paid campaign — not shown to agencies.
             if is_ants_agency_user(request=request):
-                qs = qs.filter(source=CrmLeadSource.LP_WB)
+                qs = qs.filter(_ants_crm_lead_q())
             elif is_bcwebwise_agency_user(request=request):
                 qs = qs.filter(
                     source__in=[
@@ -1506,7 +1561,7 @@ def _filter_crm_qs(
 
     status_values = _request_status_filters(request)
     if status_values:
-        qs = qs.filter(status__in=status_values)
+        qs = _apply_status_or_meeting_filters(qs, status_values)
 
     search = (params.get("search") or "").strip()
     if search:
@@ -1529,11 +1584,13 @@ def _filter_crm_qs(
     state_value = (params.get("state") or "").strip()
     if state_value:
         from accounts.crm_zones import clamp_requested_states
+        from franchises.franchise_geo import expand_state_filter
 
         state_value = clamp_requested_states(request, state_value) or ""
         state_queries = Q()
         for s in [x.strip() for x in state_value.split(",") if x.strip()]:
-            state_queries |= Q(state__iexact=s)
+            for variant in expand_state_filter(s) or [s]:
+                state_queries |= Q(state__iexact=variant)
         if state_queries:
             qs = qs.filter(state_queries)
 
@@ -1570,6 +1627,8 @@ def unified_crm_medium_names(request) -> list[str]:
 
 def _filter_enquiry_qs(request, enquiry_type: str):
     params = _query_params(request)
+    if _request_agency_filter(request):
+        return Enquiry.objects.none()
     source_filter = _request_source_filter(request)
     if enquiry_type == EnquiryType.ADMISSION and not _include_admission(source_filter):
         return Enquiry.objects.none()
@@ -1580,13 +1639,20 @@ def _filter_enquiry_qs(request, enquiry_type: str):
 
     status_values = _request_status_filters(request)
     if status_values:
-        matching = [
-            row["status"]
-            for row in Enquiry.objects.filter(enquiry_type=enquiry_type).values("status").distinct()
-            if any(_crm_status_matches_enquiry(value, row["status"]) for value in status_values)
-        ]
-        if matching:
-            qs = qs.filter(status__in=matching)
+        crm_statuses, want_meeting_done = _partition_status_filters(status_values)
+        q = Q()
+        if crm_statuses:
+            matching = [
+                row["status"]
+                for row in Enquiry.objects.filter(enquiry_type=enquiry_type).values("status").distinct()
+                if any(_crm_status_matches_enquiry(value, row["status"]) for value in crm_statuses)
+            ]
+            if matching:
+                q |= Q(status__in=matching)
+        if want_meeting_done:
+            q |= Q(meeting_done=True)
+        if q:
+            qs = qs.filter(q)
         else:
             return Enquiry.objects.none()
 
@@ -1634,6 +1700,9 @@ def _filter_enquiry_qs(request, enquiry_type: str):
 
 def _filter_franchise_enquiry_qs(request):
     params = _query_params(request)
+    # Agency dropdown is paid-campaign only — never mix website franchise forms into BCWW/Ants.
+    if _request_agency_filter(request):
+        return FranchiseEnquiry.objects.none()
     source_filter = _request_source_filter(request)
     if not _include_franchise_enquiry(source_filter):
         return FranchiseEnquiry.objects.none()
@@ -1646,7 +1715,7 @@ def _filter_franchise_enquiry_qs(request):
 
     status_values = _request_status_filters(request)
     if status_values:
-        qs = qs.filter(status__in=status_values)
+        qs = _apply_status_or_meeting_filters(qs, status_values)
 
     search = (params.get("search") or "").strip()
     if search:
@@ -1713,6 +1782,8 @@ def _apply_landing_zone_scope(qs, request):
 
 def _filter_landing_qs(request):
     params = _query_params(request)
+    if _request_agency_filter(request):
+        return KidsEnquiry.objects.none()
     if not _include_landing(_request_source_filter(request)):
         return KidsEnquiry.objects.none()
 
@@ -1720,8 +1791,9 @@ def _filter_landing_qs(request):
 
     status_values = _request_status_filters(request)
     if status_values:
+        crm_statuses, want_meeting_done = _partition_status_filters(status_values)
         status_q = Q()
-        for value in status_values:
+        for value in crm_statuses:
             if value in ("new", "untouched"):
                 status_q |= (
                     Q(raw_payload__crm_status__isnull=True)
@@ -1731,7 +1803,12 @@ def _filter_landing_qs(request):
                 )
             else:
                 status_q |= Q(raw_payload__crm_status=value)
-        qs = qs.filter(status_q)
+        if want_meeting_done:
+            status_q |= Q(meeting_done=True)
+        if status_q:
+            qs = qs.filter(status_q)
+        else:
+            return KidsEnquiry.objects.none()
 
     search = (params.get("search") or "").strip()
     if search:
@@ -2080,7 +2157,7 @@ def unified_lead_detail(raw_id: str, *, include_detail: bool = False, request=No
     if request is not None:
         if is_agency_crm_user(request=request):
             if is_ants_agency_user(request=request):
-                # Ants: franchise Ants Google LP (lp_wb) only — not admission KidsEnquiry.
+                # Ants: WB Instant Forms + Ants Google LP — not admission KidsEnquiry.
                 if kind != "crm":
                     return None
             elif kind != "crm":
@@ -2093,7 +2170,7 @@ def unified_lead_detail(raw_id: str, *, include_detail: bool = False, request=No
         qs = CrmLead.objects.filter(pk=pk).select_related("assigned_user").prefetch_related("notes")
         if request is not None:
             if is_ants_agency_user(request=request):
-                qs = qs.filter(source=CrmLeadSource.LP_WB)
+                qs = qs.filter(_ants_crm_lead_q())
             from accounts.crm_zones import filter_crm_lead_qs_by_zone
 
             qs = filter_crm_lead_qs_by_zone(qs, request)
@@ -2269,7 +2346,7 @@ def apply_lead_filters(qs, request):
 
     status_values = _request_status_filters(request)
     if status_values:
-        qs = qs.filter(status__in=status_values)
+        qs = _apply_status_or_meeting_filters(qs, status_values)
 
     search = (request.query_params.get("search") or "").strip()
     if search:
