@@ -114,6 +114,26 @@ def _centre_contact(franchise: Franchise | None) -> tuple[str, str, str]:
     return franchise.name, phone, email
 
 
+def _enquiry_state(franchise: Franchise | None, city: str) -> str:
+    """State from the matched centre, else the city → territory mapping sheet."""
+    from franchises.franchise_geo import state_to_display
+
+    raw = ""
+    if franchise is not None:
+        raw = (
+            getattr(franchise, "statename", None)
+            or getattr(franchise, "state", None)
+            or ""
+        ).strip()
+    if raw:
+        return state_to_display(raw) or raw
+
+    from .crm_users import resolve_lead_state_code
+
+    code = resolve_lead_state_code(None, city)
+    return state_to_display(code) if code else ""
+
+
 def save_landing_enquiry(post_data: Any) -> LandingEnquiryRecord:
     """Persist landing-page form submissions to ``kids_enquiry`` only."""
     name = _post_value(post_data, "name")
@@ -141,7 +161,7 @@ def save_landing_enquiry(post_data: Any) -> LandingEnquiryRecord:
 
     franchise = _lookup_franchise(city, location)
     centre_name, centre_phone, centre_email = _centre_contact(franchise)
-    state = (franchise.state if franchise else "") or ""
+    state = _enquiry_state(franchise, city)
 
     row = KidsEnquiry.objects.create(
         name=name,
@@ -180,23 +200,19 @@ def handle_landing_enquiry_post(post_data: Any):
         )
 
     try:
-        from .emails import send_crm_heads_new_lead_reminder, send_landing_enquiry_emails
+        from .emails import assign_and_notify_new_lead, send_landing_enquiry_emails
 
         email_status = send_landing_enquiry_emails(record)
         if email_status:
             KidsEnquiry.objects.filter(pk=record.pk).update(email_status=email_status)
 
-        source = _post_value(post_data, "source") or getattr(record, "source", None) or "Landing"
-        send_crm_heads_new_lead_reminder(
-            name=getattr(record, "name", None) or "",
-            lead_source=f"Landing ({source})" if source else "Landing",
-            centre_name=getattr(record, "centre_name", None) or getattr(record, "location", None) or "",
-            state=getattr(record, "state", None) or "",
-            city=getattr(record, "city", None) or getattr(record, "location", None) or "",
-            phone=getattr(record, "mobileno", None) or getattr(record, "mobile", None) or "",
-            lead_email=getattr(record, "email", None) or "",
-            lead_kind="admission",
-        )
+        row = KidsEnquiry.objects.filter(pk=record.pk).first()
+        if row:
+            source = _post_value(post_data, "source") or row.source or "Landing"
+            assign_and_notify_new_lead(
+                row,
+                lead_source=f"Landing ({source})" if source else "Landing",
+            )
     except Exception:
         logger.exception("Landing enquiry email failed for id=%s", record.pk)
 

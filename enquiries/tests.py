@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from django.test import RequestFactory, SimpleTestCase, TestCase, override_settings
 
@@ -7,9 +8,13 @@ from accounts.models import User
 from enquiries.crm_api import (
     _ants_crm_lead_q,
     _apply_agency_filter_to_crm_qs,
+    _filter_landing_qs,
     campaign_channel_api_key,
     effective_source_bucket_key,
     should_include_in_google_bucket,
+    unified_lead_detail,
+    unified_leads_page,
+    agency_lead_report_data,
 )
 from enquiries.emails import lead_source_label_for_crm_lead
 from enquiries.meta_leads import (
@@ -33,7 +38,7 @@ from enquiries.meta_capi import (
     send_crm_stage_event,
     should_upload_capi_event,
 )
-from enquiries.models import CrmLead, CrmLeadSource
+from enquiries.models import CrmLead, CrmLeadSource, KidsEnquiry
 
 
 class MetaInstantFormUtmTests(SimpleTestCase):
@@ -444,6 +449,253 @@ class RestrictedAgencyViewerTests(TestCase):
         result = filter_qs_by_zone_or_assigned(qs, __import__('django.db.models').db.models.Q(state__iexact='West Bengal'), request)
 
         self.assertEqual(result.count(), 1)
+
+
+class BcwwCityLandingVisibilityTests(TestCase):
+    def _users(self):
+        bcww = User.objects.create_user(
+            email="bcwebwise.agency@gmail.com",
+            password="testpass123",
+            role="CRM",
+            full_name="Bcwebwise Agency",
+            crm_states="Tamil Nadu,Karnataka,Andhra Pradesh,Kerala,Telangana,Maharashtra",
+        )
+        ants = User.objects.create_user(
+            email="ants.agency@gmail.com",
+            password="testpass123",
+            role="CRM",
+            full_name="Ants Agency",
+            crm_states="West Bengal",
+        )
+        return bcww, ants
+
+    def _landing(self, **kwargs):
+        defaults = dict(
+            name="Chennai Landing Lead",
+            mobile="9000000101",
+            mobileno="9000000101",
+            email="chennai.lp@example.com",
+            state="Tamil Nadu",
+            city="Chennai",
+            location="T.I.M.E. Kids Anna Nagar",
+            enquiry_type="Admission Enquiry",
+            source="Google",
+        )
+        defaults.update(kwargs)
+        return KidsEnquiry.objects.create(**defaults)
+
+    def test_bcww_sees_city_landing_leads_ants_does_not(self):
+        bcww, ants = self._users()
+        chennai = self._landing()
+        kolkata = self._landing(
+            name="Kolkata Landing Lead",
+            mobile="9000000102",
+            mobileno="9000000102",
+            email="kolkata.lp@example.com",
+            state="West Bengal",
+            city="Kolkata",
+        )
+
+        bcww_req = RequestFactory().get("/crm-admin")
+        bcww_req.user = bcww
+        ants_req = RequestFactory().get("/crm-admin")
+        ants_req.user = ants
+
+        bcww_ids = set(_filter_landing_qs(bcww_req).values_list("id", flat=True))
+        ants_ids = set(_filter_landing_qs(ants_req).values_list("id", flat=True))
+        self.assertIn(chennai.id, bcww_ids)
+        self.assertIn(kolkata.id, bcww_ids)
+        self.assertEqual(ants_ids, set())
+
+        page = unified_leads_page(bcww_req, page=1, limit=50)
+        page_ids = {row["id"] for row in page}
+        self.assertIn(f"landing-{chennai.id}", page_ids)
+        self.assertIn(f"landing-{kolkata.id}", page_ids)
+        chennai_row = next(row for row in page if row["id"] == f"landing-{chennai.id}")
+        self.assertEqual(chennai_row["mobile"], "")
+        self.assertEqual(chennai_row["email"], "")
+
+        detail = unified_lead_detail(f"landing-{chennai.id}", include_detail=True, request=bcww_req)
+        self.assertIsNotNone(detail)
+        self.assertEqual(detail["mobile"], "")
+        self.assertIsNone(
+            unified_lead_detail(f"landing-{chennai.id}", include_detail=True, request=ants_req)
+        )
+
+    def test_bcww_report_keeps_lead_type_filter(self):
+        bcww, _ = self._users()
+        landing = self._landing()
+        campaign = CrmLead.objects.create(
+            full_name="Meta Campaign Lead",
+            mobile="9000000199",
+            email="meta.campaign@example.com",
+            state="Tamil Nadu",
+            city="Chennai",
+            source=CrmLeadSource.JULY_META,
+        )
+
+        def _report(agency_lead=""):
+            path = "/crm/leads/reports"
+            if agency_lead:
+                path += f"?agencyLead={agency_lead}"
+            req = RequestFactory().get(path)
+            req.user = bcww
+            return agency_lead_report_data(req)
+
+        all_rows = _report()["leads"]
+        all_ids = {row["id"] for row in all_rows}
+        self.assertIn(campaign.id, all_ids)
+        self.assertIn(f"landing-{landing.id}", all_ids)
+        landing_row = next(row for row in all_rows if row["id"] == f"landing-{landing.id}")
+        campaign_row = next(row for row in all_rows if row["id"] == campaign.id)
+        self.assertEqual(landing_row["lead_type"], "Admission")
+        self.assertEqual(campaign_row["lead_type"], "Campaign")
+
+        campaign_ids = {row["id"] for row in _report("campaign")["leads"]}
+        self.assertIn(campaign.id, campaign_ids)
+        self.assertNotIn(f"landing-{landing.id}", campaign_ids)
+
+        landing_ids = {row["id"] for row in _report("landing")["leads"]}
+        self.assertIn(f"landing-{landing.id}", landing_ids)
+        self.assertNotIn(campaign.id, landing_ids)
+
+
+class LandingSheetAutoAssignTests(TestCase):
+    """2G city LPs auto-assign to the admission mapping-sheet logins."""
+
+    def setUp(self):
+        from accounts.management.commands.seed_crm_team_users import (
+            KERALA_ALL,
+            KERALA_SOUTH,
+        )
+        from accounts.models import UserRole
+
+        def _user(email, name, states, cities="", designation="Manager"):
+            return User.objects.create_user(
+                email=email,
+                password="testpass123",
+                role=UserRole.CRM,
+                full_name=name,
+                crm_designation=designation,
+                crm_states=states,
+                crm_cities=cities,
+            )
+
+        self.jayaraj = _user(
+            "jayaraj@timekidspreschools.com", "M. Jayaraj", "Tamil Nadu"
+        )
+        self.sivaraman = _user(
+            "sivaraman@timekidspreschools.com",
+            "Sivaraman",
+            "Tamil Nadu",
+            designation="Assistant Manager",
+        )
+        self.satish = _user(
+            "satishmenon@timekidspreschools.com",
+            "Satish Menon",
+            "Kerala",
+            KERALA_SOUTH,
+        )
+        self.vivek = _user(
+            "vivek@timekidspreschools.com", "Vivek RT", "Kerala", KERALA_ALL
+        )
+        self.anoop = _user(
+            "anoopkunjan@timekidspreschools.com",
+            "Anoop Kunjan",
+            "Kerala",
+            designation="Assistant Manager",
+        )
+        self.sujee = _user(
+            "sujee@timekidspreschools.com",
+            "Sujee",
+            "Karnataka",
+            designation="Regional Manager",
+        )
+        self.thimmesh = _user(
+            "thimmesh.k@timekidspreschools.com", "Thimmesh", "Karnataka"
+        )
+        self.sai = _user(
+            "saikishore@timekidspreschools.com",
+            "Sai Kishore",
+            "Andhra Pradesh, Telangana",
+            designation="Dy Manager",
+        )
+        self.harshit = _user(
+            "harshit@timekidspreschools.com",
+            "Harshit Katare",
+            "Andhra Pradesh, Telangana",
+            designation="Assistant Manager",
+        )
+        self.deepak = _user(
+            "deepaknikam@timekidspreschools.com",
+            "Deepak Nikam",
+            "Maharashtra",
+            designation="Assistant Manager",
+        )
+        self.jyoti = _user(
+            "jyoti.mishra@timekidspreschools.com",
+            "Jyoti Mishra",
+            "Bihar, Chhattisgarh, Odisha, West Bengal",
+            "Patna,Bhubaneswar,Kolkata,Howrah",
+            designation="Zonal Manager",
+        )
+
+    def _submit(self, city, n):
+        from enquiries.landing_submit import handle_landing_enquiry_post
+
+        phone = f"9000001{n:03d}"
+        return handle_landing_enquiry_post(
+            {
+                "name": f"Parent {city}",
+                "telephone": phone,
+                "email": f"lp.{city.lower().replace(' ', '')}{n}@example.com",
+                "city": city,
+                "Location": f"{city} Centre",
+                "source": "Google",
+            }
+        )
+
+    @patch("enquiries.emails.send_landing_enquiry_emails", return_value=None)
+    @patch("enquiries.emails.send_crm_heads_new_lead_reminder", return_value=True)
+    def test_2g_cities_go_to_sheet_logins(self, _heads, _landing_mail):
+        expected = {
+            "Chennai": "jayaraj@timekidspreschools.com",
+            "Coimbatore": "jayaraj@timekidspreschools.com",
+            "Ernakulam": "satishmenon@timekidspreschools.com",
+            "Trivandrum": "satishmenon@timekidspreschools.com",
+            "Palakkad": "vivek@timekidspreschools.com",
+            "Thrissur": "vivek@timekidspreschools.com",
+            "Bangalore": "sujee@timekidspreschools.com",
+            "Pune": "deepaknikam@timekidspreschools.com",
+            "Kolkata": "jyoti.mishra@timekidspreschools.com",
+        }
+        for i, (city, email) in enumerate(expected.items(), start=1):
+            self._submit(city, i)
+            row = KidsEnquiry.objects.get(city=city)
+            self.assertEqual(row.state, {
+                "Chennai": "Tamil Nadu",
+                "Coimbatore": "Tamil Nadu",
+                "Ernakulam": "Kerala",
+                "Trivandrum": "Kerala",
+                "Palakkad": "Kerala",
+                "Thrissur": "Kerala",
+                "Bangalore": "Karnataka",
+                "Pune": "Maharashtra",
+                "Kolkata": "West Bengal",
+            }[city])
+            self.assertIsNotNone(row.assigned_user_id, city)
+            self.assertEqual(row.assigned_user.email.lower(), email, city)
+
+        self._submit("Hyderabad", 99)
+        hyd = KidsEnquiry.objects.get(city="Hyderabad")
+        self.assertEqual(hyd.state, "Telangana")
+        self.assertIn(
+            hyd.assigned_user.email.lower(),
+            {
+                "saikishore@timekidspreschools.com",
+                "harshit@timekidspreschools.com",
+            },
+        )
 
 
 class ApTsEqualShareAssignTests(TestCase):
