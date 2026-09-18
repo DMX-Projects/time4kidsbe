@@ -447,6 +447,23 @@ def resolve_lead_state_code(state: str | None = None, city: str | None = None) -
     city_alias_code = {
         "hyd": "TG",
         "hyderabad": "TG",
+        "secunderabad": "TG",
+        "chennai": "TN",
+        "coimbatore": "TN",
+        "madurai": "TN",
+        "ernakulam": "KL",
+        "kochi": "KL",
+        "cochin": "KL",
+        "trivandrum": "KL",
+        "thiruvananthapuram": "KL",
+        "palakkad": "KL",
+        "thrissur": "KL",
+        "bangalore": "KA",
+        "bengaluru": "KA",
+        "pune": "MH",
+        "kolkata": "WB",
+        "howrah": "WB",
+        "calcutta": "WB",
         "navi mumbai": "MH",
         "new mumbai": "MH",
         "jalna": "MH",
@@ -607,8 +624,11 @@ def crm_users_matching_geo(
         if matched:
             city_specific.append(user)
 
-    # Prefer narrower territories when assigning (fewer states = more specific).
-    city_specific.sort(key=lambda u: u.id)
+    # Prefer narrower territories when assigning
+    # (fewer cities, then fewer states — e.g. Satish South Kerala over Vivek all-Kerala).
+    city_specific.sort(
+        key=lambda u: (len(scope_city_names_for_user(u) or []), u.id)
+    )
     state_scoped.sort(
         key=lambda u: (len(scope_state_codes_for_user(u) or []), u.id)
     )

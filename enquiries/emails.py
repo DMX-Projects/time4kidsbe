@@ -608,6 +608,14 @@ def assign_and_notify_new_lead(obj, *, lead_source: str = "", notify: bool = Tru
         suggest_assignee_for_geo,
     )
 
+    # Landing submit wraps KidsEnquiry in a dataclass that cannot save assigned_user.
+    if type(obj).__name__ == "LandingEnquiryRecord" and getattr(obj, "pk", None):
+        from .models import KidsEnquiry
+
+        row = KidsEnquiry.objects.filter(pk=obj.pk).first()
+        if row is not None:
+            obj = row
+
     state = (getattr(obj, "state", None) or "").strip()
     city = (getattr(obj, "city", None) or "").strip()
     franchise = getattr(obj, "franchise", None)

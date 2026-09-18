@@ -76,10 +76,10 @@ CAMPAIGN_EXTERNAL_VIEWER_EMAILS = {
 }
 
 # Agency viewers: state-scoped, view-only, PII hidden.
-# Bcwebwise = BCWW Instant Forms (all states including West Bengal) + Google LPs (july_lp).
+# Bcwebwise = BCWW Instant Forms (all states including West Bengal) + Google LPs (july_lp)
+#   + admission city landing pages (timekids-2g KidsEnquiry).
 # Ants login = West Bengal territory (BCWW Instant Forms in WB + Ants Google LP lp_wb).
 # Super-admin Agency=Ants = Ants Google franchise LP (lp_wb) only — not BCWW TK Instant Forms.
-# Note: KidsEnquiry ``landing`` = admission paid-campaign city pages — not Ants.
 BCWEBWISE_AGENCY_EMAILS = {
     "bcwebwise.agency@gmail.com",
 }
@@ -942,6 +942,18 @@ def _request_source_filter(request) -> str | None:
     return (_query_params(request).get("source") or "").strip().lower() or None
 
 
+def _agency_lead_kind(request) -> str:
+    """BCWW dashboard filter: ``""`` (all), ``campaign``, or ``landing``."""
+    if not is_bcwebwise_agency_user(request=request):
+        return ""
+    raw = (_query_params(request).get("agencyLead") or "").strip().lower()
+    if raw in ("campaign", "crm", "meta", "google"):
+        return "campaign"
+    if raw in ("landing", "admission"):
+        return "landing"
+    return ""
+
+
 def _request_agency_filter(request) -> str | None:
     """
     Returns the agency scope to apply (``bcww`` | ``ants`` | None).
@@ -1296,12 +1308,29 @@ def _include_contact(source_filter: str | None) -> bool:
     return source_filter in {"contact", "admission_all"}
 
 
-def _include_landing(source_filter: str | None) -> bool:
+def _include_landing(source_filter: str | None, request=None) -> bool:
     """City landing-page leads (``kids_enquiry``) — admission paid campaign pages."""
     if not source_filter:
         return True
-    # Not included for agency viewers (franchise partners: Meta / Ants lp_wb).
+    # BCWW agency login sees Google city LPs (timekids-2g). Ants does not.
+    if source_filter == "agency":
+        if not is_bcwebwise_agency_user(request=request):
+            return False
+        return _agency_lead_kind(request) != "campaign"
     return source_filter in {"landing", "admission_all"}
+
+
+def _agency_blocks_landing_leads(request) -> bool:
+    """
+    Ants never sees city landing pages.
+    Super-admin Agency=BCWW/Ants stays on campaign_leads only.
+    BCWW agency login is allowed through.
+    """
+    if is_ants_agency_user(request=request):
+        return True
+    if is_bcwebwise_agency_user(request=request):
+        return False
+    return bool(_request_agency_filter(request))
 
 
 def _enquiry_status_to_crm(status: str) -> str:
@@ -1496,6 +1525,8 @@ def _filter_crm_qs(
 ):
     params = _query_params(request)
     qs = CrmLead.objects.all()
+    if _agency_lead_kind(request) == "landing":
+        return CrmLead.objects.none()
     # CRM admin shows paid campaign leads + referral-channel leads.
     qs = qs.filter(source__in=CRM_VISIBLE_SOURCES)
     source_filter = _request_source_filter(request)
@@ -1504,7 +1535,7 @@ def _filter_crm_qs(
             # Bcwebwise: Meta Instant Forms + Google LPs, including BCWW TK West Bengal forms
             # (Ants WB LP is excluded later by _apply_agency_filter_to_crm_qs).
             # Ants login: West Bengal Instant Forms + Ants Google LP (lp_wb).
-            # KidsEnquiry city landing = admission paid campaign — not shown to agencies.
+            # KidsEnquiry city landing is added separately for BCWW via _filter_landing_qs.
             if is_ants_agency_user(request=request):
                 qs = qs.filter(_ants_crm_lead_q())
             elif is_bcwebwise_agency_user(request=request):
@@ -1775,6 +1806,15 @@ def _apply_landing_zone_scope(qs, request):
         zone_q |= Q(state__iexact=value)
     for city_name in scope_city_names(codes):
         zone_q |= Q(city__iexact=city_name)
+    # Kolkata/Howrah city LPs are West Bengal, outside BCWW crm_states.
+    if is_bcwebwise_agency_user(request=request):
+        zone_q |= (
+            Q(state__iexact="West Bengal")
+            | Q(state__iexact="WB")
+            | Q(city__iexact="Kolkata")
+            | Q(city__iexact="Howrah")
+            | Q(city__iexact="Haora")
+        )
     if not zone_q:
         return qs.none()
     return filter_qs_by_zone_or_assigned(qs, zone_q, request)
@@ -1782,9 +1822,9 @@ def _apply_landing_zone_scope(qs, request):
 
 def _filter_landing_qs(request):
     params = _query_params(request)
-    if _request_agency_filter(request):
+    if _agency_blocks_landing_leads(request):
         return KidsEnquiry.objects.none()
-    if not _include_landing(_request_source_filter(request)):
+    if not _include_landing(_request_source_filter(request), request):
         return KidsEnquiry.objects.none()
 
     qs = KidsEnquiry.objects.select_related("assigned_user")
@@ -1858,7 +1898,7 @@ def unified_leads_total(request) -> int:
         total += _filter_enquiry_qs(request, EnquiryType.CONTACT).count()
     if _include_franchise_enquiry(_request_source_filter(request)):
         total += _filter_franchise_enquiry_qs(request).count()
-    if _include_landing(_request_source_filter(request)):
+    if _include_landing(_request_source_filter(request), request):
         total += _filter_landing_qs(request).count()
     return total
 
@@ -1882,7 +1922,7 @@ def unified_leads_page(request, *, page: int, limit: int) -> list[dict]:
         merged.extend(
             franchise_enquiry_to_dict(row) for row in _filter_franchise_enquiry_qs(request)[:fetch_count]
         )
-    if _include_landing(_request_source_filter(request)):
+    if _include_landing(_request_source_filter(request), request):
         merged.extend(landing_to_dict(row) for row in _filter_landing_qs(request)[:fetch_count])
 
     merged.sort(key=lambda row: row.get("createdAt") or "", reverse=True)
@@ -1971,7 +2011,7 @@ def unified_dashboard_stats(request) -> dict:
         meeting_fixed += franchise_qs.filter(meeting_fixed=True).count()
         meeting_done += franchise_qs.filter(meeting_done=True).count()
 
-    if _include_landing(_request_source_filter(request)):
+    if _include_landing(_request_source_filter(request), request):
         landing_qs = _filter_landing_qs(request)
         landing_count = landing_qs.count()
         if landing_count:
@@ -2087,7 +2127,7 @@ def unified_reminders(request) -> dict:
         meetings.extend(res["meetings"])
         follow_ups.extend(res["followUps"])
 
-    if not source_filter or _include_landing(source_filter):
+    if not source_filter or _include_landing(source_filter, request):
         landing_qs = _filter_landing_qs(request)
         today = timezone.localdate()
         next_week = today + timedelta(days=7)
@@ -2160,8 +2200,11 @@ def unified_lead_detail(raw_id: str, *, include_detail: bool = False, request=No
                 # Ants: WB Instant Forms + Ants Google LP — not admission KidsEnquiry.
                 if kind != "crm":
                     return None
+            elif is_bcwebwise_agency_user(request=request):
+                # BCWW: Meta/Google campaign CrmLeads + city landing pages.
+                if kind not in ("crm", "landing"):
+                    return None
             elif kind != "crm":
-                # Bcwebwise: Facebook/Meta campaign CrmLeads only (not admission landing).
                 return None
         if is_campaign_only_crm_user(request=request) and kind != "crm":
             # Campaign-only login cannot open Admission/Contact/Franchise/Landing detail pages.
@@ -2583,7 +2626,7 @@ def unified_reports_data(request) -> dict:
             _add_count(row["report_city"], "franchise", row["status"], row["count"])
 
     # 5. Landing (kids_enquiry) — city landing pages under Admission
-    if _include_landing(source_filter):
+    if _include_landing(source_filter, request):
         landing_qs = _filter_landing_qs(request).order_by()
         for row in landing_qs.values("city", "raw_payload").iterator():
             payload = row.get("raw_payload") if isinstance(row.get("raw_payload"), dict) else {}
@@ -3052,6 +3095,7 @@ def agency_lead_report_data(request) -> dict:
             "name": lead.full_name or "",
             "state": lead.state or "",
             "city": lead.city or "",
+            "lead_type": "Campaign",
             "utm_source": lead.utm_source or "",
             "utm_medium": lead.utm_medium or "",
             "utm_campaign": lead.utm_campaign or "",
@@ -3061,6 +3105,30 @@ def agency_lead_report_data(request) -> dict:
             "gclid": lead.gclid or "",
             "description": notes_map.get(lead.id, ""),
         })
+
+    if is_bcwebwise_agency_user(request=request):
+        for row in _filter_landing_qs(request):
+            dt_str = (
+                timezone.localtime(row.created_date).strftime("%Y-%m-%d %H:%M:%S")
+                if row.created_date
+                else ""
+            )
+            leads.append({
+                "id": f"landing-{row.id}",
+                "name": row.name or "",
+                "state": row.state or "",
+                "city": row.city or "",
+                "lead_type": "Admission",
+                "utm_source": (row.source or "Google"),
+                "utm_medium": "",
+                "utm_campaign": "",
+                "status": _landing_crm_status(row),
+                "created_at": dt_str,
+                "utm_content": "",
+                "gclid": "",
+                "description": "",
+            })
+        leads.sort(key=lambda item: item.get("created_at") or "", reverse=True)
 
     return {
         "mode": "agency",
@@ -3081,6 +3149,7 @@ def generate_agency_report_csv(request) -> bytes:
         "name",
         "state",
         "city",
+        "lead_type",
         "utm_source",
         "utm_medium",
         "utm_campaign",
@@ -3096,6 +3165,7 @@ def generate_agency_report_csv(request) -> bytes:
             lead["name"],
             lead["state"],
             lead["city"],
+            lead.get("lead_type") or "",
             lead["utm_source"],
             lead["utm_medium"],
             lead["utm_campaign"],
