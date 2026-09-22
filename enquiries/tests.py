@@ -8,6 +8,7 @@ from accounts.models import User
 from enquiries.crm_api import (
     _ants_crm_lead_q,
     _apply_agency_filter_to_crm_qs,
+    _filter_crm_qs,
     _filter_landing_qs,
     campaign_channel_api_key,
     effective_source_bucket_key,
@@ -16,6 +17,7 @@ from enquiries.crm_api import (
     unified_leads_page,
     agency_lead_report_data,
 )
+from enquiries.crm_users import resolve_notify_lead_kind
 from enquiries.emails import lead_source_label_for_crm_lead
 from enquiries.meta_leads import (
     _field_map,
@@ -38,7 +40,7 @@ from enquiries.meta_capi import (
     send_crm_stage_event,
     should_upload_capi_event,
 )
-from enquiries.models import CrmLead, CrmLeadSource, KidsEnquiry
+from enquiries.models import CrmLead, CrmLeadSource, Enquiry, EnquiryType, KidsEnquiry
 
 
 class MetaInstantFormUtmTests(SimpleTestCase):
@@ -865,3 +867,99 @@ class MetaCapiPayloadTests(SimpleTestCase):
         result = send_crm_stage_event(lead)
         self.assertTrue(result.get("skipped"))
         self.assertEqual(result.get("reason"), "not_qualified_status")
+
+
+class AdmissionVsFranchiseLeadSplitTests(SimpleTestCase):
+    def test_landing_google_source_is_admission_not_franchise(self):
+        class KidsEnquiry:
+            enquiry_type = "Admission Enquiry"
+            landing_page_url = ""
+
+        self.assertEqual(resolve_notify_lead_kind(KidsEnquiry(), "Landing (Google)"), "admission")
+
+    def test_landing_google_label_without_row_is_admission(self):
+        self.assertEqual(resolve_notify_lead_kind(None, "Landing (Google)"), "admission")
+
+    def test_timekids_2g_crm_url_is_admission(self):
+        class CrmLead:
+            landing_page_url = "https://www.timekidspreschools.in/timekids-2g/landing-page.html?gclid=ABC"
+            enquiry_type = ""
+
+        self.assertEqual(resolve_notify_lead_kind(CrmLead(), "BCWW_Google"), "admission")
+
+
+class AdmissionNotInFranchiseListTests(TestCase):
+    def test_city_lp_and_website_admission_stay_out_of_franchise_filters(self):
+        admin = User.objects.create_user(
+            email="admin@timekids.com",
+            password="testpass123",
+            role="CRM",
+            full_name="Admin",
+            is_superuser=True,
+        )
+        landing = KidsEnquiry.objects.create(
+            name="Admission LP",
+            mobile="9000000991",
+            mobileno="9000000991",
+            email="lp.admit@example.com",
+            state="Tamil Nadu",
+            city="Chennai",
+            location="Anna Nagar",
+            enquiry_type="Admission Enquiry",
+            source="Google",
+        )
+        Enquiry.objects.create(
+            enquiry_type=EnquiryType.ADMISSION,
+            name="Website Admit",
+            email="web.admit@example.com",
+            phone="9000000992",
+            city="Chennai",
+        )
+        misfiled = CrmLead.objects.create(
+            full_name="Misfiled City LP",
+            mobile="9000000993",
+            email="misfiled@example.com",
+            state="Tamil Nadu",
+            city="Chennai",
+            source=CrmLeadSource.JULY_LP,
+            landing_page_url="https://www.timekidspreschools.in/timekids-2g/landing-page.html?gclid=XYZ",
+            gclid="XYZ",
+        )
+        franchise_lp = CrmLead.objects.create(
+            full_name="Franchise Google LP",
+            mobile="9000000994",
+            email="franchise.lp@example.com",
+            state="Tamil Nadu",
+            city="Chennai",
+            source=CrmLeadSource.JULY_LP,
+            landing_page_url="https://www.timekidspreschools.in/Timekids-lp-TKKTAM/?gclid=FRAN",
+            gclid="FRAN",
+        )
+
+        factory = RequestFactory()
+        franchise_req = factory.get("/enquiries/admin/crm-leads/", {"source": "franchise_all"})
+        franchise_req.user = admin
+        google_req = factory.get("/enquiries/admin/crm-leads/", {"source": "google"})
+        google_req.user = admin
+        landing_req = factory.get("/enquiries/admin/crm-leads/", {"source": "landing"})
+        landing_req.user = admin
+
+        franchise_ids = {row["id"] for row in unified_leads_page(franchise_req, page=1, limit=50)}
+        google_ids = {row["id"] for row in unified_leads_page(google_req, page=1, limit=50)}
+        landing_ids = {row["id"] for row in unified_leads_page(landing_req, page=1, limit=50)}
+
+        self.assertNotIn(f"landing-{landing.id}", franchise_ids)
+        self.assertNotIn(f"enquiry-{Enquiry.objects.get(email='web.admit@example.com').id}", franchise_ids)
+        self.assertNotIn(f"crm-{misfiled.id}", franchise_ids)
+        self.assertIn(f"crm-{franchise_lp.id}", franchise_ids)
+
+        self.assertNotIn(f"crm-{misfiled.id}", google_ids)
+        self.assertIn(f"crm-{franchise_lp.id}", google_ids)
+
+        self.assertIn(f"landing-{landing.id}", landing_ids)
+        self.assertIn(f"crm-{misfiled.id}", landing_ids)
+        self.assertNotIn(f"crm-{franchise_lp.id}", landing_ids)
+
+        self.assertEqual(_filter_crm_qs(franchise_req).filter(pk=misfiled.id).count(), 0)
+        self.assertEqual(_filter_crm_qs(landing_req, admission_city_lp_only=True).filter(pk=misfiled.id).count(), 1)
+

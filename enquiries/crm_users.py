@@ -1090,19 +1090,32 @@ def resolve_notify_lead_kind(obj=None, lead_source: str = "") -> str:
     source = (lead_source or "").strip().lower()
     if obj is not None:
         model = type(obj).__name__.lower()
+        url = (getattr(obj, "landing_page_url", None) or "").lower()
+        campaign_bits = " ".join(
+            str(getattr(obj, attr, None) or "")
+            for attr in ("utm_medium", "utm_campaign", "utm_content", "utm_term")
+        ).lower()
+        payload = getattr(obj, "raw_payload", None)
+        if isinstance(payload, dict):
+            campaign_bits += " " + str(payload.get("meta_form_name") or "").lower()
+        if "timekids-2g" in url or "admission" in campaign_bits:
+            return "admission"
+        et = (getattr(obj, "enquiry_type", None) or "").strip().upper()
+        if model in ("kidsenquiry", "landingenquiryrecord") or "admission" in et:
+            return "admission"
         if "franchise" in model:
             return "franchise"
         if model == "crmlead":
             return "franchise"  # campaign / website franchise pipeline
-        if model in ("enquiry", "kidsenquiry"):
-            et = (getattr(obj, "enquiry_type", None) or "").strip().upper()
+        if model == "enquiry":
             if et == "FRANCHISE":
                 return "franchise"
             return "admission"
+    # Admission city LPs post source=Google — do not treat that as franchise Google.
+    if any(k in source for k in ("admission", "landing", "contact", "centerpage")):
+        return "admission"
     if any(k in source for k in ("franchise", "campaign", "meta", "google", "website lead", "paid")):
         return "franchise"
-    if any(k in source for k in ("admission", "landing", "contact")):
-        return "admission"
     return "other"
 
 
