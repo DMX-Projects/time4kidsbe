@@ -256,6 +256,66 @@ def is_google_ads_landing_url(url: str | None) -> bool:
     return any(marker in text for marker in _GOOGLE_ADS_URL_MARKERS)
 
 
+def is_admission_city_lp_url(url: str | None) -> bool:
+    """True for timekids-2g admission city landing pages (not franchise LPs)."""
+    return "timekids-2g" in (url or "").lower()
+
+
+def _admission_city_lp_url_q() -> Q:
+    return Q(landing_page_url__icontains="timekids-2g")
+
+
+def is_admission_named_campaign_lead(lead) -> bool:
+    """Meta/Google campaign whose form or campaign name is an admission lead.
+
+    Example: medium ``BCWW_TK_Kerala_Admission``,
+    campaign ``Meta_Lead_Gen_Kerala_Palakkad_Admission``.
+    """
+    if lead is None:
+        return False
+    parts: list[str] = []
+    if isinstance(lead, dict):
+        for key in (
+            "utm_medium",
+            "utmMedium",
+            "utm_campaign",
+            "utmCampaign",
+            "utm_content",
+            "utmContent",
+            "utm_term",
+            "utmTerm",
+            "formName",
+            "form_name",
+            "meta_form_name",
+        ):
+            parts.append(str(lead.get(key) or ""))
+        payload = lead.get("raw_payload") or lead.get("rawPayload")
+    else:
+        for attr in ("utm_medium", "utm_campaign", "utm_content", "utm_term"):
+            parts.append(str(getattr(lead, attr, None) or ""))
+        payload = getattr(lead, "raw_payload", None)
+    if isinstance(payload, dict):
+        parts.append(str(payload.get("meta_form_name") or payload.get("form_name") or ""))
+    return "admission" in " ".join(parts).lower()
+
+
+def _admission_named_campaign_q() -> Q:
+    # Char fields only. A JSON key lookup is NULL when the form name was never
+    # stored, and exclude() would then drop ordinary franchise leads.
+    return (
+        Q(utm_medium__icontains="admission")
+        | Q(utm_campaign__icontains="admission")
+        | Q(utm_content__icontains="admission")
+        | Q(utm_term__icontains="admission")
+        | Q(comments__icontains="Form:") & Q(comments__icontains="admission")
+    )
+
+
+def _admission_misfiled_campaign_q() -> Q:
+    """Campaign rows that belong on the admission list, not Franchise."""
+    return _admission_city_lp_url_q() | _admission_named_campaign_q()
+
+
 def is_google_ads_lead(lead) -> bool:
     """True when the lead has a stored gclid or Google Ads markers in the landing URL."""
     if (getattr(lead, "gclid", None) or "").strip():
@@ -547,9 +607,13 @@ def cross_state_form_info(
 
 def lead_to_dict(lead: CrmLead, *, include_detail: bool = False, request=None) -> dict:
     # LP / Meta / LP-WB forms only collect state + city — never invent a centre.
-    is_franchise_campaign = lead.source in FRANCHISE_CAMPAIGN_SOURCES
+    is_admission_city_lp = is_admission_city_lp_url(getattr(lead, "landing_page_url", None))
+    is_named_admission = is_admission_named_campaign_lead(lead)
+    is_franchise_campaign = (
+        not is_admission_city_lp and not is_named_admission and lead.source in FRANCHISE_CAMPAIGN_SOURCES
+    )
 
-    if is_franchise_campaign:
+    if is_franchise_campaign or is_named_admission:
         city = lead.city or ""
         state = lead.state or ""
         centre_name = ""
@@ -593,13 +657,17 @@ def lead_to_dict(lead: CrmLead, *, include_detail: bool = False, request=None) -
             else None
         ),
         "source": (
-            campaign_channel_api_key(
-                lead.source,
-                lead.landing_page_url,
-                state,
-                request=request,
+            "landing"
+            if is_admission_city_lp or is_named_admission
+            else (
+                campaign_channel_api_key(
+                    lead.source,
+                    lead.landing_page_url,
+                    state,
+                    request=request,
+                )
+                or source_to_api(effective_crm_source(lead))
             )
-            or source_to_api(effective_crm_source(lead))
         ),
         "landingPageUrl": lead.landing_page_url or "",
         "formName": crm_lead_form_name(lead),
@@ -1092,6 +1160,10 @@ def _apply_viewer_assignment_scope(qs, request):
 
 def _is_franchise_assignable_object(obj) -> bool:
     """True when lead belongs to the franchise CRM pipeline (not admission)."""
+    if is_admission_city_lp_url(getattr(obj, "landing_page_url", None)):
+        return False
+    if is_admission_named_campaign_lead(obj):
+        return False
     model = type(obj).__name__.lower()
     if model in ("crmlead", "franchiseenquiry"):
         return True
@@ -1105,9 +1177,13 @@ def _is_admission_assignable_object(obj) -> bool:
     model = type(obj).__name__.lower()
     if model == "kidsenquiry":
         return True
+    if is_admission_city_lp_url(getattr(obj, "landing_page_url", None)):
+        return True
+    if is_admission_named_campaign_lead(obj):
+        return True
     if model == "enquiry":
         et = (getattr(obj, "enquiry_type", None) or "").strip().upper()
-        return et in ("ADMISSION", "CONTACT")
+        return et in ("ADMISSION", "CONTACT") or "ADMISSION" in et
     return False
 
 
@@ -1522,15 +1598,23 @@ def _filter_crm_qs(
     *,
     apply_campaign_filter: bool = True,
     apply_medium_filter: bool = True,
+    admission_city_lp_only: bool = False,
 ):
     params = _query_params(request)
     qs = CrmLead.objects.all()
-    if _agency_lead_kind(request) == "landing":
+    if not admission_city_lp_only and _agency_lead_kind(request) == "landing":
         return CrmLead.objects.none()
     # CRM admin shows paid campaign leads + referral-channel leads.
     qs = qs.filter(source__in=CRM_VISIBLE_SOURCES)
+    if admission_city_lp_only:
+        qs = qs.filter(_admission_misfiled_campaign_q())
+    else:
+        # Admission city LPs and Admission-named Meta/Google forms stay out of Franchise.
+        qs = qs.exclude(_admission_misfiled_campaign_q())
     source_filter = _request_source_filter(request)
-    if source_filter and _include_crm(source_filter):
+    if admission_city_lp_only:
+        pass
+    elif source_filter and _include_crm(source_filter):
         if source_filter == "agency":
             # Bcwebwise: Meta Instant Forms + Google LPs, including BCWW TK West Bengal forms
             # (Ants WB LP is excluded later by _apply_agency_filter_to_crm_qs).
@@ -1578,7 +1662,8 @@ def _filter_crm_qs(
     elif source_filter and not _include_crm(source_filter):
         return CrmLead.objects.none()
 
-    qs = _apply_agency_filter_to_crm_qs(qs, request)
+    if not admission_city_lp_only:
+        qs = _apply_agency_filter_to_crm_qs(qs, request)
 
     if apply_campaign_filter:
         campaign_value = (params.get("campaign") or params.get("utmCampaign") or "").strip()
@@ -1888,6 +1973,13 @@ def _filter_landing_qs(request):
     return _apply_viewer_assignment_scope(qs, request).order_by("-created_date")
 
 
+def _filter_admission_city_lp_crm_qs(request, **kwargs):
+    """CrmLead rows from timekids-2g admission city LPs — listed with Admission, not Franchise."""
+    if not _include_landing(_request_source_filter(request), request):
+        return CrmLead.objects.none()
+    return _filter_crm_qs(request, admission_city_lp_only=True, **kwargs)
+
+
 def unified_leads_total(request) -> int:
     total = 0
     if _include_crm(_request_source_filter(request)):
@@ -1900,6 +1992,7 @@ def unified_leads_total(request) -> int:
         total += _filter_franchise_enquiry_qs(request).count()
     if _include_landing(_request_source_filter(request), request):
         total += _filter_landing_qs(request).count()
+        total += _filter_admission_city_lp_crm_qs(request).count()
     return total
 
 
@@ -1924,6 +2017,10 @@ def unified_leads_page(request, *, page: int, limit: int) -> list[dict]:
         )
     if _include_landing(_request_source_filter(request), request):
         merged.extend(landing_to_dict(row) for row in _filter_landing_qs(request)[:fetch_count])
+        merged.extend(
+            lead_to_dict(row, request=request)
+            for row in _filter_admission_city_lp_crm_qs(request)[:fetch_count]
+        )
 
     merged.sort(key=lambda row: row.get("createdAt") or "", reverse=True)
     page_rows = merged[offset : offset + limit]
@@ -2029,6 +2126,19 @@ def unified_dashboard_stats(request) -> dict:
             if getattr(row, "meeting_done", False):
                 meeting_done += 1
         today_count += landing_qs.filter(created_date__date=today).count()
+        misfiled_qs = _filter_admission_city_lp_crm_qs(request)
+        misfiled_count = misfiled_qs.count()
+        if misfiled_count:
+            source_counts["landing"] = source_counts.get("landing", 0) + misfiled_count
+        for row in misfiled_qs.values("status").annotate(count=Count("id")):
+            status_counts[row["status"]] = status_counts.get(row["status"], 0) + row["count"]
+        today_count += misfiled_qs.filter(created_at__date=today).count()
+        follow_ups += misfiled_qs.filter(
+            status__in=[CrmLeadStatus.FOLLOW_UP, CrmLeadStatus.VISITED_SCHOOL]
+        ).count()
+        converted += misfiled_qs.filter(status=CrmLeadStatus.CONVERTED_ADMISSION).count()
+        meeting_fixed += misfiled_qs.filter(meeting_fixed=True).count()
+        meeting_done += misfiled_qs.filter(meeting_done=True).count()
 
     return {
         "totalEnquiries": unified_leads_total(request),
@@ -2632,6 +2742,8 @@ def unified_reports_data(request) -> dict:
             payload = row.get("raw_payload") if isinstance(row.get("raw_payload"), dict) else {}
             mapped_status = str(payload.get("crm_status") or "").strip() or "untouched"
             _add_count(row.get("city") or "Unknown", "landing", mapped_status, 1)
+        for row in _filter_admission_city_lp_crm_qs(request).values("city", "status").annotate(count=Count("id")):
+            _add_count(row.get("city") or "Unknown", "landing", row["status"], row["count"])
 
     return {"cities": cities_data}
 
