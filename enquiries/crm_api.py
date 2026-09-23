@@ -3112,8 +3112,54 @@ def generate_state_wise_lead_report_excel(report_data: dict) -> bytes:
     return output.getvalue()
 
 
+def _payload_tracking_value(payload: dict, *keys: str) -> str:
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, (list, tuple)):
+            value = value[0] if value else ""
+        value = str(value or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _landing_report_tracking(row: KidsEnquiry) -> dict[str, str]:
+    """Pull UTM / gclid from kids_enquiry.raw_payload when the 2G form captured them."""
+    payload = row.raw_payload if isinstance(row.raw_payload, dict) else {}
+    return {
+        "utm_source": _payload_tracking_value(payload, "utm_source", "utmSource")
+        or (row.source or "Google"),
+        "utm_medium": _payload_tracking_value(payload, "utm_medium", "utmMedium"),
+        "utm_campaign": _payload_tracking_value(payload, "utm_campaign", "utmCampaign"),
+        "utm_content": _payload_tracking_value(payload, "utm_content", "utmContent"),
+        "gclid": _payload_tracking_value(payload, "gclid", "gbraid", "wbraid"),
+    }
+
+
+def _latest_history_notes_by_lead_id(lead_keys: list[str]) -> dict[str, str]:
+    """Map unified lead_id → latest non-nurture History note content."""
+    from .models import UnifiedLeadNote
+
+    notes_map: dict[str, str] = {}
+    if not lead_keys:
+        return notes_map
+    unified_qs = (
+        UnifiedLeadNote.objects.filter(lead_id__in=lead_keys)
+        .order_by("-created_at")
+        .only("lead_id", "content", "created_at")
+    )
+    for n in unified_qs:
+        content = (n.content or "").strip()
+        if not content or content.startswith("[Email]") or content.startswith("[WhatsApp]"):
+            continue
+        key = str(n.lead_id or "").strip()
+        if key and key not in notes_map:
+            notes_map[key] = content
+    return notes_map
+
+
 def agency_lead_report_data(request) -> dict:
-    """Return flat lead detailed report data for Agency logins (11 columns)."""
+    """Return flat lead detailed report data for Agency logins (12 columns)."""
     qs = _filter_crm_qs(request).order_by("-created_at")
 
     q_params = getattr(request, "query_params", getattr(request, "GET", {}))
@@ -3156,44 +3202,46 @@ def agency_lead_report_data(request) -> dict:
             | Q(gclid__icontains=search)
         )
 
-    from .models import UnifiedLeadNote, CrmLeadNote
+    from .models import CrmLeadNote
 
     lead_list = list(qs)
-    lead_ids = [l.id for l in lead_list]
+    # Admission city LPs / Admission-named Meta forms (same set as All Leads → Admission).
+    admission_crm_list: list = []
+    landing_list: list = []
+    if is_bcwebwise_agency_user(request=request) and _agency_lead_kind(request) != "campaign":
+        admission_crm_list = list(_filter_admission_city_lp_crm_qs(request).order_by("-created_at"))
+        landing_list = list(_filter_landing_qs(request))
+
+    lead_ids = [l.id for l in lead_list] + [l.id for l in admission_crm_list]
     crm_keys = [f"crm_{lid}" for lid in lead_ids]
+    landing_keys = [f"landing_{row.id}" for row in landing_list]
 
     # Description = CRM History notes only (unified_lead_notes + legacy campaign_lead_notes).
     # Never use CrmLead.comments — that stores original Meta/form answers, not History.
     notes_map: dict[int, str] = {}
+    landing_notes_map = _latest_history_notes_by_lead_id(landing_keys)
 
-    unified_qs = (
-        UnifiedLeadNote.objects.filter(lead_id__in=crm_keys)
-        .order_by("-created_at")
-        .only("lead_id", "content", "created_at")
-    )
-    for n in unified_qs:
-        content = (n.content or "").strip()
-        if not content or content.startswith("[Email]") or content.startswith("[WhatsApp]"):
-            continue
-        try:
-            numeric_id = int(str(n.lead_id).split("_", 1)[1])
-        except (IndexError, ValueError):
-            continue
-        if numeric_id not in notes_map:
+    if crm_keys:
+        for key, content in _latest_history_notes_by_lead_id(crm_keys).items():
+            try:
+                numeric_id = int(str(key).split("_", 1)[1])
+            except (IndexError, ValueError):
+                continue
             notes_map[numeric_id] = content
 
-    legacy_qs = (
-        CrmLeadNote.objects.filter(lead_id__in=lead_ids)
-        .order_by("-created_at")
-        .only("lead_id", "content", "created_at")
-    )
-    for n in legacy_qs:
-        content = (n.content or "").strip()
-        if not content or content.startswith("[Email]") or content.startswith("[WhatsApp]"):
-            continue
-        lid = int(n.lead_id)
-        if lid not in notes_map:
-            notes_map[lid] = content
+    if lead_ids:
+        legacy_qs = (
+            CrmLeadNote.objects.filter(lead_id__in=lead_ids)
+            .order_by("-created_at")
+            .only("lead_id", "content", "created_at")
+        )
+        for n in legacy_qs:
+            content = (n.content or "").strip()
+            if not content or content.startswith("[Email]") or content.startswith("[WhatsApp]"):
+                continue
+            lid = int(n.lead_id)
+            if lid not in notes_map:
+                notes_map[lid] = content
 
     leads = []
     for lead in lead_list:
@@ -3218,28 +3266,52 @@ def agency_lead_report_data(request) -> dict:
             "description": notes_map.get(lead.id, ""),
         })
 
-    if is_bcwebwise_agency_user(request=request):
-        for row in _filter_landing_qs(request):
-            dt_str = (
-                timezone.localtime(row.created_date).strftime("%Y-%m-%d %H:%M:%S")
-                if row.created_date
-                else ""
-            )
-            leads.append({
-                "id": f"landing-{row.id}",
-                "name": row.name or "",
-                "state": row.state or "",
-                "city": row.city or "",
-                "lead_type": "Admission",
-                "utm_source": (row.source or "Google"),
-                "utm_medium": "",
-                "utm_campaign": "",
-                "status": _landing_crm_status(row),
-                "created_at": dt_str,
-                "utm_content": "",
-                "gclid": "",
-                "description": "",
-            })
+    for lead in admission_crm_list:
+        dt_str = (
+            timezone.localtime(lead.created_at).strftime("%Y-%m-%d %H:%M:%S")
+            if lead.created_at
+            else ""
+        )
+        leads.append({
+            "id": f"crm-{lead.id}",
+            "name": lead.full_name or "",
+            "state": lead.state or "",
+            "city": lead.city or "",
+            "lead_type": "Admission",
+            "utm_source": lead.utm_source or "",
+            "utm_medium": lead.utm_medium or "",
+            "utm_campaign": lead.utm_campaign or "",
+            "status": lead.status or "",
+            "created_at": dt_str,
+            "utm_content": lead.utm_content or "",
+            "gclid": lead.gclid or "",
+            "description": notes_map.get(lead.id, ""),
+        })
+
+    for row in landing_list:
+        tracking = _landing_report_tracking(row)
+        dt_str = (
+            timezone.localtime(row.created_date).strftime("%Y-%m-%d %H:%M:%S")
+            if row.created_date
+            else ""
+        )
+        leads.append({
+            "id": f"landing-{row.id}",
+            "name": row.name or "",
+            "state": row.state or "",
+            "city": row.city or "",
+            "lead_type": "Admission",
+            "utm_source": tracking["utm_source"],
+            "utm_medium": tracking["utm_medium"],
+            "utm_campaign": tracking["utm_campaign"],
+            "status": _landing_crm_status(row),
+            "created_at": dt_str,
+            "utm_content": tracking["utm_content"],
+            "gclid": tracking["gclid"],
+            "description": landing_notes_map.get(f"landing_{row.id}", ""),
+        })
+
+    if landing_list or admission_crm_list:
         leads.sort(key=lambda item: item.get("created_at") or "", reverse=True)
 
     return {
