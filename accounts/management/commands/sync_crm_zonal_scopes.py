@@ -41,7 +41,7 @@ def _codes_to_display(codes: str | tuple[str, ...] | list[str]) -> str:
 TEAM_SCOPES: dict[str, tuple[str, str, str]] = {
     "jyoti.mishra@timekidspreschools.com": (
         CrmZone.EAST,
-        "Bihar, Chhattisgarh, Odisha, West Bengal",
+        "Bihar, Chhattisgarh, Odisha, West Bengal, Karnataka",
         "Zonal Manager",
     ),
     "tejbal@timekidspreschools.com": (
@@ -89,6 +89,8 @@ class Command(BaseCommand):
             user.role = UserRole.CRM
             user.crm_zone = zone or user.crm_zone or ""
             user.crm_states = states
+            # Zonal Managers cover whole states; a city list would hide leads elsewhere in them.
+            user.crm_cities = ""
             if designation:
                 user.crm_designation = designation
             user.is_active = True
@@ -97,6 +99,7 @@ class Command(BaseCommand):
                     "role",
                     "crm_zone",
                     "crm_states",
+                    "crm_cities",
                     "crm_designation",
                     "is_active",
                 ]
