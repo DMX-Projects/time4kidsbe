@@ -1,3 +1,4 @@
+from io import StringIO
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -637,8 +638,7 @@ class LandingSheetAutoAssignTests(TestCase):
         self.jyoti = _user(
             "jyoti.mishra@timekidspreschools.com",
             "Jyoti Mishra",
-            "Bihar, Chhattisgarh, Odisha, West Bengal",
-            "Patna,Bhubaneswar,Kolkata,Howrah",
+            "Bihar, Chhattisgarh, Odisha, West Bengal, Karnataka",
             designation="Zonal Manager",
         )
 
@@ -667,7 +667,7 @@ class LandingSheetAutoAssignTests(TestCase):
             "Trivandrum": "satishmenon@timekidspreschools.com",
             "Palakkad": "vivek@timekidspreschools.com",
             "Thrissur": "vivek@timekidspreschools.com",
-            "Bangalore": "sujee@timekidspreschools.com",
+            "Bangalore": "jyoti.mishra@timekidspreschools.com",
             "Pune": "deepaknikam@timekidspreschools.com",
             "Kolkata": "jyoti.mishra@timekidspreschools.com",
         }
@@ -797,6 +797,84 @@ class ApTsEqualShareAssignTests(TestCase):
             ).count(),
             1,
         )
+
+
+class KarnatakaPrimaryAssignTests(TestCase):
+    def setUp(self):
+        from accounts.models import UserRole
+        from enquiries.crm_users import suggest_assignee_for_geo
+
+        self.suggest_assignee_for_geo = suggest_assignee_for_geo
+        self.jyoti = User.objects.create_user(
+            email="jyoti.mishra@timekidspreschools.com",
+            password="testpass123",
+            role=UserRole.CRM,
+            full_name="Jyoti Mishra",
+            crm_states="Bihar, Chhattisgarh, Odisha, West Bengal, Karnataka",
+        )
+        self.tejbal = User.objects.create_user(
+            email="tejbal@timekidspreschools.com",
+            password="testpass123",
+            role=UserRole.CRM,
+            full_name="Tejbal Singh",
+            crm_states="Andhra Pradesh, Telangana, Karnataka",
+        )
+        self.thimmesh = User.objects.create_user(
+            email="thimmesh.k@timekidspreschools.com",
+            password="testpass123",
+            role=UserRole.CRM,
+            full_name="Thimmesh",
+            crm_states="Karnataka",
+        )
+
+    def test_new_karnataka_leads_go_to_jyoti(self):
+        for args, kwargs in (
+            (("Karnataka", "Bengaluru"), {"pipeline": "admission"}),
+            (("Karnataka", "Mysuru"), {"pipeline": "franchise"}),
+            (("Karnataka", None), {"pipeline": "franchise", "ignore_city": True}),
+            ((None, "Bangalore"), {"pipeline": "admission"}),
+        ):
+            picked = self.suggest_assignee_for_geo(*args, **kwargs)
+            self.assertEqual(picked.id, self.jyoti.id, msg=f"{args} {kwargs}")
+
+    def test_other_states_unchanged(self):
+        picked = self.suggest_assignee_for_geo(
+            "Telangana", None, pipeline="franchise", ignore_city=True
+        )
+        self.assertEqual(picked.id, self.tejbal.id)
+
+    def test_handover_command_moves_leads_and_deactivates(self):
+        from django.core.management import call_command
+
+        sujee = User.objects.create_user(
+            email="sujee@timekidspreschools.com",
+            password="testpass123",
+            role="CRM",
+            full_name="Sujee",
+            crm_states="Karnataka",
+        )
+        lead = CrmLead.objects.create(
+            full_name="KA Lead",
+            mobile="9999999999",
+            email="ka@example.com",
+            state="Karnataka",
+            city="Bengaluru",
+            source=CrmLeadSource.JULY_META,
+            status="follow_up",
+            assigned_user=sujee,
+        )
+        call_command(
+            "handover_crm_user_leads",
+            "--from", sujee.email,
+            "--to", self.jyoti.email,
+            "--deactivate",
+            stdout=StringIO(),
+        )
+        lead.refresh_from_db()
+        sujee.refresh_from_db()
+        self.assertEqual(lead.assigned_user_id, self.jyoti.id)
+        self.assertEqual(lead.status, "follow_up")
+        self.assertFalse(sujee.is_active)
 
 
 class MetaCapiPayloadTests(SimpleTestCase):

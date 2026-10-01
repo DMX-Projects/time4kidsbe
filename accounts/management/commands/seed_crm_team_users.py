@@ -205,14 +205,12 @@ TEAM_USERS = (
         "name": "Jyoti Mishra",
         "password": "Jyoti@Crm79",
         "designation": "Zonal Manager",
-        "mapping_region": "East",
+        "mapping_region": "East/KA",
         "phone": "8335807272",
         "zone": "EAST",
-        "states": "Bihar, Chhattisgarh, Odisha, West Bengal",
-        "cities": (
-            "Patna,Bhadrak,Bhubaneswar,Cuttack,Khurda,"
-            "Asansol,Barasat,Durgapur,Hooghly,Howrah,Kolkata,Siliguri"
-        ),
+        "states": "Bihar, Chhattisgarh, Odisha, West Bengal, Karnataka",
+        # Whole-state scope: a city list would hide Karnataka leads outside it.
+        "cities": "",
         "notify_franchise": True,
         "notify_admission": True,
     },

@@ -32,6 +32,12 @@ REGIONAL_MANAGER_ASSIGN_EMAILS = frozenset(
     }
 )
 
+# States where every new lead goes to one owner first (ahead of sheet managers / RMs / ZMs).
+# Other heads covering the state keep visibility and can still reassign.
+STATE_PRIMARY_ASSIGNEE_EMAILS: dict[str, str] = {
+    "KA": "jyoti.mishra@timekidspreschools.com",
+}
+
 CRM_LEAD_ASSIGNER_EMAILS = (
     ZONAL_MANAGER_ASSIGN_EMAILS
     | REGIONAL_MANAGER_ASSIGN_EMAILS
@@ -877,6 +883,14 @@ def rebalance_ap_ts_equal_share(*, dry_run: bool = True) -> dict:
     }
 
 
+def _state_primary_assignee(state: str | None, city: str | None) -> User | None:
+    code = resolve_lead_state_code(state, city)
+    email = STATE_PRIMARY_ASSIGNEE_EMAILS.get(code or "")
+    if not email:
+        return None
+    return crm_users_queryset().filter(email__iexact=email).first()
+
+
 def suggest_assignee_for_geo(
     state: str | None = None,
     city: str | None = None,
@@ -891,9 +905,15 @@ def suggest_assignee_for_geo(
     1. If city is present and matches a pipeline handler → that manager
        (e.g. AP/TS + city → Sai Kishore / Harshit, shared evenly).
     2. Else state-only → covering Regional Manager, then Zonal Manager.
+
+    States in ``STATE_PRIMARY_ASSIGNEE_EMAILS`` always go to that owner first.
     """
-    allowed_handlers = _pipeline_handler_emails(pipeline)
     city_name = (city or "").strip()
+    primary = _state_primary_assignee(state, None if ignore_city else city_name or None)
+    if primary:
+        return primary
+
+    allowed_handlers = _pipeline_handler_emails(pipeline)
 
     # Prefer a city-matched sheet manager when city is usable (Meta LP dropdowns,
     # or Instant Form city that happens to match territory).
