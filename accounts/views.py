@@ -113,6 +113,16 @@ class CurrentUserView(APIView):
                     dp,
                     context={"request": request},
                 ).data
+        if request.user.normalized_role() == UserRole.TEACHER.value:
+            from accounts.profile_access import teacher_profile_for_user
+            from franchises.serializers import TeacherProfileSerializer
+
+            tp = teacher_profile_for_user(request.user)
+            if tp:
+                data["teacher_profile"] = TeacherProfileSerializer(
+                    tp,
+                    context={"request": request},
+                ).data
         return Response(data)
 
 

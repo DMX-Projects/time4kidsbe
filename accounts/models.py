@@ -12,6 +12,7 @@ class UserRole(models.TextChoices):
     FRANCHISE = "FRANCHISE", "Franchise"
     PARENT = "PARENT", "Parent"
     DRIVER = "DRIVER", "Driver"
+    TEACHER = "TEACHER", "Teacher"
 
 
 class CrmZone(models.TextChoices):
@@ -111,6 +112,24 @@ class User(AbstractBaseUser, PermissionsMixin):
         default=False,
         help_text="Receive new-lead emails for Admission leads in this territory.",
     )
+    # Set for team members added from the CRM Users page. The original sheet team is
+    # configured by email in enquiries.crm_users and leaves these empty.
+    crm_reports_to = models.ForeignKey(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="crm_team_members",
+        help_text="CRM only: Zonal / Regional Manager this user reports to (Users page).",
+    )
+    crm_handles_franchise = models.BooleanField(
+        default=False,
+        help_text="CRM only: can be assigned Franchise leads (Users page).",
+    )
+    crm_handles_admission = models.BooleanField(
+        default=False,
+        help_text="CRM only: can be assigned Admission leads (Users page).",
+    )
 
     is_staff = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
@@ -204,6 +223,10 @@ class User(AbstractBaseUser, PermissionsMixin):
     @property
     def is_driver(self) -> bool:
         return self.normalized_role() == UserRole.DRIVER.value
+
+    @property
+    def is_teacher(self) -> bool:
+        return self.normalized_role() == UserRole.TEACHER.value
 
 
 class ParentRegistration(models.Model):

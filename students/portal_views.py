@@ -1,7 +1,13 @@
-from accounts.permissions import IsDriverUser
-from accounts.profile_access import driver_profile_for_user
-from franchises.models import DriverProfile
-from franchises.serializers import DriverProfileSerializer, DriverCreateSerializer
+from accounts.permissions import IsDriverUser, IsTeacherUser
+from accounts.profile_access import driver_profile_for_user, teacher_profile_for_user
+from franchises.models import DriverProfile, TeacherProfile
+from franchises.serializers import (
+    DriverProfileSerializer,
+    DriverCreateSerializer,
+    TeacherProfileSerializer,
+    TeacherCreateSerializer,
+    TeacherUpdateSerializer,
+)
 """Parent portal: homework, announcements, attendance, fees, transport, support tickets."""
 
 import re
@@ -23,7 +29,20 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from accounts.permissions import IsAdminUser, IsFranchiseUser, IsParentUser
+from accounts.permissions import (
+    IsAdminUser,
+    IsFranchiseOrTeacherUser,
+    IsFranchiseUser,
+    IsParentUser,
+)
+from students.teacher_scope import (
+    assert_student_in_teacher_class,
+    scope_class_content,
+    scope_student_rows,
+    teacher_class_save_kwargs,
+    teacher_profile_for_request,
+    teacher_student_ids,
+)
 from accounts.profile_access import (
     effective_franchise_for_parent,
     find_student_for_parent_user,
@@ -1980,7 +1999,7 @@ class ParentNotificationReadView(APIView):
 
 
 class FranchiseHomeworkListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsFranchiseUser]
+    permission_classes = [IsFranchiseOrTeacherUser]
     serializer_class = HomeworkAssignmentSerializer
     pagination_class = None
     parser_classes = [JSONParser, FormParser, MultiPartParser]
@@ -1990,6 +2009,7 @@ class FranchiseHomeworkListCreateView(generics.ListCreateAPIView):
         if not f:
             return HomeworkAssignment.objects.none()
         qs = HomeworkAssignment.objects.filter(franchise=f).select_related("student").order_by("-assigned_date")
+        qs = scope_class_content(qs, self.request)
         date_str = (self.request.query_params.get("assigned_date") or "").strip()
         if date_str:
             parsed = parse_date(date_str)
@@ -2008,11 +2028,11 @@ class FranchiseHomeworkListCreateView(generics.ListCreateAPIView):
         f = franchise_profile_for_user(self.request.user)
         if not f:
             raise PermissionDenied("Franchise profile not found")
-        serializer.save(franchise=f)
+        serializer.save(franchise=f, **teacher_class_save_kwargs(self.request, serializer.validated_data))
 
 
 class FranchiseHomeworkDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsFranchiseUser]
+    permission_classes = [IsFranchiseOrTeacherUser]
     serializer_class = HomeworkAssignmentSerializer
     parser_classes = [JSONParser, FormParser, MultiPartParser]
 
@@ -2020,16 +2040,20 @@ class FranchiseHomeworkDetailView(generics.RetrieveUpdateDestroyAPIView):
         f = franchise_profile_for_user(self.request.user)
         if not f:
             return HomeworkAssignment.objects.none()
-        return HomeworkAssignment.objects.filter(franchise=f).select_related("student")
+        qs = HomeworkAssignment.objects.filter(franchise=f).select_related("student")
+        return scope_class_content(qs, self.request)
 
     def get_serializer_context(self):
         c = super().get_serializer_context()
         c["request"] = self.request
         return c
 
+    def perform_update(self, serializer):
+        serializer.save(**teacher_class_save_kwargs(self.request, serializer.validated_data))
+
 
 class FranchiseDailyActivityListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsFranchiseUser]
+    permission_classes = [IsFranchiseOrTeacherUser]
     serializer_class = DailyActivitySerializer
     pagination_class = None
 
@@ -2038,6 +2062,7 @@ class FranchiseDailyActivityListCreateView(generics.ListCreateAPIView):
         if not f:
             return DailyActivity.objects.none()
         qs = DailyActivity.objects.filter(franchise=f).order_by("-activity_date", "class_name")
+        qs = scope_class_content(qs, self.request, has_student=False)
         date_str = (self.request.query_params.get("activity_date") or "").strip()
         if date_str:
             parsed = parse_date(date_str)
@@ -2051,18 +2076,21 @@ class FranchiseDailyActivityListCreateView(generics.ListCreateAPIView):
         f = franchise_profile_for_user(self.request.user)
         if not f:
             raise PermissionDenied("Franchise profile not found")
-        serializer.save(franchise=f)
+        serializer.save(franchise=f, **teacher_class_save_kwargs(self.request, serializer.validated_data))
 
 
 class FranchiseDailyActivityDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsFranchiseUser]
+    permission_classes = [IsFranchiseOrTeacherUser]
     serializer_class = DailyActivitySerializer
 
     def get_queryset(self):
         f = franchise_profile_for_user(self.request.user)
         if not f:
             return DailyActivity.objects.none()
-        return DailyActivity.objects.filter(franchise=f)
+        return scope_class_content(DailyActivity.objects.filter(franchise=f), self.request, has_student=False)
+
+    def perform_update(self, serializer):
+        serializer.save(**teacher_class_save_kwargs(self.request, serializer.validated_data))
 
 
 def _after_announcement_saved(announcement: Announcement) -> None:
@@ -2084,7 +2112,7 @@ def _after_announcement_saved(announcement: Announcement) -> None:
 
 
 class FranchiseAnnouncementListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsFranchiseUser]
+    permission_classes = [IsFranchiseOrTeacherUser]
     serializer_class = AnnouncementSerializer
     pagination_class = None
 
@@ -2097,6 +2125,7 @@ class FranchiseAnnouncementListCreateView(generics.ListCreateAPIView):
             .select_related("student", "campaign")
             .order_by("-published_at")
         )
+        qs = scope_class_content(qs, self.request)
         date_str = (self.request.query_params.get("published_date") or "").strip()
         if date_str:
             parsed = parse_date(date_str)
@@ -2119,19 +2148,21 @@ class FranchiseAnnouncementListCreateView(generics.ListCreateAPIView):
             franchise=f,
             visible_to_parents=True,
             visible_to_centres=False,
+            **teacher_class_save_kwargs(self.request, serializer.validated_data),
         )
         _after_announcement_saved(announcement)
 
 
 class FranchiseAnnouncementDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsFranchiseUser]
+    permission_classes = [IsFranchiseOrTeacherUser]
     serializer_class = AnnouncementSerializer
 
     def get_queryset(self):
         f = franchise_profile_for_user(self.request.user)
         if not f:
             return Announcement.objects.none()
-        return Announcement.objects.filter(franchise=f).select_related("student")
+        qs = Announcement.objects.filter(franchise=f).select_related("student")
+        return scope_class_content(qs, self.request)
 
     def get_serializer_context(self):
         ctx = super().get_serializer_context()
@@ -2141,8 +2172,13 @@ class FranchiseAnnouncementDetailView(generics.RetrieveUpdateDestroyAPIView):
     def perform_update(self, serializer):
         if serializer.instance.campaign_id:
             raise PermissionDenied("Head-office notifications cannot be edited at the centre.")
-        announcement = serializer.save()
+        announcement = serializer.save(**teacher_class_save_kwargs(self.request, serializer.validated_data))
         _after_announcement_saved(announcement)
+
+    def perform_destroy(self, instance):
+        if instance.campaign_id and teacher_profile_for_request(self.request):
+            raise PermissionDenied("Head-office notifications cannot be deleted by teachers.")
+        instance.delete()
 
 
 class AdminAnnouncementCampaignListCreateView(generics.ListCreateAPIView):
@@ -2451,7 +2487,7 @@ def _franchise_attendance_student_ids_for_class(
 
 
 class FranchiseAttendanceListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsFranchiseUser]
+    permission_classes = [IsFranchiseOrTeacherUser]
     serializer_class = AttendanceRecordSerializer
     pagination_class = None
 
@@ -2465,6 +2501,7 @@ class FranchiseAttendanceListCreateView(generics.ListCreateAPIView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         student = serializer.validated_data["student"]
+        assert_student_in_teacher_class(request, student)
         date = serializer.validated_data["date"]
         record, _created = AttendanceRecord.objects.update_or_create(
             student=student,
@@ -2482,7 +2519,7 @@ class FranchiseAttendanceListCreateView(generics.ListCreateAPIView):
         if not f:
             return AttendanceRecord.objects.none()
 
-        queryset = AttendanceRecord.objects.filter(student__parent__franchise=f)
+        queryset = scope_student_rows(AttendanceRecord.objects.filter(student__parent__franchise=f), self.request)
 
         params = self.request.query_params
         month_str = (params.get("month") or "").strip()
@@ -2558,10 +2595,14 @@ class FranchiseAttendanceListCreateView(generics.ListCreateAPIView):
                 }
 
         if franchise and month_str and student_id.isdigit():
-            student = StudentProfile.objects.filter(
-                pk=int(student_id),
-                parent__franchise=franchise,
-                is_active=True,
+            student = scope_student_rows(
+                StudentProfile.objects.filter(
+                    pk=int(student_id),
+                    parent__franchise=franchise,
+                    is_active=True,
+                ),
+                request,
+                field="id",
             ).first()
             if student:
                 summary = build_month_summary_for_student(student, franchise, month_str)
@@ -2586,7 +2627,7 @@ class FranchiseAttendanceListCreateView(generics.ListCreateAPIView):
 class FranchiseAttendanceBulkUpsertView(APIView):
     """Save many attendance rows in one request (create or update by student+date)."""
 
-    permission_classes = [IsFranchiseUser]
+    permission_classes = [IsFranchiseOrTeacherUser]
 
     def post(self, request):
         serializer = FranchiseAttendanceBulkSerializer(
@@ -2597,6 +2638,8 @@ class FranchiseAttendanceBulkUpsertView(APIView):
         rows = serializer.validated_data["records"]
         if not rows:
             return Response({"saved": 0}, status=status.HTTP_200_OK)
+        for row in rows:
+            assert_student_in_teacher_class(request, row["student"])
 
         student_ids = [row["student"].pk for row in rows]
         dates = {row["date"] for row in rows}
@@ -2641,7 +2684,7 @@ class FranchiseAttendanceBulkUpsertView(APIView):
 class FranchiseAttendanceClearDateView(APIView):
     """Remove all saved attendance rows at this centre for one date."""
 
-    permission_classes = [IsFranchiseUser]
+    permission_classes = [IsFranchiseOrTeacherUser]
 
     def delete(self, request):
         franchise = franchise_profile_for_user(request.user)
@@ -2653,21 +2696,25 @@ class FranchiseAttendanceClearDateView(APIView):
         if parsed is None:
             return Response({"detail": "A valid date query param is required (YYYY-MM-DD)."}, status=400)
 
-        deleted, _details = (
-            AttendanceRecord.objects.filter(student__parent__franchise=franchise, date=parsed).delete()
-        )
+        qs = AttendanceRecord.objects.filter(student__parent__franchise=franchise, date=parsed)
+        deleted, _details = scope_student_rows(qs, request).delete()
         return Response({"deleted": deleted, "date": date_str}, status=status.HTTP_200_OK)
 
 
 class FranchiseAttendanceDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsFranchiseUser]
+    permission_classes = [IsFranchiseOrTeacherUser]
     serializer_class = AttendanceRecordSerializer
 
     def get_queryset(self):
         f = franchise_profile_for_user(self.request.user)
         if not f:
             return AttendanceRecord.objects.none()
-        return AttendanceRecord.objects.filter(student__parent__franchise=f).select_related("student")
+        qs = AttendanceRecord.objects.filter(student__parent__franchise=f).select_related("student")
+        return scope_student_rows(qs, self.request)
+
+    def perform_update(self, serializer):
+        assert_student_in_teacher_class(self.request, serializer.validated_data.get("student"))
+        serializer.save()
 
     def get_serializer_context(self):
         c = super().get_serializer_context()
@@ -2722,7 +2769,7 @@ class FranchiseAttendanceHolidaysView(APIView):
     Used by centre Parent App calendar and attendance.
     """
 
-    permission_classes = [IsFranchiseUser]
+    permission_classes = [IsFranchiseOrTeacherUser]
 
     def get(self, request):
         from students.attendance_logic import collect_holiday_map, holiday_dates_payload, month_bounds
@@ -3143,6 +3190,111 @@ class FranchiseDriverDetailView(generics.RetrieveUpdateDestroyAPIView):
         if not f:
             return DriverProfile.objects.none()
         return DriverProfile.objects.filter(franchise=f).select_related("user")
+
+
+class FranchiseTeacherListCreateView(generics.ListCreateAPIView):
+    permission_classes = [IsFranchiseUser]
+    serializer_class = TeacherProfileSerializer
+    pagination_class = None
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def get_queryset(self):
+        f = franchise_profile_for_user(self.request.user)
+        if not f:
+            return TeacherProfile.objects.none()
+        return (
+            TeacherProfile.objects.filter(franchise=f)
+            .select_related("user")
+            .order_by("class_name", "user__full_name")
+        )
+
+    def get_serializer_class(self):
+        if self.request.method == "POST":
+            return TeacherCreateSerializer
+        return TeacherProfileSerializer
+
+    def get_serializer_context(self):
+        c = super().get_serializer_context()
+        c["franchise"] = franchise_profile_for_user(self.request.user)
+        return c
+
+    def perform_create(self, serializer):
+        f = franchise_profile_for_user(self.request.user)
+        if not f:
+            raise PermissionDenied("Franchise profile not found")
+        serializer.save(franchise=f)
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        output = TeacherProfileSerializer(serializer.instance, context=self.get_serializer_context())
+        return Response(output.data, status=status.HTTP_201_CREATED)
+
+
+class FranchiseTeacherDetailView(generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [IsFranchiseUser]
+    serializer_class = TeacherProfileSerializer
+
+    def get_queryset(self):
+        f = franchise_profile_for_user(self.request.user)
+        if not f:
+            return TeacherProfile.objects.none()
+        return TeacherProfile.objects.filter(franchise=f).select_related("user", "franchise")
+
+    def get_serializer_class(self):
+        if self.request.method in ("PUT", "PATCH"):
+            return TeacherUpdateSerializer
+        return TeacherProfileSerializer
+
+    def update(self, request, *args, **kwargs):
+        partial = kwargs.pop("partial", False)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+        output = TeacherProfileSerializer(serializer.instance, context=self.get_serializer_context())
+        return Response(output.data)
+
+    def perform_destroy(self, instance):
+        user = instance.user
+        instance.delete()
+        if user is not None:
+            user.delete()
+
+
+@api_view(["GET"])
+@permission_classes([IsTeacherUser])
+def teacher_my_class(request):
+    """Teacher home: own profile plus active students of the assigned class at their centre."""
+    tp = teacher_profile_for_user(request.user)
+    if not tp or not tp.is_active:
+        return Response({"detail": "Teacher profile not found or disabled."}, status=404)
+
+    students = StudentProfile.objects.filter(parent__franchise=tp.franchise, is_active=True).order_by(
+        "first_name", "last_name"
+    )
+    rows = []
+    for s in students:
+        if not _class_label_matches(s.class_name, tp.class_name):
+            continue
+        rows.append(
+            {
+                "id": s.id,
+                "full_name": f"{s.first_name} {s.last_name}".strip(),
+                "class_name": s.class_name,
+                "section": s.section,
+                "roll_number": s.roll_number or s.Idcardno or "",
+                "gender": s.gender,
+            }
+        )
+
+    return Response(
+        {
+            "teacher": TeacherProfileSerializer(tp, context={"request": request}).data,
+            "students": rows,
+        }
+    )
 
 
 # ----- Authenticated Driver Trip Endpoints -----

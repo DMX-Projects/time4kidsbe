@@ -17,6 +17,7 @@ from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand
 
 from accounts.models import UserRole
+from enquiries.crm_team import CRM_PLACEHOLDER_EMAILS as PLACEHOLDER_EMAILS
 
 User = get_user_model()
 
@@ -217,22 +218,6 @@ TEAM_USERS = (
         "notify_admission": True,
     },
 )
-
-PLACEHOLDER_EMAILS = (
-    "north.crm@timekids.com",
-    "south.crm@timekids.com",
-    "east.crm@timekids.com",
-    "west.crm@timekids.com",
-    "north.r1.crm@timekids.com",
-    "north.r2.crm@timekids.com",
-    "south.r1.crm@timekids.com",
-    "south.r2.crm@timekids.com",
-    "east.r1.crm@timekids.com",
-    "east.r2.crm@timekids.com",
-    "west.r1.crm@timekids.com",
-    "west.r2.crm@timekids.com",
-)
-
 
 class Command(BaseCommand):
     help = "Seed CRM team users from franchise/admission region mapping."

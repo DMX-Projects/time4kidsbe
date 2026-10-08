@@ -12,8 +12,9 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from accounts.models import UserRole
-from accounts.permissions import IsAdminUser, IsFranchiseUser, IsParentUser
+from accounts.permissions import IsAdminUser, IsFranchiseOrTeacherUser, IsParentUser
 from accounts.profile_access import franchise_profile_for_user, parent_profile_for_user, resolved_parent_profile_for_user
+from students.teacher_scope import scope_class_content, teacher_class_save_kwargs, teacher_profile_for_request
 from documents.auth import QueryJWTAuthentication
 from documents.download_names import safe_disposition_filename
 from franchises.models import Franchise
@@ -44,7 +45,7 @@ def _user_can_stream_event_media(user, media: EventMedia) -> bool:
     if role == UserRole.PARENT.value:
         profile = parent_profile_for_user(user)
         return profile is not None and event.franchise_id == profile.franchise_id
-    if role == UserRole.FRANCHISE.value:
+    if role in (UserRole.FRANCHISE.value, UserRole.TEACHER.value):
         franchise = franchise_profile_for_user(user)
         return franchise is not None and event.franchise_id == franchise.id
     return False
@@ -118,27 +119,40 @@ class AdminEventViewSet(viewsets.ModelViewSet):
         serializer.save(franchise=franchise or serializer.instance.franchise)
 
 
+def _check_teacher_event_access(request, event) -> None:
+    """Teachers may only touch events for their own class (not centre-wide or other classes)."""
+    if teacher_profile_for_request(request) is None:
+        return
+    if not scope_class_content(Event.objects.filter(pk=event.pk), request, has_student=False).exists():
+        raise PermissionDenied("This event is not for your class.")
+
+
 class FranchiseEventViewSet(viewsets.ModelViewSet):
     serializer_class = EventSerializer
-    permission_classes = [IsFranchiseUser]
+    permission_classes = [IsFranchiseOrTeacherUser]
 
     def get_queryset(self):
         franchise = franchise_profile_for_user(self.request.user)
         if not franchise:
             return Event.objects.none()
-        return Event.objects.filter(franchise=franchise).prefetch_related("media")
+        qs = Event.objects.filter(franchise=franchise).prefetch_related("media")
+        return scope_class_content(qs, self.request, has_student=False)
 
     def perform_create(self, serializer):
         franchise = franchise_profile_for_user(self.request.user)
         if not franchise:
             raise PermissionDenied("Franchise profile not found for this user")
-        serializer.save(franchise=franchise, created_by=self.request.user)
+        serializer.save(
+            franchise=franchise,
+            created_by=self.request.user,
+            **teacher_class_save_kwargs(self.request, serializer.validated_data),
+        )
 
     def perform_update(self, serializer):
         franchise = franchise_profile_for_user(self.request.user)
         if not franchise:
             raise PermissionDenied("Franchise profile not found for this user")
-        serializer.save(franchise=franchise)
+        serializer.save(franchise=franchise, **teacher_class_save_kwargs(self.request, serializer.validated_data))
 
     def perform_destroy(self, instance):
         franchise = franchise_profile_for_user(self.request.user)
@@ -149,13 +163,14 @@ class FranchiseEventViewSet(viewsets.ModelViewSet):
 
 class EventMediaListCreateView(generics.ListCreateAPIView):
     serializer_class = EventMediaSerializer
-    permission_classes = [IsFranchiseUser]
+    permission_classes = [IsFranchiseOrTeacherUser]
 
     def get_queryset(self):
         event = get_object_or_404(Event, pk=self.kwargs["event_id"])
         franchise = franchise_profile_for_user(self.request.user)
         if event.franchise != franchise:
             raise PermissionDenied("Cannot view media for another franchise")
+        _check_teacher_event_access(self.request, event)
         return EventMedia.objects.filter(event=event)
 
     def perform_create(self, serializer):
@@ -163,19 +178,21 @@ class EventMediaListCreateView(generics.ListCreateAPIView):
         franchise = franchise_profile_for_user(self.request.user)
         if event.franchise != franchise:
             raise PermissionDenied("Cannot add media to another franchise")
+        _check_teacher_event_access(self.request, event)
         serializer.save(event=event, uploaded_by=self.request.user)
 
 
 class EventMediaDetailView(generics.RetrieveUpdateDestroyAPIView):
     """View for retrieving, updating and deleting individual event media items."""
     serializer_class = EventMediaSerializer
-    permission_classes = [IsFranchiseUser]
+    permission_classes = [IsFranchiseOrTeacherUser]
 
     def get_queryset(self):
         event = get_object_or_404(Event, pk=self.kwargs["event_id"])
         franchise = franchise_profile_for_user(self.request.user)
         if event.franchise != franchise:
             raise PermissionDenied("Cannot access media for another franchise")
+        _check_teacher_event_access(self.request, event)
         return EventMedia.objects.filter(event=event)
 
     def perform_update(self, serializer):

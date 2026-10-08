@@ -152,12 +152,28 @@ REGIONAL_MANAGER_ADMISSION_TEAM_EMAILS: dict[str, frozenset[str]] = {
 }
 
 
+CRM_SUPER_ADMIN_DESIGNATION = "Super Admin"
+
+
+def is_national_crm_super_admin(user) -> bool:
+    """National CRM Super Admin: the emails above, or a CRM login given the Super Admin designation on the Users page."""
+    if user is None:
+        return False
+    email = str(getattr(user, "email", "") or "").strip().lower()
+    if email in CRM_SUPER_ADMIN_ASSIGN_EMAILS:
+        return True
+    return (
+        str(getattr(user, "role", "") or "").strip().upper() == UserRole.CRM.value
+        and (getattr(user, "crm_designation", "") or "").strip() == CRM_SUPER_ADMIN_DESIGNATION
+    )
+
+
 def user_can_assign_crm_leads(user) -> bool:
     """True for Regional/Zonal Managers and national CRM Super Admins."""
     if user is None:
         return False
     email = str(getattr(user, "email", "") or "").strip().lower()
-    return email in CRM_LEAD_ASSIGNER_EMAILS
+    return email in CRM_LEAD_ASSIGNER_EMAILS or is_national_crm_super_admin(user)
 
 
 def is_assignable_handler_user(user) -> bool:
@@ -165,7 +181,11 @@ def is_assignable_handler_user(user) -> bool:
     if user is None or not getattr(user, "is_active", False):
         return False
     email = str(getattr(user, "email", "") or "").strip().lower()
-    return email in CRM_ASSIGNABLE_HANDLER_EMAILS
+    if email in CRM_ASSIGNABLE_HANDLER_EMAILS:
+        return True
+    return bool(getattr(user, "crm_reports_to_id", None)) and (
+        (getattr(user, "crm_designation", "") or "").strip() in CRM_ASSIGNABLE_DESIGNATIONS
+    )
 
 
 def is_zonal_manager_user(user) -> bool:
@@ -180,6 +200,14 @@ def is_regional_manager_user(user) -> bool:
         return False
     email = str(getattr(user, "email", "") or "").strip().lower()
     return email in REGIONAL_MANAGER_ASSIGN_EMAILS
+
+
+def user_can_add_crm_leads(user) -> bool:
+    """Manual "Add Lead" in CRM: Zonal Managers and national CRM Super Admins."""
+    if user is None or not getattr(user, "is_active", False):
+        return False
+    email = str(getattr(user, "email", "") or "").strip().lower()
+    return email in ZONAL_MANAGER_ASSIGN_EMAILS or is_national_crm_super_admin(user)
 
 
 def is_meta_assignable_head_user(user) -> bool:
@@ -247,12 +275,54 @@ def all_assignable_handler_users() -> list[User]:
     return _filter_assignable_handlers(list(crm_users_queryset()))
 
 
+def _pipeline_flag(pipe: str) -> str:
+    return "crm_handles_franchise" if pipe == "franchise" else "crm_handles_admission"
+
+
+def _added_member_emails(manager_emails: set[str] | frozenset[str], pipe: str) -> frozenset[str]:
+    """Handlers added from the Users page who report to one of these managers and work this pipeline."""
+    if not manager_emails:
+        return frozenset()
+    from django.db.models.functions import Lower
+
+    rows = (
+        User.objects.filter(
+            role__iexact=UserRole.CRM.value,
+            is_active=True,
+            crm_reports_to__isnull=False,
+            **{_pipeline_flag(pipe): True},
+        )
+        .annotate(manager_email=Lower("crm_reports_to__email"))
+        .filter(manager_email__in=[e.lower() for e in manager_emails])
+        .values_list("email", flat=True)
+    )
+    return frozenset((e or "").strip().lower() for e in rows if e)
+
+
+def _zonal_team_emails(email: str, pipe: str) -> frozenset[str] | None:
+    """Sheet team plus Users-page members (direct, or via a manager on the team). None = not a Zonal Manager."""
+    mapping = ZONAL_MANAGER_FRANCHISE_TEAM_EMAILS if pipe == "franchise" else ZONAL_MANAGER_ADMISSION_TEAM_EMAILS
+    sheet = mapping.get(email)
+    if sheet is None:
+        return None
+    direct = _added_member_emails({email}, pipe)
+    return sheet | direct | _added_member_emails(set(sheet | direct), pipe)
+
+
+def _regional_team_emails(email: str, pipe: str) -> frozenset[str] | None:
+    """Sheet team plus Users-page members. None = not configured as a Regional Manager."""
+    mapping = REGIONAL_MANAGER_FRANCHISE_TEAM_EMAILS if pipe == "franchise" else REGIONAL_MANAGER_ADMISSION_TEAM_EMAILS
+    if email not in mapping:
+        return None
+    return mapping[email] | _added_member_emails({email}, pipe)
+
+
 def zonal_franchise_uses_full_handler_list(viewer) -> bool:
     """Zonal Manager with no franchise team — show every assignable handler."""
     if not viewer:
         return False
     email = str(getattr(viewer, "email", "") or "").strip().lower()
-    team = ZONAL_MANAGER_FRANCHISE_TEAM_EMAILS.get(email)
+    team = _zonal_team_emails(email, "franchise")
     return team is not None and len(team) == 0
 
 
@@ -261,7 +331,7 @@ def zonal_admission_uses_full_handler_list(viewer) -> bool:
     if not viewer:
         return False
     email = str(getattr(viewer, "email", "") or "").strip().lower()
-    team = ZONAL_MANAGER_ADMISSION_TEAM_EMAILS.get(email)
+    team = _zonal_team_emails(email, "admission")
     return team is not None and len(team) == 0
 
 
@@ -295,12 +365,9 @@ def zonal_manager_team_users(viewer, pipeline: str | None = None) -> list[User]:
     """Assignable handlers on the TKPL franchise/admission sheet for this Zonal Manager."""
     email = str(getattr(viewer, "email", "") or "").strip().lower()
     pipe = normalize_crm_pipeline(pipeline)
-    if pipe == "franchise":
-        team_emails = ZONAL_MANAGER_FRANCHISE_TEAM_EMAILS.get(email)
-    elif pipe == "admission":
-        team_emails = ZONAL_MANAGER_ADMISSION_TEAM_EMAILS.get(email)
-    else:
+    if pipe not in ("franchise", "admission"):
         return []
+    team_emails = _zonal_team_emails(email, pipe)
     if not team_emails:
         return []
     return [
@@ -321,15 +388,11 @@ def regional_manager_team_users(
     """
     email = str(getattr(viewer, "email", "") or "").strip().lower()
     pipe = normalize_crm_pipeline(pipeline)
-    if pipe == "franchise":
-        mapping = REGIONAL_MANAGER_FRANCHISE_TEAM_EMAILS
-    elif pipe == "admission":
-        mapping = REGIONAL_MANAGER_ADMISSION_TEAM_EMAILS
-    else:
+    if pipe not in ("franchise", "admission"):
         return None
-    if email not in mapping:
+    team_emails = _regional_team_emails(email, pipe)
+    if team_emails is None:
         return None
-    team_emails = mapping[email]
     return [
         user
         for user in crm_users_queryset()
@@ -412,6 +475,77 @@ def display_name_for_user(user: User) -> str:
             local = local[4:]
         return local.replace(".", " ").strip() or email
     return f"User {user.id}"
+
+
+def _team_sheet_row(user: User) -> dict:
+    from accounts.management.commands.seed_crm_team_users import TEAM_USERS
+
+    email = (user.email or "").strip().lower()
+    return next((row for row in TEAM_USERS if row["email"].strip().lower() == email), {})
+
+
+def crm_designation_for_user(user: User) -> str:
+    """Designation from the user record, else from the TKPL team sheet."""
+    value = (getattr(user, "crm_designation", None) or "").strip()
+    if value:
+        return value
+    if is_zonal_manager_user(user):
+        return "Zonal Manager"
+    return (_team_sheet_row(user).get("designation") or "").strip()
+
+
+CRM_DESIGNATION_ORDER = (
+    "Zonal Manager",
+    "Regional Manager",
+    "Manager",
+    "Dy Manager",
+    "Assistant Manager",
+)
+
+
+def manual_lead_assignees(
+    viewer,
+    state: str | None = None,
+    city: str | None = None,
+    pipeline: str = "franchise",
+) -> list[User]:
+    """
+    "Assign To" options on the CRM Add Lead form.
+
+    Zonal Managers get their own team for the lead's pipeline (narrowed to the lead's
+    state when someone on the team covers it). Super Admins get every permitted assignee.
+    """
+    pipe = "admission" if normalize_crm_pipeline(pipeline) == "admission" else "franchise"
+    national = (
+        bool(getattr(viewer, "is_superuser", False))
+        or is_national_crm_super_admin(viewer)
+    )
+    candidates = assignee_candidates_for_lead(
+        state=state,
+        city=city,
+        national=national,
+        assigner=viewer,
+        franchise_lead=pipe == "franchise",
+        admission_lead=pipe == "admission",
+    )
+    if is_zonal_manager_user(viewer) and not national:
+        team = _filter_assignable_handlers(zonal_manager_team_users(viewer, pipe))
+        users = team or [u for u in candidates if not is_zonal_manager_user(u)]
+        if (state or "").strip():
+            in_state = _restrict_users_to_lead_state(users, state, ignore_city=True)
+            users = in_state or users
+    else:
+        users = candidates
+
+    viewer_id = getattr(viewer, "pk", None)
+    users = [u for u in users if u.pk != viewer_id]
+
+    def rank(u: User) -> tuple:
+        designation = crm_designation_for_user(u)
+        order = CRM_DESIGNATION_ORDER.index(designation) if designation in CRM_DESIGNATION_ORDER else len(CRM_DESIGNATION_ORDER)
+        return (order, display_name_for_user(u).casefold())
+
+    return sorted(users, key=rank)
 
 
 def crm_user_label_map() -> dict[int, str]:
@@ -702,8 +836,21 @@ def _pipeline_handler_emails(pipeline: str | None) -> frozenset[str]:
     elif pipe == "admission":
         teams = ZONAL_MANAGER_ADMISSION_TEAM_EMAILS.values()
     else:
-        return CRM_ASSIGNABLE_HANDLER_EMAILS
-    return frozenset(email for team in teams for email in team)
+        return CRM_ASSIGNABLE_HANDLER_EMAILS | _added_handler_emails(None)
+    return frozenset(email for team in teams for email in team) | _added_handler_emails(pipe)
+
+
+def _added_handler_emails(pipe: str | None) -> frozenset[str]:
+    """Every Users-page handler (optionally only those working this pipeline)."""
+    qs = User.objects.filter(
+        role__iexact=UserRole.CRM.value,
+        is_active=True,
+        crm_reports_to__isnull=False,
+        crm_designation__in=CRM_ASSIGNABLE_DESIGNATIONS,
+    )
+    if pipe in ("franchise", "admission"):
+        qs = qs.filter(**{_pipeline_flag(pipe): True})
+    return frozenset((e or "").strip().lower() for e in qs.values_list("email", flat=True) if e)
 
 
 def _is_ap_ts_geo(state: str | None, city: str | None) -> bool:
@@ -1106,6 +1253,10 @@ def resolve_notify_lead_kind(obj=None, lead_source: str = "") -> str:
         if "franchise" in model:
             return "franchise"
         if model == "crmlead":
+            from .models import ADMISSION_CRM_SOURCES
+
+            if getattr(obj, "source", None) in ADMISSION_CRM_SOURCES:
+                return "admission"
             return "franchise"  # campaign / website franchise pipeline
         if model == "enquiry":
             if et == "FRANCHISE":
@@ -1392,8 +1543,7 @@ def is_valid_assignee_for_lead(
         return False
     # Meta Instant Form: managers only via mapped ZM/RM team (not empty-sheet full list).
     if ignore_city:
-        assigner_email = str(getattr(assigner, "email", "") or "").strip().lower()
-        national = assigner_email in CRM_SUPER_ADMIN_ASSIGN_EMAILS
+        national = is_national_crm_super_admin(assigner)
         candidates = assignee_candidates_for_lead(
             state=state,
             city=city,
@@ -1408,8 +1558,7 @@ def is_valid_assignee_for_lead(
         return True
     if admission_lead and zonal_admission_uses_full_handler_list(assigner):
         return True
-    assigner_email = str(getattr(assigner, "email", "") or "").strip().lower()
-    national = assigner_email in CRM_SUPER_ADMIN_ASSIGN_EMAILS
+    national = is_national_crm_super_admin(assigner)
     candidates = assignee_candidates_for_lead(
         state=state,
         city=city,

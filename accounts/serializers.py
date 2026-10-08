@@ -23,6 +23,24 @@ def _crm_user_can_assign(user) -> bool:
         return False
 
 
+def _crm_user_is_super_admin(user) -> bool:
+    try:
+        from enquiries.crm_users import is_national_crm_super_admin
+
+        return is_national_crm_super_admin(user)
+    except Exception:
+        return False
+
+
+def _crm_user_can_add_leads(user) -> bool:
+    try:
+        from enquiries.crm_users import user_can_add_crm_leads
+
+        return user_can_add_crm_leads(user)
+    except Exception:
+        return False
+
+
 def _normalize_phone10(identifier: str) -> str | None:
     digits = re.sub(r"\D", "", (identifier or "").strip())
     if len(digits) >= 10:
@@ -305,6 +323,21 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         }
         if user.normalized_role() == UserRole.PARENT.value:
             data["user"].update(parent_login_context(user))
+        if user.normalized_role() == UserRole.TEACHER.value:
+            from accounts.profile_access import teacher_profile_for_user
+            from franchises.serializers import TeacherProfileSerializer
+
+            tp = teacher_profile_for_user(user)
+            if not tp:
+                raise AuthenticationFailed(
+                    "Teacher profile not found or linked to a disabled franchise."
+                )
+            if not tp.is_active:
+                raise AuthenticationFailed("Teacher account is disabled. Contact your centre.")
+            data["teacher_profile"] = TeacherProfileSerializer(
+                tp,
+                context={"request": self.context.get("request")},
+            ).data
         return data
 
 
@@ -419,6 +452,8 @@ class CrmTokenObtainPairSerializer(TokenObtainPairSerializer):
                 "crm_zone": getattr(user, "crm_zone", "") or "",
                 "crm_region": getattr(user, "crm_region", "") or "",
                 "can_assign_users": _crm_user_can_assign(user),
+                "can_add_leads": _crm_user_can_add_leads(user),
+                "is_crm_super_admin": _crm_user_is_super_admin(user),
             },
         }
 

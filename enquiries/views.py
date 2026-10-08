@@ -12,7 +12,7 @@ from .permissions import can_view_crm_leads, can_view_landing_leads
 from accounts.profile_access import franchise_profile_for_user
 
 from .landing_submit import handle_landing_enquiry_post
-from .models import CrmLead, Enquiry, EnquiryType, FranchiseEnquiry, KidsEnquiry, OTPVerification
+from .models import CrmLead, CrmLeadSource, Enquiry, EnquiryType, FranchiseEnquiry, KidsEnquiry, OTPVerification
 from .serializers import (
     CrmLeadSerializer,
     EnquirySerializer,
@@ -715,6 +715,437 @@ class AdminCrmLeadDetailView(APIView):
         if not deleted:
             return Response({"message": "Lead not found"}, status=status.HTTP_404_NOT_FOUND)
         return Response({"ok": True, "deleted": True})
+
+
+# Same options as the dashboard's Franchise / Admission sub-filters and channels.
+MANUAL_CRM_LEAD_TYPES = (
+    ("franchise", "Franchise Lead"),
+    ("admission", "Admission Lead"),
+)
+MANUAL_CRM_LEAD_SOURCES = {
+    "franchise": (
+        (CrmLeadSource.FRANCHISE_WEBSITE, "Website Leads"),
+        (CrmLeadSource.CAMPAIGN_GOOGLE, "Paid Campaign - Google"),
+        (CrmLeadSource.CAMPAIGN_META, "Paid Campaign - META"),
+        (CrmLeadSource.YOUTUBE, "Paid Campaign - YouTube"),
+        (CrmLeadSource.WHATSAPP, "WhatsApp"),
+        (CrmLeadSource.SMS, "SMS"),
+        (CrmLeadSource.EMAIL, "Email"),
+        (CrmLeadSource.FRANCHISE_REFERRAL, "Referral-Franchise"),
+        (CrmLeadSource.FRANCHISE_FRIENDS_FAMILY, "Referral - Friends & Family"),
+    ),
+    "admission": (
+        (CrmLeadSource.ADMISSION_WEBSITE, "Website"),
+        (CrmLeadSource.ADMISSION_GOOGLE, "Paid Campaign - Google"),
+        (CrmLeadSource.ADMISSION_META, "Paid Campaign - META"),
+        (CrmLeadSource.ADMISSION_YOUTUBE, "Paid Campaign - YouTube"),
+        (CrmLeadSource.ADMISSION_WHATSAPP, "WhatsApp"),
+        (CrmLeadSource.ADMISSION_SMS, "SMS"),
+        (CrmLeadSource.ADMISSION_EMAIL, "Email"),
+        (CrmLeadSource.REFERRAL_PARENTS, "Referral – Parents"),
+        (CrmLeadSource.REFERRAL_FAMILY_FRIENDS, "Referral - Family & Friends"),
+    ),
+}
+
+
+def _manual_lead_type(raw) -> str:
+    value = str(raw or "").strip().lower()
+    return value if value in MANUAL_CRM_LEAD_SOURCES else "franchise"
+
+
+def _manual_lead_city_options(request, state: str | None) -> list[str]:
+    """Franchise centre cities for the state plus every district, so the list is never empty."""
+    if not state:
+        return []
+    from franchises.franchise_geo import state_to_code
+    from franchises.india_districts import STATE_DISTRICTS
+
+    from .crm_api import unified_crm_cities
+
+    merged: dict[str, str] = {}
+    for name in [*unified_crm_cities(state, request=request), *STATE_DISTRICTS.get(state_to_code(state) or "", [])]:
+        cleaned = " ".join(str(name or "").split())
+        if cleaned:
+            merged.setdefault(cleaned.casefold(), cleaned)
+    return sorted(merged.values(), key=str.casefold)
+
+
+class AdminCrmLeadAddView(APIView):
+    """Manual "Add Lead" from the CRM sidebar (Zonal Managers / Super Admins)."""
+
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        if not can_view_crm_leads(request):
+            return Response({"detail": "CRM login required."}, status=status.HTTP_403_FORBIDDEN)
+        from .crm_users import (
+            crm_designation_for_user,
+            display_name_for_user,
+            manual_lead_assignees,
+            user_can_add_crm_leads,
+        )
+
+        from accounts.crm_zones import request_scope_state_codes, scope_display_state_names
+        from franchises.franchise_geo import STATE_CODE_TO_NAME
+
+        can_add = user_can_add_crm_leads(request.user) and not _is_campaign_readonly_user(request)
+        assignees = []
+        states: list[str] = []
+        cities: list[str] = []
+        if can_add:
+            scope_codes = request_scope_state_codes(request)
+            states = (
+                scope_display_state_names(scope_codes)
+                if scope_codes is not None
+                else sorted(set(STATE_CODE_TO_NAME.values()), key=str.casefold)
+            )
+            state = (request.query_params.get("state") or "").strip() or None
+            city = (request.query_params.get("city") or "").strip() or None
+            lead_type = _manual_lead_type(request.query_params.get("leadType"))
+            cities = _manual_lead_city_options(request, state)
+            assignees = [
+                {
+                    "id": u.pk,
+                    "name": display_name_for_user(u),
+                    "designation": crm_designation_for_user(u),
+                }
+                for u in manual_lead_assignees(request.user, state, city, pipeline=lead_type)
+            ]
+        return Response(
+            {
+                "canAddLeads": can_add,
+                "leadTypes": [{"value": value, "label": label} for value, label in MANUAL_CRM_LEAD_TYPES],
+                "sourcesByLeadType": {
+                    lead_type_key: [{"value": s.value, "label": label} for s, label in options]
+                    for lead_type_key, options in MANUAL_CRM_LEAD_SOURCES.items()
+                },
+                "states": states,
+                "cities": cities,
+                "assignees": assignees,
+            }
+        )
+
+    def post(self, request):
+        if not can_view_crm_leads(request):
+            return Response({"detail": "CRM login required."}, status=status.HTTP_403_FORBIDDEN)
+        from django.core.exceptions import ValidationError
+        from django.core.validators import validate_email
+
+        from .crm_api import _maybe_assign_lead, _notify_explicit_assignment
+        from .crm_users import display_name_for_user, user_can_add_crm_leads
+
+        viewer = request.user
+        if _is_campaign_readonly_user(request) or not user_can_add_crm_leads(viewer):
+            return Response(
+                {"message": "Only Zonal Managers and CRM Super Admins can add leads."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        data = request.data or {}
+
+        def text(key: str) -> str:
+            return str(data.get(key) or "").strip()
+
+        full_name = text("fullName")
+        mobile = _normalize_otp_phone(text("mobile"))
+        email = text("email")
+        state = text("state")
+        city = text("city")
+        location = text("location")
+        lead_type = _manual_lead_type(text("leadType"))
+        source = text("source")
+        comments = text("comments")
+
+        errors: dict[str, str] = {}
+        if len(full_name) < 2:
+            errors["fullName"] = "Enter the lead's name."
+        if not re.fullmatch(r"[6-9]\d{9}", mobile):
+            errors["mobile"] = "Enter a valid 10-digit mobile number."
+        if email:
+            try:
+                validate_email(email)
+            except ValidationError:
+                errors["email"] = "Enter a valid email address."
+        if not state:
+            errors["state"] = "Select a state."
+        if not city:
+            errors["city"] = "Enter the city / district."
+        if source not in {s.value for s, _ in MANUAL_CRM_LEAD_SOURCES[lead_type]}:
+            errors["source"] = "Select a source."
+        if errors:
+            return Response(
+                {"message": next(iter(errors.values())), "errors": errors},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        allow_duplicate = str(data.get("allowDuplicate") or "").strip().lower() in ("1", "true", "yes")
+        if not allow_duplicate:
+            existing = CrmLead.objects.filter(mobile__contains=mobile).order_by("-created_at").first()
+            if existing:
+                return Response(
+                    {
+                        "message": f"A lead with {mobile} already exists ({existing.full_name}).",
+                        "duplicate": True,
+                        "existingLeadId": f"crm-{existing.pk}",
+                        "existingLeadName": existing.full_name,
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+        lead = CrmLead(
+            full_name=full_name,
+            mobile=mobile,
+            email=email,
+            state=state,
+            city=city,
+            preferred_centre_location=location,
+            comments=comments,
+            source=source,
+            raw_payload={
+                "crm_manual_entry": True,
+                "crm_lead_type": lead_type,
+                "crm_added_by_id": int(viewer.pk),
+                "crm_added_by_email": viewer.email,
+            },
+        )
+
+        assignee_raw = text("assignedUserId") or str(viewer.pk)
+        try:
+            _maybe_assign_lead(lead, request, {"assignedUserId": assignee_raw})
+        except ValueError as exc:
+            return Response(
+                {"message": str(exc), "errors": {"assignedUserId": str(exc)}},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if str(lead.assigned_user_id or "") != assignee_raw:
+            msg = "Selected user cannot be assigned this lead."
+            return Response(
+                {"message": msg, "errors": {"assignedUserId": msg}},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        lead.save()
+        if lead.assigned_user_id != viewer.pk:
+            _notify_explicit_assignment(lead, request)
+
+        return Response(
+            {
+                "id": f"crm-{lead.pk}",
+                "fullName": lead.full_name,
+                "assignedUserId": lead.assigned_user_id,
+                "assignedUserLabel": display_name_for_user(lead.assigned_user) if lead.assigned_user else None,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+def _crm_super_admin_denied(request):
+    from .crm_team import is_crm_super_admin
+
+    if not can_view_crm_leads(request) or not is_crm_super_admin(request.user):
+        return Response(
+            {"message": "Only CRM Super Admins can manage users."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    return None
+
+
+def _crm_team_user_or_404(user_id: int):
+    from accounts.models import User, UserRole
+
+    return User.objects.filter(pk=user_id, role__iexact=UserRole.CRM.value).first()
+
+
+class AdminCrmTeamView(APIView):
+    """Users page: every CRM login with designation, status and lead counts; POST adds a user."""
+
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        denied = _crm_super_admin_denied(request)
+        if denied:
+            return denied
+        from .crm_team import crm_team_users, lead_counts_by_user, team_form_options, team_user_dict
+
+        counts = lead_counts_by_user()
+        return Response(
+            {
+                "users": [team_user_dict(u, counts) for u in crm_team_users()],
+                "formOptions": team_form_options(),
+            }
+        )
+
+    def post(self, request):
+        denied = _crm_super_admin_denied(request)
+        if denied:
+            return denied
+        from .crm_team import lead_counts_by_user, save_team_user, team_user_dict
+
+        user, errors = save_team_user(request.data or {})
+        if errors:
+            return Response(
+                {"message": next(iter(errors.values())), "errors": errors},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response({"user": team_user_dict(user, lead_counts_by_user())}, status=status.HTTP_201_CREATED)
+
+
+class AdminCrmTeamCitiesView(APIView):
+    """City / district options for the Users page form, for one or more states."""
+
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        denied = _crm_super_admin_denied(request)
+        if denied:
+            return denied
+        merged: dict[str, str] = {}
+        for state in (request.query_params.get("states") or "").split(","):
+            for name in _manual_lead_city_options(request, state.strip()):
+                merged.setdefault(name.casefold(), name)
+        return Response({"cities": sorted(merged.values(), key=str.casefold)})
+
+
+class AdminCrmTeamUserView(APIView):
+    """Edit a CRM user from the Users page."""
+
+    permission_classes = [permissions.AllowAny]
+
+    def patch(self, request, user_id: int):
+        denied = _crm_super_admin_denied(request)
+        if denied:
+            return denied
+        from .crm_team import lead_counts_by_user, save_team_user, team_user_dict
+
+        from .crm_users import CRM_SUPER_ADMIN_ASSIGN_EMAILS
+
+        user = _crm_team_user_or_404(user_id)
+        if not user:
+            return Response({"message": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+        if (user.email or "").strip().lower() in CRM_SUPER_ADMIN_ASSIGN_EMAILS:
+            return Response({"message": "Super Admin accounts cannot be edited here."}, status=status.HTTP_400_BAD_REQUEST)
+        user, errors = save_team_user(request.data or {}, user=user)
+        if errors:
+            return Response(
+                {"message": next(iter(errors.values())), "errors": errors},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response({"user": team_user_dict(user, lead_counts_by_user())})
+
+
+class AdminCrmTeamUserLeadsView(APIView):
+    """All leads currently assigned to one CRM user (what they see in their login)."""
+
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, user_id: int):
+        denied = _crm_super_admin_denied(request)
+        if denied:
+            return denied
+        from .crm_team import crm_team_users, lead_counts_by_user, leads_for_user, team_user_dict
+
+        user = _crm_team_user_or_404(user_id)
+        if not user:
+            return Response({"message": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+        counts = lead_counts_by_user()
+        targets = [
+            team_user_dict(u, counts)
+            for u in crm_team_users()
+            if u.is_active and u.pk != user.pk
+        ]
+        return Response(
+            {
+                "user": team_user_dict(user, counts),
+                "leads": leads_for_user(user.pk),
+                "transferTargets": targets,
+            }
+        )
+
+
+class AdminCrmTeamTransferView(APIView):
+    """Move a user's leads (selected ids, or all open leads) to another CRM user."""
+
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, user_id: int):
+        denied = _crm_super_admin_denied(request)
+        if denied:
+            return denied
+        from .crm_team import transfer_leads
+        from .emails import send_crm_leads_transferred_email
+
+        from_user = _crm_team_user_or_404(user_id)
+        if not from_user:
+            return Response({"message": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        data = request.data or {}
+        try:
+            to_id = int(data.get("toUserId"))
+        except (TypeError, ValueError):
+            return Response({"message": "Select who should receive the leads."}, status=status.HTTP_400_BAD_REQUEST)
+        to_user = _crm_team_user_or_404(to_id)
+        if not to_user or not to_user.is_active or to_user.pk == from_user.pk:
+            return Response({"message": "Select an active user other than the current owner."}, status=status.HTTP_400_BAD_REQUEST)
+
+        raw_ids = data.get("leadIds")
+        lead_ids = [str(x) for x in raw_ids] if isinstance(raw_ids, list) and raw_ids else None
+        open_only = str(data.get("openOnly", "true")).strip().lower() not in ("0", "false", "no")
+
+        moved = transfer_leads(
+            from_user=from_user,
+            to_user=to_user,
+            actor=request.user,
+            lead_ids=lead_ids,
+            open_only=open_only,
+        )
+        if moved:
+            try:
+                send_crm_leads_transferred_email(
+                    to_user=to_user, from_user=from_user, transferred_by=request.user, count=moved
+                )
+            except Exception:
+                import logging
+
+                logging.getLogger(__name__).exception("CRM transfer email failed")
+        return Response({"moved": moved})
+
+
+class AdminCrmTeamStatusView(APIView):
+    """Activate / deactivate a CRM login. Deactivating with open leads needs ``force``."""
+
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, user_id: int):
+        denied = _crm_super_admin_denied(request)
+        if denied:
+            return denied
+        from .crm_team import lead_counts_by_user, team_user_dict
+
+        user = _crm_team_user_or_404(user_id)
+        if not user:
+            return Response({"message": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        active = str((request.data or {}).get("active", "")).strip().lower() in ("1", "true", "yes")
+        force = str((request.data or {}).get("force", "")).strip().lower() in ("1", "true", "yes")
+        if not active and user.pk == request.user.pk:
+            return Response({"message": "You cannot deactivate your own login."}, status=status.HTTP_400_BAD_REQUEST)
+
+        counts = lead_counts_by_user()
+        open_leads = counts.get(user.pk, {}).get("open", 0)
+        if not active and open_leads and not force:
+            return Response(
+                {
+                    "message": f"{user.full_name or user.email} still has {open_leads} open leads. Transfer them first.",
+                    "openLeads": open_leads,
+                    "needsTransfer": True,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        if user.is_active != active:
+            user.is_active = active
+            user.save(update_fields=["is_active"])
+        return Response({"user": team_user_dict(user, counts)})
 
 
 class AdminCrmLeadStatsView(APIView):

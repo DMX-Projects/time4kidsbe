@@ -6,7 +6,14 @@ from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from accounts.permissions import IsAdminUser, IsFranchiseUser, IsParentUser
+from accounts.permissions import (
+    IsAdminUser,
+    IsFranchiseOrTeacherReadOnly,
+    IsFranchiseOrTeacherUser,
+    IsFranchiseUser,
+    IsParentUser,
+)
+from students.teacher_scope import assert_student_in_teacher_class, scope_student_rows
 from accounts.profile_access import (
     franchise_profile_for_user,
     parent_profile_for_user,
@@ -165,7 +172,7 @@ class ParentAchievementListView(generics.ListAPIView):
 class FranchiseStudentMiniListView(generics.ListAPIView):
     """Active students at this centre (for achievement picker)."""
 
-    permission_classes = [IsFranchiseUser]
+    permission_classes = [IsFranchiseOrTeacherReadOnly]
     serializer_class = StudentMiniSerializer
     pagination_class = None
 
@@ -173,11 +180,11 @@ class FranchiseStudentMiniListView(generics.ListAPIView):
         franchise = franchise_profile_for_user(self.request.user)
         if not franchise:
             return StudentProfile.objects.none()
-        return students_at_franchise(franchise)
+        return scope_student_rows(students_at_franchise(franchise), self.request, field="id")
 
 
 class FranchiseStudentListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsFranchiseUser]
+    permission_classes = [IsFranchiseOrTeacherReadOnly]
     serializer_class = FranchiseStudentSerializer
     pagination_class = None
 
@@ -185,7 +192,8 @@ class FranchiseStudentListCreateView(generics.ListCreateAPIView):
         franchise = franchise_profile_for_user(self.request.user)
         if not franchise:
             return StudentProfile.objects.none()
-        return StudentProfile.objects.filter(parent__franchise=franchise).select_related("parent")
+        qs = StudentProfile.objects.filter(parent__franchise=franchise).select_related("parent")
+        return scope_student_rows(qs, self.request, field="id")
 
     def list(self, request, *args, **kwargs):
         franchise = franchise_profile_for_user(request.user)
@@ -231,7 +239,7 @@ class FranchiseStudentDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 
 class FranchiseGradeListCreateView(generics.ListCreateAPIView):
-    permission_classes = [IsFranchiseUser]
+    permission_classes = [IsFranchiseOrTeacherUser]
     serializer_class = GradeSerializer
     pagination_class = None
 
@@ -239,7 +247,8 @@ class FranchiseGradeListCreateView(generics.ListCreateAPIView):
         franchise = franchise_profile_for_user(self.request.user)
         if not franchise:
             return Grade.objects.none()
-        return Grade.objects.filter(student__parent__franchise=franchise).select_related("student")
+        qs = Grade.objects.filter(student__parent__franchise=franchise).select_related("student")
+        return scope_student_rows(qs, self.request)
 
     def get_serializer_context(self):
         ctx = super().get_serializer_context()
@@ -251,18 +260,20 @@ class FranchiseGradeListCreateView(generics.ListCreateAPIView):
         student = serializer.validated_data["student"]
         if not franchise or student.parent.franchise_id != franchise.id:
             raise PermissionDenied("Student is not enrolled at your centre")
+        assert_student_in_teacher_class(self.request, student)
         serializer.save()
 
 
 class FranchiseGradeDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [IsFranchiseUser]
+    permission_classes = [IsFranchiseOrTeacherUser]
     serializer_class = GradeSerializer
 
     def get_queryset(self):
         franchise = franchise_profile_for_user(self.request.user)
         if not franchise:
             return Grade.objects.none()
-        return Grade.objects.filter(student__parent__franchise=franchise).select_related("student")
+        qs = Grade.objects.filter(student__parent__franchise=franchise).select_related("student")
+        return scope_student_rows(qs, self.request)
 
     def get_serializer_context(self):
         ctx = super().get_serializer_context()
@@ -274,6 +285,7 @@ class FranchiseGradeDetailView(generics.RetrieveUpdateDestroyAPIView):
         student = serializer.validated_data.get("student", serializer.instance.student)
         if not franchise or student.parent.franchise_id != franchise.id:
             raise PermissionDenied("Student is not enrolled at your centre")
+        assert_student_in_teacher_class(self.request, student)
         serializer.save()
 
 
