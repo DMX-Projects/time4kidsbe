@@ -178,6 +178,55 @@ class CrmLeadSource(models.TextChoices):
     FRANCHISE_FRIENDS_FAMILY = "franchise_friends_family", "Referral - Friends & Family"
     REFERRAL_PARENTS = "referral_parents", "Referral - Parents"
     REFERRAL_FAMILY_FRIENDS = "referral_family_friends", "Referral - Family & Friends"
+    WHATSAPP = "whatsapp", "WhatsApp"
+    SMS = "sms", "SMS"
+    EMAIL = "email", "Email"
+    ADMISSION_WHATSAPP = "admission_whatsapp", "WhatsApp (Admission)"
+    ADMISSION_SMS = "admission_sms", "SMS (Admission)"
+    ADMISSION_EMAIL = "admission_email", "Email (Admission)"
+    # Leads added manually from the CRM "Add Lead" form.
+    FRANCHISE_WEBSITE = "franchise_website", "Website Leads"
+    CAMPAIGN_GOOGLE = "campaign_google", "Paid Campaign - Google"
+    CAMPAIGN_META = "campaign_meta", "Paid Campaign - META"
+    YOUTUBE = "youtube", "Paid Campaign - YouTube"
+    ADMISSION_WEBSITE = "admission_website", "Website (Admission)"
+    ADMISSION_GOOGLE = "admission_google", "Paid Campaign - Google (Admission)"
+    ADMISSION_META = "admission_meta", "Paid Campaign - META (Admission)"
+    ADMISSION_YOUTUBE = "admission_youtube", "Paid Campaign - YouTube (Admission)"
+
+
+# Manual Paid Campaign channels — never agency (BCWW / Ants) leads.
+MANUAL_FRANCHISE_CAMPAIGN_SOURCES = (
+    CrmLeadSource.CAMPAIGN_GOOGLE,
+    CrmLeadSource.CAMPAIGN_META,
+    CrmLeadSource.YOUTUBE,
+)
+ADMISSION_CAMPAIGN_CRM_SOURCES = (
+    CrmLeadSource.ADMISSION_GOOGLE,
+    CrmLeadSource.ADMISSION_META,
+    CrmLeadSource.ADMISSION_YOUTUBE,
+)
+
+# Dashboard "Others" channels — must match the Franchise / Admission channel filters.
+FRANCHISE_OTHER_CRM_SOURCES = (
+    CrmLeadSource.WHATSAPP,
+    CrmLeadSource.SMS,
+    CrmLeadSource.EMAIL,
+    CrmLeadSource.FRANCHISE_REFERRAL,
+    CrmLeadSource.FRANCHISE_FRIENDS_FAMILY,
+)
+ADMISSION_OTHER_CRM_SOURCES = (
+    CrmLeadSource.ADMISSION_WHATSAPP,
+    CrmLeadSource.ADMISSION_SMS,
+    CrmLeadSource.ADMISSION_EMAIL,
+    CrmLeadSource.REFERRAL_PARENTS,
+    CrmLeadSource.REFERRAL_FAMILY_FRIENDS,
+)
+
+# Every campaign_leads source that belongs to the Admission pipeline.
+ADMISSION_CRM_SOURCES = (
+    (CrmLeadSource.ADMISSION_WEBSITE,) + ADMISSION_CAMPAIGN_CRM_SOURCES + ADMISSION_OTHER_CRM_SOURCES
+)
 
 
 class CrmLeadStatus(models.TextChoices):

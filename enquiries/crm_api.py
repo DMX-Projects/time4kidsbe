@@ -8,7 +8,21 @@ from django.db.models import Count, Q
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
 
-from .models import CrmLead, CrmLeadNote, CrmLeadSource, CrmLeadStatus, Enquiry, EnquiryType, KidsEnquiry, FranchiseEnquiry
+from .models import (
+    ADMISSION_CAMPAIGN_CRM_SOURCES,
+    ADMISSION_CRM_SOURCES,
+    ADMISSION_OTHER_CRM_SOURCES,
+    FRANCHISE_OTHER_CRM_SOURCES,
+    MANUAL_FRANCHISE_CAMPAIGN_SOURCES,
+    CrmLead,
+    CrmLeadNote,
+    CrmLeadSource,
+    CrmLeadStatus,
+    Enquiry,
+    EnquiryType,
+    KidsEnquiry,
+    FranchiseEnquiry,
+)
 from .crm_users import assigned_user_payload
 from .meta_leads import format_meta_choice_label
 
@@ -29,6 +43,20 @@ CRM_SOURCE_FROM_API = {
     "franchise_friends_family": CrmLeadSource.FRANCHISE_FRIENDS_FAMILY,
     "referral_parents": CrmLeadSource.REFERRAL_PARENTS,
     "referral_family_friends": CrmLeadSource.REFERRAL_FAMILY_FRIENDS,
+    "whatsapp": CrmLeadSource.WHATSAPP,
+    "sms": CrmLeadSource.SMS,
+    "email": CrmLeadSource.EMAIL,
+    "admission_whatsapp": CrmLeadSource.ADMISSION_WHATSAPP,
+    "admission_sms": CrmLeadSource.ADMISSION_SMS,
+    "admission_email": CrmLeadSource.ADMISSION_EMAIL,
+    "franchise_website": CrmLeadSource.FRANCHISE_WEBSITE,
+    "campaign_google": CrmLeadSource.CAMPAIGN_GOOGLE,
+    "campaign_meta": CrmLeadSource.CAMPAIGN_META,
+    "youtube": CrmLeadSource.YOUTUBE,
+    "admission_website": CrmLeadSource.ADMISSION_WEBSITE,
+    "admission_google": CrmLeadSource.ADMISSION_GOOGLE,
+    "admission_meta": CrmLeadSource.ADMISSION_META,
+    "admission_youtube": CrmLeadSource.ADMISSION_YOUTUBE,
     "google": "google",
     "admission": "admission",
     "contact": "contact",
@@ -47,6 +75,20 @@ CRM_SOURCE_TO_API = {
     CrmLeadSource.FRANCHISE_FRIENDS_FAMILY: "franchise_friends_family",
     CrmLeadSource.REFERRAL_PARENTS: "referral_parents",
     CrmLeadSource.REFERRAL_FAMILY_FRIENDS: "referral_family_friends",
+    CrmLeadSource.WHATSAPP: "whatsapp",
+    CrmLeadSource.SMS: "sms",
+    CrmLeadSource.EMAIL: "email",
+    CrmLeadSource.ADMISSION_WHATSAPP: "admission_whatsapp",
+    CrmLeadSource.ADMISSION_SMS: "admission_sms",
+    CrmLeadSource.ADMISSION_EMAIL: "admission_email",
+    CrmLeadSource.FRANCHISE_WEBSITE: "franchise_website",
+    CrmLeadSource.CAMPAIGN_GOOGLE: "campaign_google",
+    CrmLeadSource.CAMPAIGN_META: "campaign_meta",
+    CrmLeadSource.YOUTUBE: "youtube",
+    CrmLeadSource.ADMISSION_WEBSITE: "admission_website",
+    CrmLeadSource.ADMISSION_GOOGLE: "admission_google",
+    CrmLeadSource.ADMISSION_META: "admission_meta",
+    CrmLeadSource.ADMISSION_YOUTUBE: "admission_youtube",
 }
 
 FRANCHISE_CAMPAIGN_SOURCES = (
@@ -62,7 +104,36 @@ REFERRAL_CRM_SOURCES = (
     CrmLeadSource.REFERRAL_FAMILY_FRIENDS,
 )
 
-CRM_VISIBLE_SOURCES = FRANCHISE_CAMPAIGN_SOURCES + REFERRAL_CRM_SOURCES
+# WhatsApp / SMS / Email channels for leads added manually from the CRM.
+OTHER_CHANNEL_CRM_SOURCES = (
+    CrmLeadSource.WHATSAPP,
+    CrmLeadSource.SMS,
+    CrmLeadSource.EMAIL,
+    CrmLeadSource.ADMISSION_WHATSAPP,
+    CrmLeadSource.ADMISSION_SMS,
+    CrmLeadSource.ADMISSION_EMAIL,
+)
+
+CRM_VISIBLE_SOURCES = (
+    FRANCHISE_CAMPAIGN_SOURCES
+    + REFERRAL_CRM_SOURCES
+    + OTHER_CHANNEL_CRM_SOURCES
+    + MANUAL_FRANCHISE_CAMPAIGN_SOURCES
+    + (CrmLeadSource.FRANCHISE_WEBSITE, CrmLeadSource.ADMISSION_WEBSITE)
+    + ADMISSION_CAMPAIGN_CRM_SOURCES
+)
+
+# Report column for manually added leads: franchise_website → Website Leads, etc.
+MANUAL_CRM_REPORT_CHANNEL = {
+    CrmLeadSource.FRANCHISE_WEBSITE: "franchise",
+    CrmLeadSource.ADMISSION_WEBSITE: "admission",
+    CrmLeadSource.ADMISSION_GOOGLE: "landing",
+    CrmLeadSource.ADMISSION_META: "landing",
+    CrmLeadSource.ADMISSION_YOUTUBE: "landing",
+    CrmLeadSource.CAMPAIGN_GOOGLE: "google",
+    CrmLeadSource.CAMPAIGN_META: "july_meta",
+    CrmLeadSource.YOUTUBE: "youtube",
+}
 
 # Dedicated CRM logins restricted to Paid Campaign (franchise campaign channels only).
 CAMPAIGN_ONLY_CRM_EMAILS = {
@@ -1165,6 +1236,8 @@ def _is_franchise_assignable_object(obj) -> bool:
     if is_admission_named_campaign_lead(obj):
         return False
     model = type(obj).__name__.lower()
+    if model == "crmlead" and getattr(obj, "source", None) in ADMISSION_CRM_SOURCES:
+        return False
     if model in ("crmlead", "franchiseenquiry"):
         return True
     if model == "enquiry":
@@ -1176,6 +1249,8 @@ def _is_admission_assignable_object(obj) -> bool:
     """True when lead belongs to the admission CRM pipeline."""
     model = type(obj).__name__.lower()
     if model == "kidsenquiry":
+        return True
+    if model == "crmlead" and getattr(obj, "source", None) in ADMISSION_CRM_SOURCES:
         return True
     if is_admission_city_lp_url(getattr(obj, "landing_page_url", None)):
         return True
@@ -1349,13 +1424,17 @@ def _include_crm(source_filter: str | None) -> bool:
         # Bcwebwise: Meta Instant Forms + Google LPs (all states, including West Bengal Instant Forms).
         # Ants login: West Bengal Instant Forms + Ants Google LP (lp_wb).
         return True
-    if source_filter in ("campaign", "franchise_all"):
+    if source_filter in (
+        "campaign", "franchise_all", "others", "franchise",
+        "admission_all", "admission_others", "admission", "landing",
+    ):
         return True
     return source_filter in {
         "google",
         "july_lp", "july-lp", "july_meta", "july-meta", "lp_wb", "lp-wb",
         "franchise_referral", "franchise_friends_family", "referral_parents", "referral_family_friends",
-    }
+        "whatsapp", "sms", "email", "admission_whatsapp", "admission_sms", "admission_email",
+    } or normalize_source_from_api(source_filter) in CRM_VISIBLE_SOURCES
 
 
 def _include_franchise_enquiry(source_filter: str | None) -> bool:
@@ -1631,7 +1710,23 @@ def _filter_crm_qs(
                 )
             else:
                 return CrmLead.objects.none()
-        elif source_filter not in ("campaign", "franchise_all"):
+        elif source_filter == "campaign":
+            qs = qs.exclude(source__in=ADMISSION_CRM_SOURCES + (CrmLeadSource.FRANCHISE_WEBSITE,))
+        elif source_filter == "franchise_all":
+            qs = qs.exclude(source__in=ADMISSION_CRM_SOURCES)
+        elif source_filter == "franchise":
+            qs = qs.filter(source=CrmLeadSource.FRANCHISE_WEBSITE)
+        elif source_filter == "others":
+            qs = qs.filter(source__in=FRANCHISE_OTHER_CRM_SOURCES)
+        elif source_filter == "admission_all":
+            qs = qs.filter(source__in=ADMISSION_CRM_SOURCES)
+        elif source_filter == "admission":
+            qs = qs.filter(source=CrmLeadSource.ADMISSION_WEBSITE)
+        elif source_filter == "landing":
+            qs = qs.filter(source__in=ADMISSION_CAMPAIGN_CRM_SOURCES)
+        elif source_filter == "admission_others":
+            qs = qs.filter(source__in=ADMISSION_OTHER_CRM_SOURCES)
+        else:
             google_ads_landing_q = (
                 Q(gclid__gt="")
                 | Q(landing_page_url__icontains="gclid=")
@@ -1651,14 +1746,20 @@ def _filter_crm_qs(
             )
             if source_filter == "google":
                 # Genuine Google LP/WB sources only. Meta-attributed WB leads belong in the Meta bucket.
-                qs = qs.filter((Q(source__in=GOOGLE_CAMPAIGN_SOURCES) | google_ads_landing_q) & ~meta_like_q)
+                qs = qs.filter(
+                    ((Q(source__in=GOOGLE_CAMPAIGN_SOURCES) | google_ads_landing_q) & ~meta_like_q)
+                    | Q(source=CrmLeadSource.CAMPAIGN_GOOGLE)
+                )
             else:
                 mapped = normalize_source_from_api(source_filter)
-                if mapped in CRM_VISIBLE_SOURCES:
-                    qs = qs.filter(source=mapped)
+                if mapped == CrmLeadSource.JULY_META:
                     # Meta Instant Form / Meta LP organic only — not Google Ads clicks on Meta LP.
-                    if mapped == CrmLeadSource.JULY_META:
-                        qs = qs.exclude(google_ads_landing_q)
+                    qs = qs.filter(
+                        (Q(source=CrmLeadSource.JULY_META) & ~google_ads_landing_q)
+                        | Q(source=CrmLeadSource.CAMPAIGN_META)
+                    )
+                elif mapped in CRM_VISIBLE_SOURCES:
+                    qs = qs.filter(source=mapped)
     elif source_filter and not _include_crm(source_filter):
         return CrmLead.objects.none()
 
@@ -2704,6 +2805,16 @@ def unified_reports_data(request) -> dict:
         for row in crm_qs.values("city", "status", "source", "landing_page_url", "state").annotate(
             count=Count("id")
         ):
+            manual_channel = MANUAL_CRM_REPORT_CHANNEL.get(row["source"])
+            if manual_channel in ("franchise", "admission", "landing"):
+                _add_count(row["city"], manual_channel, row["status"], row["count"])
+                continue
+            if manual_channel:
+                if source_filter != "franchise_all":
+                    _add_count(row["city"], "campaign", row["status"], row["count"])
+                if source_filter:
+                    _add_count(row["city"], manual_channel, row["status"], row["count"])
+                continue
             api_src = (
                 campaign_channel_api_key(
                     row["source"], row.get("landing_page_url"), row.get("state"), request=request
@@ -2842,6 +2953,12 @@ def state_wise_lead_report_data(request) -> dict:
         src_l = src.lower()
         if src in referral_sources or src_l in referral_sources:
             row["franchise_referrals"] += 1
+            continue
+        if src_l == CrmLeadSource.FRANCHISE_WEBSITE:
+            row["website"] += 1
+            continue
+        if src_l in OTHER_CHANNEL_CRM_SOURCES or src_l in MANUAL_CRM_REPORT_CHANNEL:
+            # WhatsApp / SMS / Email and manually added leads are not agency campaign leads.
             continue
 
         channel = campaign_channel_api_key(

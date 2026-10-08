@@ -587,6 +587,46 @@ def send_crm_lead_assignment_email(obj, *, assigned_by=None) -> bool:
     return ok
 
 
+def send_crm_leads_transferred_email(*, to_user, from_user, transferred_by, count: int) -> bool:
+    """One summary email to the new owner after a bulk lead transfer."""
+    recipient = (getattr(to_user, "email", None) or "").strip()
+    if not recipient or count <= 0:
+        return False
+    if not sendgrid_api_key():
+        logger.warning("CRM transfer email skipped — SENDGRID_API_KEY not set")
+        return False
+
+    from_name = getattr(from_user, "full_name", None) or getattr(from_user, "email", "") or "a team member"
+    by_name = getattr(transferred_by, "full_name", None) or getattr(transferred_by, "email", "") or "CRM Admin"
+    login_url = _crm_admin_login_url()
+    noun = "lead" if count == 1 else "leads"
+    subject = f"{count} CRM {noun} transferred to you"
+    plain = (
+        f"{count} CRM {noun} previously handled by {from_name} have been transferred to you by {by_name}.\n\n"
+        f"Login to CRM to view and follow up:\n{login_url}\n"
+    )
+    safe_login = html.escape(login_url)
+    html_content = f"""
+    <html><body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+      <p><strong>{count} CRM {noun} have been transferred to you.</strong></p>
+      <p>
+        <strong>Previously handled by:</strong> {html.escape(str(from_name))}<br>
+        <strong>Transferred by:</strong> {html.escape(str(by_name))}
+      </p>
+      <p>Login to CRM to view and follow up:<br>
+        <a href="{safe_login}">{safe_login}</a>
+      </p>
+    </body></html>
+    """
+    return send_sendgrid_message(
+        to_emails=[recipient],
+        subject=subject,
+        plain_text_content=plain,
+        html_content=html_content,
+        from_email=default_from_email(),
+    )
+
+
 def assign_and_notify_new_lead(obj, *, lead_source: str = "", notify: bool = True) -> bool:
     """
     Auto-assign a new lead to the best validated territory user (if still open),

@@ -213,6 +213,10 @@ def franchise_profile_for_user(user):
 
     from franchises.models import Franchise
 
+    if _norm_role(user) == UserRole.TEACHER.value:
+        tp = teacher_profile_for_user(user)
+        return tp.franchise if tp and tp.is_active else None
+
     # Use filter().first() — legacy data may have multiple franchises per user_id.
     franchise = Franchise.objects.filter(user_id=user.pk).order_by("id").first()
     if franchise:
@@ -892,6 +896,35 @@ def driver_profile_for_user(user):
         return (
             DriverProfile.objects.filter(user__email__iexact=email)
             .select_related("user")
+            .order_by("-id")
+            .first()
+        )
+    return None
+
+
+def teacher_profile_for_user(user):
+    if not user or not getattr(user, "is_authenticated", False):
+        return None
+    try:
+        return user.teacher_profile
+    except ObjectDoesNotExist:
+        pass
+
+    from franchises.models import TeacherProfile
+
+    profile = (
+        TeacherProfile.objects.filter(user_id=user.pk)
+        .select_related("user", "franchise")
+        .first()
+    )
+    if profile:
+        return profile
+
+    email = (getattr(user, "email", None) or "").strip()
+    if email:
+        return (
+            TeacherProfile.objects.filter(user__email__iexact=email)
+            .select_related("user", "franchise")
             .order_by("-id")
             .first()
         )
