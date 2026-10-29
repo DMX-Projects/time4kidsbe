@@ -3479,3 +3479,256 @@ def generate_agency_report_csv(request) -> bytes:
 
     return output.getvalue().encode("utf-8-sig")
 
+
+
+# ---------------------------------------------------------------------------
+# Super-admin "Lead Reports": same 12-column flat list as the agency report,
+# but across ALL lead sources (campaign_leads, website admission, centerpage,
+# website franchise forms, city landing pages). Super admin only.
+# ---------------------------------------------------------------------------
+
+LEAD_REPORT_COLUMNS = (
+    "name",
+    "phone",
+    "state",
+    "city",
+    "lead_type",
+    "utm_source",
+    "utm_medium",
+    "utm_campaign",
+    "status",
+    "created_at",
+    "utm_content",
+    "gclid",
+    "description",
+)
+
+
+def _all_leads_report_kind(request) -> str:
+    """Lead Type filter for super-admin Lead Reports: "" (all), "campaign", "landing" (admission)."""
+    raw = (_query_params(request).get("leadKind") or "").strip().lower()
+    if raw in ("campaign", "crm"):
+        return "campaign"
+    if raw in ("landing", "admission"):
+        return "landing"
+    return ""
+
+
+def is_all_leads_report_request(request) -> bool:
+    """``mode=all_leads`` from a national super admin with no agency scope."""
+    if request is None or not is_crm_super_admin_user(request=request):
+        return False
+    if _request_agency_filter(request):
+        return False
+    return (_query_params(request).get("mode") or "").strip().lower() == "all_leads"
+
+
+def all_leads_report_data(request) -> dict:
+    """Flat lead list across every source for super-admin Lead Reports."""
+    if not is_all_leads_report_request(request):
+        return {"mode": "all_leads", "total": 0, "leads": []}
+
+    kind = _all_leads_report_kind(request)
+    start, end = _parse_request_dates(request)
+    params = _query_params(request)
+    states = [
+        s.strip() for s in (params.get("state") or "").split(",")
+        if s.strip() and s.strip().lower() != "all"
+    ]
+    cities = [
+        c.strip() for c in (params.get("city") or "").split(",")
+        if c.strip() and c.strip().lower() != "all"
+    ]
+
+    def _dt_str(value) -> str:
+        return timezone.localtime(value).strftime("%Y-%m-%d %H:%M:%S") if value else ""
+
+    def _crm_scope(qs):
+        if start:
+            qs = qs.filter(created_at__gte=start)
+        if end:
+            qs = qs.filter(created_at__lte=end)
+        if states:
+            qs = qs.filter(state__in=states)
+        if cities:
+            qs = qs.filter(city__in=cities)
+        return qs
+
+    include_campaign = kind in ("", "campaign")
+    include_admission = kind in ("", "landing")
+    include_other = kind == ""
+
+    # Super admin sees EVERY lead: query models directly (no source / zone / centre /
+    # assignment scoping from the unified list helpers).
+    from .models import CrmLead, Enquiry, FranchiseEnquiry, KidsEnquiry
+
+    def _geo(qs, date_field, state_fields, city_fields):
+        if start:
+            qs = qs.filter(**{f"{date_field}__gte": start})
+        if end:
+            qs = qs.filter(**{f"{date_field}__lte": end})
+        if states:
+            q = Q()
+            for s in states:
+                for f in state_fields:
+                    q |= Q(**{f"{f}__iexact": s})
+            qs = qs.filter(q)
+        if cities:
+            q = Q()
+            for c in cities:
+                for f in city_fields:
+                    q |= Q(**{f"{f}__iexact": c})
+            qs = qs.filter(q)
+        return qs
+
+    crm_all = _geo(CrmLead.objects.all(), "created_at", ("state",), ("city",))
+    adm_q = _admission_misfiled_campaign_q() | Q(source__in=ADMISSION_CRM_SOURCES)
+    crm_list = list(crm_all.exclude(adm_q).order_by("-created_at")) if include_campaign else []
+    adm_crm_list = list(crm_all.filter(adm_q).order_by("-created_at")) if include_admission else []
+    landing_list = []
+    admission_enq = []
+    enq_geo = (("state", "franchise__state", "franchise__statename"), ("city", "franchise__city", "franchise__cityname"))
+    if include_admission:
+        landing_list = list(_geo(KidsEnquiry.objects.all(), "created_date", ("state",), ("city",)))
+        admission_enq = list(_geo(
+            Enquiry.objects.filter(enquiry_type=EnquiryType.ADMISSION).select_related("franchise"),
+            "created_at", *enq_geo,
+        ))
+    contact_enq = (
+        list(_geo(Enquiry.objects.filter(enquiry_type=EnquiryType.CONTACT).select_related("franchise"),
+                  "created_at", *enq_geo))
+        if include_other else []
+    )
+    franchise_enq = (
+        list(_geo(FranchiseEnquiry.objects.all().select_related("franchise"), "created_at", *enq_geo))
+        if include_other else []
+    )
+
+    crm_ids = [l.id for l in crm_list] + [l.id for l in adm_crm_list]
+    note_keys = (
+        [f"crm_{i}" for i in crm_ids]
+        + [f"landing_{r.id}" for r in landing_list]
+        + [f"enquiry_{e.id}" for e in admission_enq + contact_enq]
+        + [f"franchiseenquiry_{e.id}" for e in franchise_enq]
+    )
+    notes = _latest_history_notes_by_lead_id(note_keys)
+    if crm_ids:
+        from .models import CrmLeadNote
+
+        for n in (
+            CrmLeadNote.objects.filter(lead_id__in=crm_ids)
+            .order_by("-created_at")
+            .only("lead_id", "content", "created_at")
+        ):
+            content = (n.content or "").strip()
+            if not content or content.startswith("[Email]") or content.startswith("[WhatsApp]"):
+                continue
+            notes.setdefault(f"crm_{n.lead_id}", content)
+
+    leads: list[dict] = []
+
+    def _crm_row(lead, lead_type, row_id):
+        return {
+            "id": row_id,
+            "name": lead.full_name or "",
+            "phone": lead.mobile or "",
+            "state": lead.state or "",
+            "city": lead.city or "",
+            "lead_type": lead_type,
+            "utm_source": lead.utm_source or "",
+            "utm_medium": lead.utm_medium or "",
+            "utm_campaign": lead.utm_campaign or "",
+            "status": lead.status or "",
+            "created_at": _dt_str(lead.created_at),
+            "utm_content": lead.utm_content or "",
+            "gclid": lead.gclid or "",
+            "description": notes.get(f"crm_{lead.id}", ""),
+            "_meeting_done": bool(getattr(lead, "meeting_done", False)),
+        }
+
+    for lead in crm_list:
+        leads.append(_crm_row(lead, "Campaign", f"crm-{lead.id}"))
+    for lead in adm_crm_list:
+        leads.append(_crm_row(lead, "Admission", f"crmadm-{lead.id}"))
+
+    for row in landing_list:
+        tracking = _landing_report_tracking(row)
+        leads.append({
+            "id": f"landing-{row.id}",
+            "name": row.name or "",
+            "phone": row.mobileno or row.mobile or "",
+            "state": row.state or "",
+            "city": row.city or "",
+            "lead_type": "Admission",
+            "utm_source": tracking["utm_source"],
+            "utm_medium": tracking["utm_medium"],
+            "utm_campaign": tracking["utm_campaign"],
+            "status": _landing_crm_status(row),
+            "created_at": _dt_str(row.created_date),
+            "utm_content": tracking["utm_content"],
+            "gclid": tracking["gclid"],
+            "description": notes.get(f"landing_{row.id}", ""),
+            "_meeting_done": bool(getattr(row, "meeting_done", False)),
+        })
+
+    def _enq_row(e, lead_type, prefix, note_key, utm_source, status):
+        fr = getattr(e, "franchise", None)
+        state = getattr(e, "state", "") or (getattr(fr, "state", "") if fr else "") or ""
+        city = (e.city or "") or (getattr(fr, "city", "") if fr else "") or ""
+        return {
+            "id": f"{prefix}-{e.id}",
+            "name": e.name or "",
+            "phone": e.phone or "",
+            "state": str(state or ""),
+            "city": str(city or ""),
+            "lead_type": lead_type,
+            "utm_source": utm_source,
+            "utm_medium": "",
+            "utm_campaign": "",
+            "status": status,
+            "created_at": _dt_str(e.created_at),
+            "utm_content": "",
+            "gclid": "",
+            "description": notes.get(note_key, ""),
+            "_meeting_done": bool(getattr(e, "meeting_done", False)),
+        }
+
+    for e in admission_enq:
+        leads.append(_enq_row(e, "Admission", "admission", f"enquiry_{e.id}", "Website",
+                              _enquiry_status_to_crm(e.status)))
+    for e in contact_enq:
+        leads.append(_enq_row(e, "Centerpage", "contact", f"enquiry_{e.id}", "Centerpage",
+                              _enquiry_status_to_crm(e.status)))
+    for e in franchise_enq:
+        leads.append(_enq_row(e, "Franchise", "franchise", f"franchiseenquiry_{e.id}", "Website Franchise",
+                              e.status or ""))
+
+    # Status filter (same values as the dashboard Status checkboxes; "meeting_done" = flag).
+    status_values, want_meeting_done = _partition_status_filters(_request_status_filters(request))
+    if status_values or want_meeting_done:
+        wanted = {s.strip().lower() for s in status_values}
+        if "untouched" in wanted:
+            wanted.add("new")  # website / landing "new" == dashboard "Untouched"
+        leads = [
+            row for row in leads
+            if str(row.get("status") or "").strip().lower() in wanted
+            or (want_meeting_done and row.get("_meeting_done"))
+        ]
+    for row in leads:
+        row.pop("_meeting_done", None)
+
+    leads.sort(key=lambda item: item.get("created_at") or "", reverse=True)
+    return {"mode": "all_leads", "total": len(leads), "leads": leads}
+
+
+def generate_all_leads_report_csv(request) -> bytes:
+    """CSV for super-admin Lead Reports (13 columns incl. phone)."""
+    import csv, io
+
+    leads = all_leads_report_data(request).get("leads", [])
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(list(LEAD_REPORT_COLUMNS))
+    for lead in leads:
+        writer.writerow([lead.get(col, "") or "" for col in LEAD_REPORT_COLUMNS])
+    return output.getvalue().encode("utf-8-sig")
