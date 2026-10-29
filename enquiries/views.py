@@ -1196,6 +1196,17 @@ class AdminCrmReportsView(APIView):
         mode_param = (request.query_params.get("mode") or "").strip().lower()
         agency_filter = _request_agency_filter(request)
 
+        # Super-admin "Lead Reports": all sources, no agency scope.
+        from .crm_api import is_all_leads_report_request
+        if mode_param == "all_leads" and is_all_leads_report_request(request):
+            from .crm_api import all_leads_report_data, generate_all_leads_report_csv
+            if export_fmt == "csv":
+                response = HttpResponse(
+                    generate_all_leads_report_csv(request), content_type="text/csv; charset=utf-8"
+                )
+                response["Content-Disposition"] = 'attachment; filename="Lead_Report.csv"'
+                return response
+            return Response(all_leads_report_data(request))
         if agency_filter or mode_param == "agency" or export_fmt == "csv":
             if export_fmt == "csv":
                 csv_bytes = generate_agency_report_csv(request)
