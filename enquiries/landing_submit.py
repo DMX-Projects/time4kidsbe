@@ -89,6 +89,12 @@ def _raw_payload(post_data: Any) -> dict:
 def _lookup_franchise(city: str, location: str) -> Franchise | None:
     if not location:
         return None
+    from .request_cache import cached
+
+    return cached(("lookup_franchise", city, location), lambda: _lookup_franchise_uncached(city, location))
+
+
+def _lookup_franchise_uncached(city: str, location: str) -> Franchise | None:
     qs = Franchise.objects.filter(is_active=True, name__iexact=location)
     if city:
         city_q = Q()

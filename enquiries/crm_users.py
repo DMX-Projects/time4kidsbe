@@ -622,6 +622,97 @@ def resolve_lead_state_code(state: str | None = None, city: str | None = None) -
     if "mumbai" in city_key or "bombay" in city_key:
         return "MH"
 
+    from .request_cache import cached
+
+    return cached(("city_state_code", city_name), lambda: _city_state_code_lookup(city_name))
+
+
+def _city_state_code_lookup(city_name: str) -> str | None:
+    """DB-backed city -> state code; uses a per-request bulk index when possible."""
+    from .request_cache import active_cache, cached
+
+    if active_cache() is not None and city_name.isascii():
+        index = cached(("city_state_index",), _build_city_state_index)
+        if index is not None:
+            hit, code = _city_state_code_from_index(index, city_name)
+            if hit:
+                return code
+    return _city_state_code_from_db(city_name)
+
+
+def _build_city_state_index():
+    """Load active locations/centres once. None when non-ASCII data makes
+    Python case-folding unsafe to mirror Postgres UPPER()."""
+    from franchises.models import Franchise, FranchiseLocation
+
+    locs = list(
+        FranchiseLocation.objects.filter(is_active=True)
+        .exclude(state__isnull=True)
+        .exclude(state="")
+        .values_list("city_name", "state")
+    )
+    fr = list(Franchise.objects.filter(is_active=True).values_list("city", "cityname", "state", "statename"))
+    for row in locs:
+        if row[0] is not None and not row[0].isascii():
+            return None
+    for row in fr:
+        for v in row[:2]:
+            if v is not None and not v.isascii():
+                return None
+    loc_by_city: dict[str, list[str]] = {}
+    for city_name, state in locs:
+        if city_name is None:
+            continue
+        loc_by_city.setdefault(city_name.upper(), []).append(state)
+    fr_by_city: dict[str, list[int]] = {}
+    for i, (city, cityname, _s, _sn) in enumerate(fr):
+        keys = set()
+        for v in (city, cityname):
+            if v is not None:
+                keys.add(v.strip(" ").upper())
+        for k in keys:
+            fr_by_city.setdefault(k, []).append(i)
+    return {"locs": loc_by_city, "fr": fr, "fr_by_city": fr_by_city}
+
+
+def _city_state_code_from_index(index, city_name: str):
+    """Return (True, code) when the answer is unambiguous, else (False, None)."""
+    from collections import Counter
+
+    from franchises.franchise_geo import city_query_variants, state_to_code
+
+    loc_states = index["locs"].get(city_name.upper())
+    if loc_states:
+        codes = {state_to_code(s) for s in loc_states}
+        if len(codes) > 1:
+            return False, None  # DB ordering would decide; defer to DB
+        code = next(iter(codes))
+        if code:
+            return True, code
+
+    matched: set[int] = set()
+    for variant in city_query_variants(city_name):
+        matched.update(index["fr_by_city"].get(variant.upper(), ()))
+    if len(matched) > 80:
+        return False, None
+    tallies: Counter[str] = Counter()
+    for i in matched:
+        _c, _cn, state, statename = index["fr"][i]
+        mapped = state_to_code(statename or state)
+        if mapped:
+            tallies[mapped] += 1
+    if not tallies:
+        return True, None
+    top = tallies.most_common()
+    if len(top) > 1 and top[0][1] == top[1][1]:
+        return False, None  # tie broken by DB row order; defer to DB
+    return True, top[0][0]
+
+
+def _city_state_code_from_db(city_name: str) -> str | None:
+    from collections import Counter
+
+    from franchises.franchise_geo import filter_queryset_by_city, state_to_code
     from franchises.models import Franchise, FranchiseLocation
 
     loc = (

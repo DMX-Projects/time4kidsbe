@@ -1517,6 +1517,44 @@ def _valid_crm_statuses() -> set[str]:
     return {choice.value for choice in CrmLeadStatus}
 
 
+def _latest_note_created_at(lead_id: str):
+    """created_at of the newest UnifiedLeadNote for ``lead_id`` (None if none)."""
+    from .request_cache import cached
+
+    def _query():
+        from enquiries.models import UnifiedLeadNote
+
+        note = UnifiedLeadNote.objects.filter(lead_id=lead_id).order_by("-created_at").first()
+        return note.created_at if note else None
+
+    return cached(("latest_note_at", lead_id), _query)
+
+
+def _prime_latest_notes(rows, kind: str):
+    """Bulk-load newest note times for ``rows`` into the request cache (1 query)."""
+    from django.db.models import Max
+
+    from enquiries.models import UnifiedLeadNote
+
+    from .request_cache import active_cache
+
+    rows = list(rows)
+    cache = active_cache()
+    if cache is None or not rows:
+        return rows
+    ids = [f"{kind}_{row.id}" for row in rows]
+    found = {
+        r["lead_id"]: r["latest"]
+        for r in UnifiedLeadNote.objects.filter(lead_id__in=ids)
+        .order_by()
+        .values("lead_id")
+        .annotate(latest=Max("created_at"))
+    }
+    for lid in ids:
+        cache[("latest_note_at", lid)] = found.get(lid)
+    return rows
+
+
 def enquiry_to_dict(enquiry: Enquiry, *, include_detail: bool = False) -> dict:
     franchise = enquiry.franchise if enquiry.franchise_id else None
     centre_name, centre_phone, centre_email = _franchise_centre_contact(franchise)
@@ -1525,9 +1563,8 @@ def enquiry_to_dict(enquiry: Enquiry, *, include_detail: bool = False) -> dict:
     city = effective_city(franchise) if franchise else (enquiry.city or "")
     state = _franchise_state(franchise) if franchise else ""
     source = "admission" if enquiry.enquiry_type == EnquiryType.ADMISSION else "contact"
-    from enquiries.models import UnifiedLeadNote
-    latest_note = UnifiedLeadNote.objects.filter(lead_id=f"enquiry_{enquiry.id}").order_by("-created_at").first()
-    updated_at = latest_note.created_at if latest_note else enquiry.created_at
+    latest_note_at = _latest_note_created_at(f"enquiry_{enquiry.id}")
+    updated_at = latest_note_at if latest_note_at else enquiry.created_at
 
     data = {
         "id": f"enquiry-{enquiry.id}",
@@ -1573,9 +1610,8 @@ def franchise_enquiry_to_dict(enquiry: FranchiseEnquiry, *, include_detail: bool
 
     city = effective_city(franchise) if franchise else (enquiry.city or "")
     state = _franchise_state(franchise) if franchise else (enquiry.state or "")
-    from enquiries.models import UnifiedLeadNote
-    latest_note = UnifiedLeadNote.objects.filter(lead_id=f"franchiseenquiry_{enquiry.id}").order_by("-created_at").first()
-    updated_at = latest_note.created_at if latest_note else enquiry.created_at
+    latest_note_at = _latest_note_created_at(f"franchiseenquiry_{enquiry.id}")
+    updated_at = latest_note_at if latest_note_at else enquiry.created_at
 
     data = {
         "id": f"franchiseenquiry-{enquiry.id}",
@@ -2103,29 +2139,59 @@ def unified_leads_page(request, *, page: int, limit: int) -> list[dict]:
     merged: list[dict] = []
 
     if _include_crm(_request_source_filter(request)):
-        merged.extend(lead_to_dict(row, request=request) for row in _filter_crm_qs(request)[:fetch_count])
+        merged.extend(
+            lead_to_dict(row, request=request)
+            for row in _filter_crm_qs(request).select_related("assigned_user")[:fetch_count]
+        )
     if _include_admission(_request_source_filter(request)):
         merged.extend(
-            enquiry_to_dict(row) for row in _filter_enquiry_qs(request, EnquiryType.ADMISSION)[:fetch_count]
+            enquiry_to_dict(row)
+            for row in _prime_latest_notes(
+                _filter_enquiry_qs(request, EnquiryType.ADMISSION).select_related("assigned_user")[:fetch_count],
+                "enquiry",
+            )
         )
     if _include_contact(_request_source_filter(request)):
         merged.extend(
-            enquiry_to_dict(row) for row in _filter_enquiry_qs(request, EnquiryType.CONTACT)[:fetch_count]
+            enquiry_to_dict(row)
+            for row in _prime_latest_notes(
+                _filter_enquiry_qs(request, EnquiryType.CONTACT).select_related("assigned_user")[:fetch_count],
+                "enquiry",
+            )
         )
     if _include_franchise_enquiry(_request_source_filter(request)):
         merged.extend(
-            franchise_enquiry_to_dict(row) for row in _filter_franchise_enquiry_qs(request)[:fetch_count]
+            franchise_enquiry_to_dict(row)
+            for row in _prime_latest_notes(
+                _filter_franchise_enquiry_qs(request).select_related("franchise", "assigned_user")[:fetch_count],
+                "franchiseenquiry",
+            )
         )
     if _include_landing(_request_source_filter(request), request):
         merged.extend(landing_to_dict(row) for row in _filter_landing_qs(request)[:fetch_count])
         merged.extend(
             lead_to_dict(row, request=request)
-            for row in _filter_admission_city_lp_crm_qs(request)[:fetch_count]
+            for row in _filter_admission_city_lp_crm_qs(request).select_related("assigned_user")[:fetch_count]
         )
 
     merged.sort(key=lambda row: row.get("createdAt") or "", reverse=True)
     page_rows = merged[offset : offset + limit]
     return _redact_lead_list(page_rows, request)
+
+def _merged_counts(qs, **conditions) -> dict:
+    """Several filtered ``.count()`` results in one query.
+
+    Equivalent to ``{name: qs.filter(cond).count()}``; falls back to separate
+    counts for DISTINCT / combined querysets where a conditional aggregate
+    could count differently.
+    """
+    query = qs.query
+    if query.distinct or query.combinator or query.is_sliced:
+        return {name: qs.filter(cond).count() for name, cond in conditions.items()}
+    return qs.order_by().aggregate(
+        **{name: Count("pk", filter=cond) for name, cond in conditions.items()}
+    )
+
 
 def unified_dashboard_stats(request) -> dict:
     today = timezone.localdate()
@@ -2152,13 +2218,19 @@ def unified_dashboard_stats(request) -> dict:
             source_counts[api_source] = source_counts.get(api_source, 0) + row["count"]
         for row in crm_qs.values("status").annotate(count=Count("id")):
             status_counts[row["status"]] = status_counts.get(row["status"], 0) + row["count"]
-        today_count += crm_qs.filter(created_at__date=today).count()
-        follow_ups += crm_qs.filter(
-            status__in=[CrmLeadStatus.FOLLOW_UP, CrmLeadStatus.VISITED_SCHOOL]
-        ).count()
-        converted += crm_qs.filter(status=CrmLeadStatus.CONVERTED_ADMISSION).count()
-        meeting_fixed += crm_qs.filter(meeting_fixed=True).count()
-        meeting_done += crm_qs.filter(meeting_done=True).count()
+        _c = _merged_counts(
+            crm_qs,
+            c0=Q(created_at__date=today),
+            c1=Q(status__in=[CrmLeadStatus.FOLLOW_UP, CrmLeadStatus.VISITED_SCHOOL]),
+            c2=Q(status=CrmLeadStatus.CONVERTED_ADMISSION),
+            c3=Q(meeting_fixed=True),
+            c4=Q(meeting_done=True),
+        )
+        today_count += _c['c0']
+        follow_ups += _c['c1']
+        converted += _c['c2']
+        meeting_fixed += _c['c3']
+        meeting_done += _c['c4']
         if not is_restricted_crm_viewer(request=request):
             for lead in crm_qs.only("state", "city", "raw_payload").iterator(chunk_size=200):
                 if cross_state_form_info(lead.state, lead.city, lead.raw_payload).get("isCrossStateForm"):
@@ -2172,13 +2244,19 @@ def unified_dashboard_stats(request) -> dict:
         for row in admission_qs.values("status").annotate(count=Count("id")):
             mapped = _enquiry_status_to_crm(row["status"])
             status_counts[mapped] = status_counts.get(mapped, 0) + row["count"]
-        today_count += admission_qs.filter(created_at__date=today).count()
-        follow_ups += admission_qs.filter(
-            status__in=[CrmLeadStatus.FOLLOW_UP, CrmLeadStatus.VISITED_SCHOOL, "in-progress"]
-        ).count()
-        converted += admission_qs.filter(status__in=[CrmLeadStatus.CONVERTED_ADMISSION, "closed"]).count()
-        meeting_fixed += admission_qs.filter(meeting_fixed=True).count()
-        meeting_done += admission_qs.filter(meeting_done=True).count()
+        _c = _merged_counts(
+            admission_qs,
+            c0=Q(created_at__date=today),
+            c1=Q(status__in=[CrmLeadStatus.FOLLOW_UP, CrmLeadStatus.VISITED_SCHOOL, "in-progress"]),
+            c2=Q(status__in=[CrmLeadStatus.CONVERTED_ADMISSION, "closed"]),
+            c3=Q(meeting_fixed=True),
+            c4=Q(meeting_done=True),
+        )
+        today_count += _c['c0']
+        follow_ups += _c['c1']
+        converted += _c['c2']
+        meeting_fixed += _c['c3']
+        meeting_done += _c['c4']
 
     if _include_contact(_request_source_filter(request)):
         contact_qs = _filter_enquiry_qs(request, EnquiryType.CONTACT)
@@ -2188,13 +2266,19 @@ def unified_dashboard_stats(request) -> dict:
         for row in contact_qs.values("status").annotate(count=Count("id")):
             mapped = _enquiry_status_to_crm(row["status"])
             status_counts[mapped] = status_counts.get(mapped, 0) + row["count"]
-        today_count += contact_qs.filter(created_at__date=today).count()
-        follow_ups += contact_qs.filter(
-            status__in=[CrmLeadStatus.FOLLOW_UP, CrmLeadStatus.VISITED_SCHOOL, "in-progress"]
-        ).count()
-        converted += contact_qs.filter(status__in=[CrmLeadStatus.CONVERTED_ADMISSION, "closed"]).count()
-        meeting_fixed += contact_qs.filter(meeting_fixed=True).count()
-        meeting_done += contact_qs.filter(meeting_done=True).count()
+        _c = _merged_counts(
+            contact_qs,
+            c0=Q(created_at__date=today),
+            c1=Q(status__in=[CrmLeadStatus.FOLLOW_UP, CrmLeadStatus.VISITED_SCHOOL, "in-progress"]),
+            c2=Q(status__in=[CrmLeadStatus.CONVERTED_ADMISSION, "closed"]),
+            c3=Q(meeting_fixed=True),
+            c4=Q(meeting_done=True),
+        )
+        today_count += _c['c0']
+        follow_ups += _c['c1']
+        converted += _c['c2']
+        meeting_fixed += _c['c3']
+        meeting_done += _c['c4']
 
     if _include_franchise_enquiry(_request_source_filter(request)):
         franchise_qs = _filter_franchise_enquiry_qs(request)
@@ -2203,11 +2287,19 @@ def unified_dashboard_stats(request) -> dict:
             source_counts["franchise"] = source_counts.get("franchise", 0) + franchise_count
         for row in franchise_qs.values("status").annotate(count=Count("id")):
             status_counts[row["status"]] = status_counts.get(row["status"], 0) + row["count"]
-        today_count += franchise_qs.filter(created_at__date=today).count()
-        follow_ups += franchise_qs.filter(status__in=[CrmLeadStatus.FOLLOW_UP, CrmLeadStatus.HOT, CrmLeadStatus.WARM, CrmLeadStatus.COLD]).count()
-        converted += franchise_qs.filter(status__in=[CrmLeadStatus.CONVERTED_MOU, CrmLeadStatus.CONVERTED_AGREEMENT]).count()
-        meeting_fixed += franchise_qs.filter(meeting_fixed=True).count()
-        meeting_done += franchise_qs.filter(meeting_done=True).count()
+        _c = _merged_counts(
+            franchise_qs,
+            c0=Q(created_at__date=today),
+            c1=Q(status__in=[CrmLeadStatus.FOLLOW_UP, CrmLeadStatus.HOT, CrmLeadStatus.WARM, CrmLeadStatus.COLD]),
+            c2=Q(status__in=[CrmLeadStatus.CONVERTED_MOU, CrmLeadStatus.CONVERTED_AGREEMENT]),
+            c3=Q(meeting_fixed=True),
+            c4=Q(meeting_done=True),
+        )
+        today_count += _c['c0']
+        follow_ups += _c['c1']
+        converted += _c['c2']
+        meeting_fixed += _c['c3']
+        meeting_done += _c['c4']
 
     if _include_landing(_request_source_filter(request), request):
         landing_qs = _filter_landing_qs(request)
@@ -2233,13 +2325,19 @@ def unified_dashboard_stats(request) -> dict:
             source_counts["landing"] = source_counts.get("landing", 0) + misfiled_count
         for row in misfiled_qs.values("status").annotate(count=Count("id")):
             status_counts[row["status"]] = status_counts.get(row["status"], 0) + row["count"]
-        today_count += misfiled_qs.filter(created_at__date=today).count()
-        follow_ups += misfiled_qs.filter(
-            status__in=[CrmLeadStatus.FOLLOW_UP, CrmLeadStatus.VISITED_SCHOOL]
-        ).count()
-        converted += misfiled_qs.filter(status=CrmLeadStatus.CONVERTED_ADMISSION).count()
-        meeting_fixed += misfiled_qs.filter(meeting_fixed=True).count()
-        meeting_done += misfiled_qs.filter(meeting_done=True).count()
+        _c = _merged_counts(
+            misfiled_qs,
+            c0=Q(created_at__date=today),
+            c1=Q(status__in=[CrmLeadStatus.FOLLOW_UP, CrmLeadStatus.VISITED_SCHOOL]),
+            c2=Q(status=CrmLeadStatus.CONVERTED_ADMISSION),
+            c3=Q(meeting_fixed=True),
+            c4=Q(meeting_done=True),
+        )
+        today_count += _c['c0']
+        follow_ups += _c['c1']
+        converted += _c['c2']
+        meeting_fixed += _c['c3']
+        meeting_done += _c['c4']
 
     return {
         "totalEnquiries": unified_leads_total(request),
@@ -2260,7 +2358,7 @@ def unified_dashboard_stats(request) -> dict:
     }
 
 
-def _get_reminders(qs, to_dict_func, updated_field="updated_at", status_field="status"):
+def _get_reminders(qs, to_dict_func, updated_field="updated_at", status_field="status", note_kind=None):
     now = timezone.now()
     today = timezone.localdate()
     next_week = today + timedelta(days=7)
@@ -2293,9 +2391,15 @@ def _get_reminders(qs, to_dict_func, updated_field="updated_at", status_field="s
     ).exclude(**{f"{status_field}__in": closed}).order_by("next_follow_up_date")
 
     return {
-        "meetings": [to_dict_func(l) for l in meetings_qs[:50]],
-        "followUps": [to_dict_func(l) for l in follow_ups_qs[:50]],
+        "meetings": [to_dict_func(l) for l in _maybe_prime(meetings_qs[:50], note_kind)],
+        "followUps": [to_dict_func(l) for l in _maybe_prime(follow_ups_qs[:50], note_kind)],
     }
+
+
+def _maybe_prime(rows, note_kind):
+    if note_kind:
+        return _prime_latest_notes(rows, note_kind)
+    return rows
 
 
 def _request_for_reminders(request):
@@ -2321,20 +2425,20 @@ def unified_reminders(request) -> dict:
     follow_ups = []
 
     if not source_filter or _include_crm(source_filter):
-        crm_qs = _filter_crm_qs(request)
+        crm_qs = _filter_crm_qs(request).select_related("assigned_user")
         res = _get_reminders(crm_qs, lambda l: lead_to_dict(l, request=request), "updated_at")
         meetings.extend(res["meetings"])
         follow_ups.extend(res["followUps"])
 
     if not source_filter or _include_admission(source_filter):
-        enq_qs = _filter_enquiry_qs(request, EnquiryType.ADMISSION)
-        res = _get_reminders(enq_qs, enquiry_to_dict, "created_at")
+        enq_qs = _filter_enquiry_qs(request, EnquiryType.ADMISSION).select_related("assigned_user")
+        res = _get_reminders(enq_qs, enquiry_to_dict, "created_at", note_kind="enquiry")
         meetings.extend(res["meetings"])
         follow_ups.extend(res["followUps"])
 
     if not source_filter or _include_contact(source_filter):
-        enq_qs = _filter_enquiry_qs(request, EnquiryType.CONTACT)
-        res = _get_reminders(enq_qs, enquiry_to_dict, "created_at")
+        enq_qs = _filter_enquiry_qs(request, EnquiryType.CONTACT).select_related("assigned_user")
+        res = _get_reminders(enq_qs, enquiry_to_dict, "created_at", note_kind="enquiry")
         meetings.extend(res["meetings"])
         follow_ups.extend(res["followUps"])
 
@@ -2362,8 +2466,8 @@ def unified_reminders(request) -> dict:
         )
 
     if not source_filter or _include_franchise_enquiry(source_filter):
-        fe_qs = _filter_franchise_enquiry_qs(request)
-        res = _get_reminders(fe_qs, franchise_enquiry_to_dict, "created_at")
+        fe_qs = _filter_franchise_enquiry_qs(request).select_related("franchise", "assigned_user")
+        res = _get_reminders(fe_qs, franchise_enquiry_to_dict, "created_at", note_kind="franchiseenquiry")
         meetings.extend(res["meetings"])
         follow_ups.extend(res["followUps"])
 

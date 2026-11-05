@@ -346,6 +346,19 @@ def scope_city_names(codes: list[str] | None, state_param: str | None = None) ->
     """Full city list for a set of state codes (Franchise + FranchiseLocation)."""
     if not codes:
         return []
+    from enquiries.request_cache import cached
+
+    return list(
+        cached(
+            ("scope_city_names", tuple(codes), state_param),
+            lambda: _scope_city_names_uncached(codes, state_param),
+        )
+    )
+
+
+def _scope_city_names_uncached(codes: list[str] | None, state_param: str | None = None) -> list[str]:
+    if not codes:
+        return []
 
     from franchises.models import Franchise, FranchiseLocation
     from franchises.franchise_geo import filter_queryset_by_state
@@ -589,8 +602,7 @@ def filter_enquiry_qs_by_zone(qs, request):
     cities = request_effective_scope_cities(request)
     if codes is None and cities is None:
         return qs
-    from franchises.models import Franchise
-    from franchises.franchise_geo import filter_queryset_by_state
+    from franchises.franchise_geo import active_franchises_in_state
 
     city_names: set[str] = set()
     if cities is not None:
@@ -598,7 +610,7 @@ def filter_enquiry_qs_by_zone(qs, request):
             city_names.update(city_match_variants(city))
     elif codes is not None:
         for code in codes:
-            for f in filter_queryset_by_state(Franchise.objects.filter(is_active=True), code):
+            for f in active_franchises_in_state(code):
                 for raw in (getattr(f, "cityname", None), getattr(f, "city", None)):
                     name = (raw or "").strip()
                     if name:
@@ -648,8 +660,7 @@ def filter_crm_lead_qs_by_zone(qs, request):
     cities = request_effective_scope_cities(request)
     if codes is None and cities is None:
         return qs
-    from franchises.models import Franchise
-    from franchises.franchise_geo import filter_queryset_by_state
+    from franchises.franchise_geo import active_franchises_in_state
 
     city_names: set[str] = set()
     centre_names: set[str] = set()
@@ -658,7 +669,7 @@ def filter_crm_lead_qs_by_zone(qs, request):
             city_names.update(city_match_variants(city))
     elif codes is not None:
         for code in codes:
-            for f in filter_queryset_by_state(Franchise.objects.filter(is_active=True), code):
+            for f in active_franchises_in_state(code):
                 for raw in (getattr(f, "cityname", None), getattr(f, "city", None)):
                     name = (raw or "").strip()
                     if name:

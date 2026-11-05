@@ -1,3 +1,4 @@
+from .request_cache import with_request_cache
 from django.db.models import Q
 from django.utils.decorators import method_decorator
 from django.views import View
@@ -628,6 +629,7 @@ class AdminCrmLeadListView(APIView):
 
     permission_classes = [permissions.AllowAny]
 
+    @with_request_cache
     def get(self, request):
         if not can_view_crm_leads(request):
             return Response(
@@ -1153,6 +1155,7 @@ class AdminCrmLeadStatsView(APIView):
 
     permission_classes = [permissions.AllowAny]
 
+    @with_request_cache
     def get(self, request):
         if not can_view_crm_leads(request):
             return Response(
@@ -1256,6 +1259,7 @@ class AdminCrmStateLeadReportView(APIView):
 class AdminCrmLeadRemindersView(APIView):
     permission_classes = [permissions.AllowAny]
 
+    @with_request_cache
     def get(self, request):
         if not can_view_crm_leads(request):
             return Response({"detail": "CRM login required."}, status=status.HTTP_403_FORBIDDEN)

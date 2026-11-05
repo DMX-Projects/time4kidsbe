@@ -89,6 +89,26 @@ def state_filter_q(state_param: str) -> Q:
     return q
 
 
+def _distinct_franchise_states() -> list:
+    """Raw ``Franchise.state`` values (memoised per CRM request)."""
+    from enquiries.request_cache import cached
+
+    return cached(
+        ("franchise_distinct_states",),
+        lambda: list(Franchise.objects.values_list("state", flat=True).distinct()),
+    )
+
+
+def active_franchises_in_state(code: str) -> list:
+    """Active ``Franchise`` rows for a state code (memoised per CRM request)."""
+    from enquiries.request_cache import cached
+
+    return cached(
+        ("active_franchises_in_state", code),
+        lambda: list(filter_queryset_by_state(Franchise.objects.filter(is_active=True), code)),
+    )
+
+
 def filter_queryset_by_state(queryset, state_param: str | None):
     """
     Match centres by state using trimmed DB values and all legacy spellings
@@ -104,7 +124,7 @@ def filter_queryset_by_state(queryset, state_param: str | None):
         q |= Q(state_trim__iexact=value)
 
     if target_code:
-        for raw in Franchise.objects.values_list("state", flat=True).distinct():
+        for raw in _distinct_franchise_states():
             if not raw:
                 continue
             if state_to_code(str(raw)) == target_code:
