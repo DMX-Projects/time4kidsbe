@@ -229,6 +229,58 @@ class MetaFormAllowlistTests(SimpleTestCase):
         self.assertFalse(is_allowed_meta_form(form_name=""))
 
 
+class GoogleCampaignNameTests(SimpleTestCase):
+    def test_utm_campaign_name_wins_over_google_campaign_id(self):
+        from enquiries.crm_api import resolve_campaign_name
+
+        url = (
+            "https://www.timekidspreschools.in/Timekids-lp-TKKTAM/"
+            "?utm_campaign=BCWW_TK_Google_AP_P1&gclid=abc&gad_campaignid=12345678901"
+        )
+        self.assertEqual(
+            resolve_campaign_name("", {}, url, name_for_id=lambda _cid: ""),
+            "BCWW_TK_Google_AP_P1",
+        )
+
+    def test_gad_campaignid_is_kept_when_the_ad_url_has_no_name(self):
+        from enquiries.crm_api import resolve_campaign_name
+
+        url = (
+            "https://www.timekidspreschools.in/Timekids-lp-TKKTAM/"
+            "?gclid=abc&gad_source=1&gad_campaignid=12345678901"
+        )
+        self.assertEqual(
+            resolve_campaign_name("", {"gad_campaignid": "12345678901"}, url, name_for_id=lambda _cid: ""),
+            "12345678901",
+        )
+
+    def test_known_name_is_reused_for_a_numeric_campaign_id(self):
+        from enquiries.crm_api import resolve_campaign_name
+
+        self.assertEqual(
+            resolve_campaign_name(
+                "",
+                {"gad_campaignid": "12345678901"},
+                "",
+                name_for_id=lambda cid: "BCWW_TK_Google_AP_P1" if cid == "12345678901" else "",
+            ),
+            "BCWW_TK_Google_AP_P1",
+        )
+
+    def test_page_slug_and_unresolved_macro_are_not_campaign_names(self):
+        from enquiries.crm_api import resolve_campaign_name
+
+        self.assertEqual(
+            resolve_campaign_name(
+                "lp-tkktam",
+                {"utm_campaign": "{campaignname}", "gad_campaignid": "12345678901"},
+                "",
+                name_for_id=lambda _cid: "",
+            ),
+            "12345678901",
+        )
+
+
 class CrmGoogleBucketTests(SimpleTestCase):
     def test_wb_meta_lead_is_not_counted_as_google(self):
         lead = SimpleNamespace(
