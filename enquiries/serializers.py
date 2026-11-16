@@ -280,6 +280,35 @@ class CrmLeadSerializer(serializers.ModelSerializer):
             "utm_term": {"required": False, "allow_blank": True},
         }
 
+    def to_internal_value(self, data):
+        # Google click URLs are often longer than the stored column. Keep the lead,
+        # and read campaign / gclid from the original request body in create().
+        mutable = data.copy() if hasattr(data, "copy") else dict(data)
+        for key in ("landingPageUrl", "landing_page_url"):
+            value = mutable.get(key)
+            if isinstance(value, str) and len(value) > 500:
+                mutable[key] = value[:500]
+        for key in (
+            "utmCampaign",
+            "utm_campaign",
+            "utmSource",
+            "utm_source",
+            "utmMedium",
+            "utm_medium",
+            "utmContent",
+            "utm_content",
+            "utmTerm",
+            "utm_term",
+            "campaign",
+        ):
+            value = mutable.get(key)
+            if isinstance(value, str) and len(value) > 150:
+                mutable[key] = value[:150]
+        gclid = mutable.get("gclid")
+        if isinstance(gclid, str) and len(gclid) > 255:
+            mutable["gclid"] = gclid[:255]
+        return super().to_internal_value(mutable)
+
     def validate(self, attrs):
         attrs = super().validate(attrs)
         full_name = (attrs.get("full_name") or "").strip()
@@ -319,31 +348,36 @@ class CrmLeadSerializer(serializers.ModelSerializer):
             validated_data["utm_term"] = _pick("utmTerm", "utm_term")
 
         # Google Ads click on any LP (including Meta-named) → store as Google channel.
-        from .crm_api import is_google_ads_landing_url
+        # Campaign name comes from utm_campaign when the ad URL has it. Auto-tagging
+        # only sends gad_campaignid; keep that id, and reuse a known name for it.
+        from .crm_api import (
+            click_id_from_tracking,
+            is_google_ads_landing_url,
+            resolve_campaign_name,
+        )
         from .models import CrmLeadSource
 
         landing_url = (
-            validated_data.get("landing_page_url")
-            or _pick("landingPageUrl", "landing_page_url")
+            _pick("landingPageUrl", "landing_page_url")
+            or validated_data.get("landing_page_url")
             or ""
         )
         if landing_url and not (validated_data.get("landing_page_url") or "").strip():
-            validated_data["landing_page_url"] = landing_url
+            validated_data["landing_page_url"] = landing_url[:500]
 
-        # Prefer explicit gclid from payload; else parse from landing URL.
-        gclid = (validated_data.get("gclid") or "").strip() or _pick("gclid", "GCLID")
-        if not gclid and landing_url:
-            try:
-                from urllib.parse import urlparse, parse_qs
-
-                qs = parse_qs(urlparse(landing_url).query)
-                gclid = str((qs.get("gclid") or [""])[0] or "").strip()
-            except Exception:
-                gclid = ""
+        gclid = click_id_from_tracking(validated_data.get("gclid"), raw, landing_url)
         if gclid:
             validated_data["gclid"] = gclid[:255]
 
-        if gclid or is_google_ads_landing_url(landing_url):
+        campaign = resolve_campaign_name(
+            validated_data.get("utm_campaign"),
+            raw,
+            landing_url,
+        )
+        if campaign:
+            validated_data["utm_campaign"] = campaign[:150]
+
+        if gclid or is_google_ads_landing_url(landing_url) or _pick("gad_campaignid", "gadCampaignId"):
             src = (validated_data.get("source") or "").strip().lower()
             if src in ("", "july_meta", "july-meta", "meta"):
                 validated_data["source"] = CrmLeadSource.JULY_LP
@@ -351,15 +385,5 @@ class CrmLeadSerializer(serializers.ModelSerializer):
                 validated_data["utm_source"] = "google"
             if not (validated_data.get("utm_medium") or "").strip():
                 validated_data["utm_medium"] = "cpc"
-            if not (validated_data.get("utm_campaign") or "").strip():
-                try:
-                    from urllib.parse import urlparse, parse_qs
-
-                    qs = parse_qs(urlparse(landing_url).query)
-                    gad = (qs.get("gad_campaignid") or qs.get("campaignid") or [""])[0]
-                    if gad:
-                        validated_data["utm_campaign"] = str(gad)
-                except Exception:
-                    pass
 
         return super().create(validated_data)

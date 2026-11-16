@@ -327,6 +327,178 @@ def is_google_ads_landing_url(url: str | None) -> bool:
     return any(marker in text for marker in _GOOGLE_ADS_URL_MARKERS)
 
 
+# LP page slugs are not ad campaign names. CRM hides these in the Campaign column.
+_LP_PAGE_CAMPAIGN_SLUGS = frozenset(
+    {"lp-tkktam", "meta-tkktam", "lp-wb", "july", "july_lp", "july_meta", "lp_wb"}
+)
+_CAMPAIGN_NAME_KEYS = (
+    "utm_campaign",
+    "utmCampaign",
+    "utm_compaign",
+    "campaign_name",
+    "campaignName",
+    "campaignname",
+    "campaign",
+)
+_CAMPAIGN_ID_KEYS = (
+    "gad_campaignid",
+    "gadCampaignId",
+    "campaignid",
+    "campaign_id",
+    "campaignId",
+)
+
+
+def _tracking_text(value) -> str:
+    if isinstance(value, (list, tuple)):
+        value = value[0] if value else ""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    # Unresolved ValueTrack / template macros are not a campaign name.
+    if text.startswith("{") or text.startswith("%7B") or text.startswith("%7b"):
+        return ""
+    return text
+
+
+def _is_page_campaign_slug(value: str) -> bool:
+    return value.strip().lower() in _LP_PAGE_CAMPAIGN_SLUGS
+
+
+def _is_numeric_campaign_id(value: str) -> bool:
+    text = (value or "").strip()
+    return text.isdigit() and len(text) >= 5
+
+
+def _query_params_from_url(url: str | None) -> dict[str, str]:
+    from urllib.parse import parse_qs, urlparse
+
+    try:
+        parsed = parse_qs(urlparse(url or "").query)
+    except Exception:
+        return {}
+    out: dict[str, str] = {}
+    for key, values in parsed.items():
+        text = _tracking_text(values)
+        if text:
+            out[str(key)] = text
+    return out
+
+
+def collect_campaign_name_and_id(
+    current: str | None,
+    raw: dict | None,
+    landing_url: str | None,
+) -> tuple[str, str]:
+    """Best human campaign name, and Google's numeric campaign id if present."""
+    payload = raw if isinstance(raw, dict) else {}
+    url_params = _query_params_from_url(landing_url)
+    names: list[str] = []
+    ids: list[str] = []
+
+    def add_name(value) -> None:
+        text = _tracking_text(value)
+        if not text or _is_page_campaign_slug(text):
+            return
+        if _is_numeric_campaign_id(text):
+            ids.append(text)
+            return
+        names.append(text)
+
+    def add_id(value) -> None:
+        text = _tracking_text(value)
+        if text.isdigit():
+            ids.append(text)
+
+    add_name(current)
+    for key in _CAMPAIGN_NAME_KEYS:
+        add_name(payload.get(key))
+        add_name(url_params.get(key))
+    for key in _CAMPAIGN_ID_KEYS:
+        add_id(payload.get(key))
+        add_id(url_params.get(key))
+
+    name = names[0] if names else ""
+    campaign_id = ids[0] if ids else ""
+    return name, campaign_id
+
+
+def known_google_campaign_name(campaign_id: str) -> str:
+    """Name already stored on an earlier lead for this Google campaign id."""
+    cid = (campaign_id or "").strip()
+    if not cid.isdigit():
+        return ""
+    try:
+        from django.db.models import Q
+
+        from .models import CrmLead
+
+        needle = f"gad_campaignid={cid}"
+        rows = (
+            CrmLead.objects.exclude(utm_campaign="")
+            .filter(
+                Q(landing_page_url__icontains=needle)
+                | Q(raw_payload__gad_campaignid=cid)
+                | Q(raw_payload__gadCampaignId=cid)
+                | Q(raw_payload__campaignid=cid)
+            )
+            .order_by("-created_at")
+            .values_list("utm_campaign", flat=True)[:40]
+        )
+    except Exception:
+        return ""
+    for raw_name in rows:
+        name = _tracking_text(raw_name)
+        if name and not _is_page_campaign_slug(name) and not _is_numeric_campaign_id(name):
+            return name[:150]
+    return ""
+
+
+def resolve_campaign_name(
+    current: str | None,
+    raw: dict | None,
+    landing_url: str | None,
+    *,
+    name_for_id=None,
+) -> str:
+    """Readable campaign name, else the Google campaign id so the column is not blank."""
+    name, campaign_id = collect_campaign_name_and_id(current, raw, landing_url)
+    if name:
+        return name[:150]
+    if campaign_id:
+        lookup = name_for_id or known_google_campaign_name
+        try:
+            known = _tracking_text(lookup(campaign_id))
+        except Exception:
+            known = ""
+        if known and not _is_page_campaign_slug(known) and not _is_numeric_campaign_id(known):
+            return known[:150]
+        return campaign_id[:150]
+    current_text = _tracking_text(current)
+    if current_text and not _is_page_campaign_slug(current_text):
+        return current_text[:150]
+    return ""
+
+
+def click_id_from_tracking(current: str | None, raw: dict | None, landing_url: str | None) -> str:
+    payload = raw if isinstance(raw, dict) else {}
+    url_params = _query_params_from_url(landing_url)
+    for source in (
+        current,
+        payload.get("gclid"),
+        payload.get("GCLID"),
+        url_params.get("gclid"),
+        payload.get("gbraid"),
+        url_params.get("gbraid"),
+        payload.get("wbraid"),
+        url_params.get("wbraid"),
+    ):
+        text = _tracking_text(source)
+        if text:
+            return text[:255]
+    return ""
+
+
 def is_admission_city_lp_url(url: str | None) -> bool:
     """True for timekids-2g admission city landing pages (not franchise LPs)."""
     return "timekids-2g" in (url or "").lower()
@@ -3347,13 +3519,14 @@ def _payload_tracking_value(payload: dict, *keys: str) -> str:
 def _landing_report_tracking(row: KidsEnquiry) -> dict[str, str]:
     """Pull UTM / gclid from kids_enquiry.raw_payload when the 2G form captured them."""
     payload = row.raw_payload if isinstance(row.raw_payload, dict) else {}
+    landing_url = _payload_tracking_value(payload, "landing_page_url", "landingPageUrl")
     return {
         "utm_source": _payload_tracking_value(payload, "utm_source", "utmSource")
         or (row.source or "Google"),
         "utm_medium": _payload_tracking_value(payload, "utm_medium", "utmMedium"),
-        "utm_campaign": _payload_tracking_value(payload, "utm_campaign", "utmCampaign"),
+        "utm_campaign": resolve_campaign_name("", payload, landing_url),
         "utm_content": _payload_tracking_value(payload, "utm_content", "utmContent"),
-        "gclid": _payload_tracking_value(payload, "gclid", "gbraid", "wbraid"),
+        "gclid": click_id_from_tracking("", payload, landing_url),
     }
 
 
