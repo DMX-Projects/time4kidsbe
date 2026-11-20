@@ -3525,6 +3525,7 @@ def _landing_report_tracking(row: KidsEnquiry) -> dict[str, str]:
         or (row.source or "Google"),
         "utm_medium": _payload_tracking_value(payload, "utm_medium", "utmMedium"),
         "utm_campaign": resolve_campaign_name("", payload, landing_url),
+        "utm_term": _payload_tracking_value(payload, "utm_term", "utmTerm"),
         "utm_content": _payload_tracking_value(payload, "utm_content", "utmContent"),
         "gclid": click_id_from_tracking("", payload, landing_url),
     }
@@ -3553,7 +3554,7 @@ def _latest_history_notes_by_lead_id(lead_keys: list[str]) -> dict[str, str]:
 
 
 def agency_lead_report_data(request) -> dict:
-    """Return flat lead detailed report data for Agency logins (12 columns)."""
+    """Return flat lead detailed report data for Agency logins."""
     qs = _filter_crm_qs(request).order_by("-created_at")
 
     q_params = getattr(request, "query_params", getattr(request, "GET", {}))
@@ -3653,6 +3654,7 @@ def agency_lead_report_data(request) -> dict:
             "utm_source": lead.utm_source or "",
             "utm_medium": lead.utm_medium or "",
             "utm_campaign": lead.utm_campaign or "",
+            "utm_term": lead.utm_term or "",
             "status": lead.status or "",
             "created_at": dt_str,
             "utm_content": lead.utm_content or "",
@@ -3675,6 +3677,7 @@ def agency_lead_report_data(request) -> dict:
             "utm_source": lead.utm_source or "",
             "utm_medium": lead.utm_medium or "",
             "utm_campaign": lead.utm_campaign or "",
+            "utm_term": lead.utm_term or "",
             "status": lead.status or "",
             "created_at": dt_str,
             "utm_content": lead.utm_content or "",
@@ -3698,6 +3701,7 @@ def agency_lead_report_data(request) -> dict:
             "utm_source": tracking["utm_source"],
             "utm_medium": tracking["utm_medium"],
             "utm_campaign": tracking["utm_campaign"],
+            "utm_term": tracking["utm_term"],
             "status": _landing_crm_status(row),
             "created_at": dt_str,
             "utm_content": tracking["utm_content"],
@@ -3716,7 +3720,7 @@ def agency_lead_report_data(request) -> dict:
 
 
 def generate_agency_report_csv(request) -> bytes:
-    """Generate CSV with exact 11 columns matching spreadsheet layout."""
+    """Generate CSV matching the agency reports table, including utm_term."""
     import csv, io
     report_data = agency_lead_report_data(request)
     leads = report_data.get("leads", [])
@@ -3731,6 +3735,7 @@ def generate_agency_report_csv(request) -> bytes:
         "utm_source",
         "utm_medium",
         "utm_campaign",
+        "utm_term",
         "status",
         "created_at",
         "utm_content",
@@ -3747,6 +3752,7 @@ def generate_agency_report_csv(request) -> bytes:
             lead["utm_source"],
             lead["utm_medium"],
             lead["utm_campaign"],
+            lead.get("utm_term") or "",
             lead["status"],
             lead["created_at"],
             lead["utm_content"],
