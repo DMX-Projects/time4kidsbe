@@ -335,6 +335,12 @@ PARENT_FEE_QR_IMAGE_URL = os.getenv("PARENT_FEE_QR_IMAGE_URL", "").strip()
 # When using a static QR image, set the exact amount encoded in that QR (e.g. 1 for ₹1 test payments).
 PARENT_FEE_QR_FIXED_AMOUNT = os.getenv("PARENT_FEE_QR_FIXED_AMOUNT", "").strip()
 
+# --- Google Ads Lead Form → CRM webhook ---
+# Paste in Google Ads → Lead form → Export leads → Webhook integration:
+#   URL: https://www.timekidspreschools.in/api/enquiries/google-leads/webhook/
+#   Key: same value as GOOGLE_LEAD_WEBHOOK_KEY (max 50 chars)
+GOOGLE_LEAD_WEBHOOK_KEY = (os.getenv("GOOGLE_LEAD_WEBHOOK_KEY", "") or "").strip() or "tk_google_leads_webhook_2026"
+
 # --- Meta Lead Ads → CRM webhook ---
 # Callback URL: https://www.timekidspreschools.in/api/enquiries/meta-leads/webhook/
 # App: TIME Kids Lead CRM (developers.facebook.com) — subscribe Page → leadgen

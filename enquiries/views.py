@@ -1807,6 +1807,46 @@ class MetaLeadWebhookView(APIView):
 
 
 @method_decorator(csrf_exempt, name="dispatch")
+class GoogleLeadWebhookView(APIView):
+    """Google Ads Lead Form webhook — ingest lead POSTs into CRM."""
+
+    authentication_classes = []
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        from .google_leads import process_google_lead_webhook
+
+        payload = request.data if isinstance(request.data, dict) else {}
+        try:
+            result = process_google_lead_webhook(payload)
+        except Exception as exc:
+            import logging
+
+            logging.getLogger(__name__).exception(
+                "Google lead webhook processing failed for %s",
+                (payload or {}).get("lead_id"),
+            )
+            return Response(
+                {"message": str(exc) or "Google lead processing failed."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        if not result.get("ok") and result.get("error") == "invalid_google_key":
+            return Response(
+                {"message": "Invalid google_key."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if not result.get("ok") and result.get("error") in {"empty_payload", "missing_lead_id"}:
+            return Response(
+                {"message": result.get("error") or "Invalid payload."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Google expects HTTP 200 for successful acceptance (including duplicates).
+        return Response({})
+
+
+@method_decorator(csrf_exempt, name="dispatch")
 class MetaLeadSyncView(APIView):
     """Poll Meta forms and import new leads (cron-friendly auto-sync backup)."""
 

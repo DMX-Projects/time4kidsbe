@@ -1093,3 +1093,82 @@ class AdmissionNotInFranchiseListTests(TestCase):
         self.assertEqual(_filter_crm_qs(franchise_req).filter(pk=misfiled.id).count(), 0)
         self.assertEqual(_filter_crm_qs(landing_req, admission_city_lp_only=True).filter(pk=misfiled.id).count(), 1)
 
+
+class GoogleLeadWebhookTests(SimpleTestCase):
+    def test_extract_user_columns_maps_standard_fields(self):
+        from enquiries.google_leads import extract_user_columns
+
+        fields = extract_user_columns(
+            {
+                "user_column_data": [
+                    {"column_id": "FULL_NAME", "column_name": "Full Name", "string_value": "Anita Sharma"},
+                    {"column_id": "EMAIL", "column_name": "Email", "string_value": "anita@example.com"},
+                    {"column_id": "PHONE_NUMBER", "column_name": "Phone number", "string_value": "+919876543210"},
+                    {"column_id": "CITY", "column_name": "City", "string_value": "Hyderabad"},
+                ]
+            }
+        )
+        self.assertEqual(fields["full_name"], "Anita Sharma")
+        self.assertEqual(fields["email"], "anita@example.com")
+        self.assertEqual(fields["phone"], "+919876543210")
+        self.assertEqual(fields["city"], "Hyderabad")
+
+    @override_settings(GOOGLE_LEAD_WEBHOOK_KEY="tk_google_leads_webhook_2026")
+    def test_verify_google_key_accepts_both_casings(self):
+        from enquiries.google_leads import verify_google_lead_key
+
+        self.assertTrue(verify_google_lead_key({"google_key": "tk_google_leads_webhook_2026"}))
+        self.assertTrue(verify_google_lead_key({"Google_key": "tk_google_leads_webhook_2026"}))
+        self.assertFalse(verify_google_lead_key({"google_key": "wrong"}))
+
+
+class GoogleLeadCreateTests(TestCase):
+    @override_settings(GOOGLE_LEAD_WEBHOOK_KEY="tk_google_leads_webhook_2026")
+    @patch("enquiries.emails.assign_and_notify_new_lead")
+    @patch("enquiries.emails.send_crm_lead_enquiry_emails")
+    def test_process_google_lead_creates_crm_row(self, _send_mail, _assign):
+        from enquiries.google_leads import process_google_lead_webhook
+        from enquiries.models import CrmLead, CrmLeadSource
+
+        result = process_google_lead_webhook(
+            {
+                "lead_id": "google-test-lead-001",
+                "campaign_id": 123456,
+                "form_id": 98765,
+                "gcl_id": "Cj0KCQtestgclid",
+                "google_key": "tk_google_leads_webhook_2026",
+                "is_test": True,
+                "user_column_data": [
+                    {"column_id": "FULL_NAME", "column_name": "Full Name", "string_value": "Test Parent"},
+                    {"column_id": "EMAIL", "column_name": "Email", "string_value": "parent@example.com"},
+                    {"column_id": "PHONE_NUMBER", "column_name": "Phone number", "string_value": "9876543210"},
+                    {"column_id": "CITY", "column_name": "City", "string_value": "Chennai"},
+                ],
+            },
+            send_emails=False,
+        )
+
+        self.assertTrue(result.get("ok"))
+        lead = CrmLead.objects.get(pk=result["crm_lead_id"])
+        self.assertEqual(lead.full_name, "Test Parent")
+        self.assertEqual(lead.mobile, "9876543210")
+        self.assertEqual(lead.city, "Chennai")
+        self.assertEqual(lead.source, CrmLeadSource.JULY_LP)
+        self.assertEqual(lead.utm_source, "google")
+        self.assertEqual(lead.utm_medium, "lead_form")
+        self.assertEqual(lead.gclid, "Cj0KCQtestgclid")
+        self.assertEqual(lead.raw_payload.get("google_lead_id"), "google-test-lead-001")
+
+        again = process_google_lead_webhook(
+            {
+                "lead_id": "google-test-lead-001",
+                "google_key": "tk_google_leads_webhook_2026",
+                "user_column_data": [
+                    {"column_id": "PHONE_NUMBER", "string_value": "9876543210"},
+                ],
+            },
+            send_emails=False,
+        )
+        self.assertTrue(again.get("skipped"))
+        self.assertEqual(CrmLead.objects.filter(raw_payload__google_lead_id="google-test-lead-001").count(), 1)
+
